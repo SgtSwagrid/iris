@@ -84,3 +84,16 @@ enum LlmError(message: String) extends Exception(message):
     */
   case Unsupported(provider: String, detail: String)
     extends LlmError(s"$provider cannot do this: $detail")
+
+  /**
+    * A request the provider did not answer within the configured timeout, such
+    * as one whose reply took too long to write.
+    *
+    * @param provider
+    *   The name of the provider, for display.
+    *
+    * @param after
+    *   How long the request was waited for.
+    */
+  case TimedOut(provider: String, after: FiniteDuration)
+    extends LlmError(s"$provider did not answer within $after")

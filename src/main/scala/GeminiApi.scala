@@ -117,7 +117,7 @@ private[iris] object GeminiApi extends ProviderApi:
   /** Serialises a message, dropping breakpoints, as Gemini caches by itself. */
   private def content(message: Message): Json = Json.obj(
     "role"  -> role(message.role).asJson,
-    "parts" -> message.uncached.content.map(part).asJson,
+    "parts" -> Message.separated(message.uncached.content).map(part).asJson,
   )
 
   private def part(text: String): Json = Json.obj("text" -> text.asJson)

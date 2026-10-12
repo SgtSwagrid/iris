@@ -27,7 +27,9 @@ longer.
   each `Chat`. Keep it that way.
 - Every `ProviderApi` must normalise what it returns: the reply text, a `StopReason` (unknown labels kept as `Other`) and
   token usage in `Reply`. An unsuccessful response is `LlmError.Unsuccessful` (status and body) and an unreadable one
-  `LlmError.Malformed`, so hosts can tell rate limits from broken responses; transport failures are sttp's own.
+  `LlmError.Malformed`, so hosts can tell rate limits from broken responses; a request no answer comes to
+  within `LlmConfig.timeout` is `LlmError.TimedOut`, such as one whose reply takes too long to write;
+  other transport failures are sttp's own.
 - Models are `LlmModel` cases, never strings: each names the provider serving it (`LlmConfig.provider` is its model's)
   and its API `id`, which `LlmModel.parse` reads back. A model Iris does not list is an `LlmModel.Other`,
   made only by `LlmModel.of(provider, id)` (so that a listed id is always its listed case, and a blank one none, and
@@ -52,6 +54,13 @@ longer.
   or the assistant's turn is followed by a user message of `.`. `Usage.inputTokens` counts the whole prompt on every
   provider (Anthropic's `input_tokens` leaves the cache out, so its reads and writes are added back) and
   `Usage.cachedTokens` the part read from the cache.
+- Providers run adjacent text blocks together (Anthropic was measured to: two blocks count exactly as their
+  texts concatenated), so every `ProviderApi` serialises a message's parts through `Message.separated`, which opens
+  with a blank line each text part following another with only breakpoints (or empty text) between them. A part's
+  text depends only on the parts before it, never after, so a cached prefix is sent alike whatever follows it.
+  OpenAI separates after taking tool calls and results out of a message, as they then no longer lie between its
+  texts. Callers never write a separator of their own between parts.
+  `JsonHttp.plain` joins parts already separated, and `Message.text` joins text parts with the same blank line.
 - `ReplyOptions.effort` (`Effort`, `Low` to `Max`) is sent as Anthropic's `output_config.effort`, OpenAI's
   `reasoning_effort` (`Max` as `high`, its highest) and Gemini's `generationConfig.thinkingConfig.thinkingBudget`
   (fixed amounts within every thinking Gemini model's range). Iris never chooses one, and a model that cannot take one

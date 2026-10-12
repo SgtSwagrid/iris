@@ -58,7 +58,10 @@ private[iris] object JsonHttp:
     .when(items.nonEmpty)(items)
     .asJson
 
-  /** The text of the parts joined, where they are text alone. */
+  /**
+    * The text of parts already [[Message.separated]], where they are text
+    * alone.
+    */
   def plain(parts: Seq[Part]): Option[String] =
     val texts = parts.collect:
       case Part.Text(text) => text
