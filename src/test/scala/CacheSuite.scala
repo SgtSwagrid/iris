@@ -49,12 +49,20 @@ class CacheSuite extends FunSuite:
       content(body, 0),
       Json.arr(
         marked("A long document."),
-        text("A question about it."),
+        text("\n\nA question about it."),
       ),
     )
     assertEquals(
       body.hcursor.get[String]("system").toOption,
       Some("Be brief."),
+    )
+
+  test("a cached block is sent alike whatever follows it"):
+    val warmed = json(AnthropicApi.body(config, chat.cacheable, options))
+    val asked  = json(AnthropicApi.body(config, chat, options))
+    assertEquals(
+      content(warmed, 0).hcursor.downN(0).focus,
+      content(asked, 0).hcursor.downN(0).focus,
     )
 
   test("a breakpoint opening the first message marks the system message"):
@@ -125,14 +133,14 @@ class CacheSuite extends FunSuite:
     val openAi = json(OpenAiApi.body(config, chat, options))
     assertEquals(
       content(openAi, 1),
-      Json.fromString("A long document.A question about it."),
+      Json.fromString("A long document.\n\nA question about it."),
     )
     val gemini = json(GeminiApi.body(config, chat, options))
     assertEquals(
       gemini.hcursor.downField("contents").downN(0).downField("parts").focus,
       Some(Json.arr(
         Json.obj("text" -> Json.fromString("A long document.")),
-        Json.obj("text" -> Json.fromString("A question about it.")),
+        Json.obj("text" -> Json.fromString("\n\nA question about it.")),
       )),
     )
 

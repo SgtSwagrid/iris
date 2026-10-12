@@ -208,6 +208,126 @@ class AdapterSuite extends FunSuite:
       Some("Hello"),
     )
 
+  private val named = Chat().user(
+    Part.Text("BOOK 1: notes.txt"),
+    Part.Text("Chapter one."),
+  )
+
+  private def said(body: Json, field: String): Option[String] = body
+    .hcursor
+    .downField(field)
+    .downN(0)
+    .get[String]("content")
+    .toOption
+
+  test("text parts in a row reach every provider a blank line apart"):
+    val apart = "BOOK 1: notes.txt\n\nChapter one."
+    assertEquals(
+      said(
+        json(AnthropicApi.body(config, named, options)),
+        "messages",
+      ),
+      Some(apart),
+    )
+    assertEquals(
+      said(
+        json(OpenAiApi.body(config, named, options)),
+        "messages",
+      ),
+      Some(apart),
+    )
+    assertEquals(
+      json(GeminiApi.body(config, named, options))
+        .hcursor
+        .downField("contents")
+        .downN(0)
+        .downField("parts")
+        .as[List[Json]]
+        .map(_.flatMap(_.hcursor.get[String]("text").toOption).mkString),
+      Right(apart),
+    )
+
+  test("text parts in a row stay apart beside a picture"):
+    val shown = named.messages.head.content :+ picture
+    val asked = Chat().user(shown*)
+    val texts = (body: Json) =>
+      body
+        .hcursor
+        .downField("messages")
+        .downN(0)
+        .downField("content")
+        .as[List[Json]]
+        .map(_.flatMap(_.hcursor.get[String]("text").toOption))
+    val apart = Right(List(
+      "BOOK 1: notes.txt",
+      "\n\nChapter one.",
+    ))
+    assertEquals(
+      texts(json(AnthropicApi.body(config, asked, options))),
+      apart,
+    )
+    assertEquals(
+      texts(json(OpenAiApi.body(config, asked, options))),
+      apart,
+    )
+
+  test(
+    "a picture keeps text parts apart, while breakpoints and empty text do not",
+  ):
+    assertEquals(
+      Message.separated(List(
+        Part.Text("Page 1"),
+        picture,
+        Part.Text("Page 2"),
+        Part.CacheBreakpoint,
+        Part.Text(""),
+        Part.Text("End."),
+      )),
+      List(
+        Part.Text("Page 1"),
+        picture,
+        Part.Text("Page 2"),
+        Part.CacheBreakpoint,
+        Part.Text(""),
+        Part.Text("\n\nEnd."),
+      ),
+    )
+
+  test(
+    "openai sends text around a tool call apart, once the call is taken out",
+  ):
+    val call  = Part.ToolCall("1", "weather", Json.obj())
+    val asked = Chat()
+      .user("Hi")
+      .assistant(
+        Part.Text("Looking."),
+        call,
+        Part.Text("Done."),
+      )
+    assertEquals(
+      json(OpenAiApi.body(config, asked, options))
+        .hcursor
+        .downField("messages")
+        .downN(1)
+        .get[String]("content")
+        .toOption,
+      Some("Looking.\n\nDone."),
+    )
+
+  test("a message's text holds each text part as a paragraph of its own"):
+    assertEquals(
+      Message(
+        Role.User,
+        List(
+          Part.Text("Page 1"),
+          picture,
+          Part.Text(""),
+          Part.Text("End."),
+        ),
+      ).text,
+      "Page 1\n\nEnd.",
+    )
+
   test("anthropic sends a picture beside the text which asks about it"):
     val body  = json(AnthropicApi.body(config, looking, options))
     val parts = body.hcursor.downField("messages").downN(0).downField("content")

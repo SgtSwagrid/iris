@@ -120,9 +120,11 @@ private[iris] object OpenAiApi extends ProviderApi:
       "tool_calls" -> Option.when(calls.nonEmpty)(calls.map(call)).asJson,
     )
 
+  /** Serialises what a message says, separated once its tools are out. */
   private def content(spoken: List[Part]): Json =
-    if spoken.isEmpty then Json.Null
-    else JsonHttp.plain(spoken).fold(spoken.flatMap(part).asJson)(_.asJson)
+    val sent = Message.separated(spoken)
+    if sent.isEmpty then Json.Null
+    else JsonHttp.plain(sent).fold(sent.flatMap(part).asJson)(_.asJson)
 
   /** Serialises a tool call, whose arguments OpenAI takes as a string. */
   private def call(call: Part.ToolCall): Json = Json.obj(
