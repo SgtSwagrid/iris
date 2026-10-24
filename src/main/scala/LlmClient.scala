@@ -4,7 +4,6 @@ import cats.{~>, MonadThrow}
 import cats.effect.{Async, Resource}
 import cats.syntax.traverse.*
 import sttp.client4.Backend
-import sttp.client4.httpclient.cats.HttpClientCatsBackend
 
 /**
   * A provider-agnostic client for large language models, constructed with
@@ -211,7 +210,7 @@ object LlmClient:
     *   A resource holding the client and its backend.
     */
   def resource[F[_] : Async](config: LlmConfig): Resource[F, LlmClient[F]] =
-    HttpClientCatsBackend.resource[F]().map(apply(config, _))
+    Platform.backend[F].map(apply(config, _))
 
   /**
     * Creates a client configured from the environment by [[LlmConfig.fromEnv]].

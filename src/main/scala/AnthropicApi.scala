@@ -24,6 +24,13 @@ private[iris] object AnthropicApi extends ProviderApi:
   override def credentials(config: LlmConfig): Seq[Header] = Seq(
     Header("x-api-key", config.apiKey),
     Header("anthropic-version", "2023-06-01"),
+  ) ++ Option.when(Platform.browser)(
+    // Anthropic refuses a request that carries a page's origin unless it says
+    // that it means to send it from there.
+    Header(
+      "anthropic-dangerous-direct-browser-access",
+      "true",
+    ),
   )
 
   override val replies: Decoder[Either[LlmError, Reply]] = Decoder[Response]

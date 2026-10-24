@@ -14,7 +14,7 @@ Keep it concise and actionable.
 This is Iris, a Scala 3 library giving one provider-agnostic interface to the APIs of large language models, with
 adapters for Anthropic, OpenAI and Google Gemini, built on Cats Effect, sttp and Circe. It is in beta.
 
-It is a single JVM module in `com.alecdorrington.iris`. `LlmClient` is the public interface (`send` a `Chat`
+It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js. `LlmClient` is the public interface (`send` a `Chat`
 or a `Prompt`). Each `LlmProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
 `JsonHttp`), which tells the one `JsonClient` and the one `SseClient` all they need to know of it: its endpoints,
 request bodies, credentials, the chats it refuses, how its replies read, and how it counts tokens. Anything
@@ -71,6 +71,13 @@ longer.
   `SseClient` speaks the same `ProviderApi` as `JsonClient`, with the same request bodies (`streamed`). Each
   `ProviderApi.reply` reads the whole stream of events, most one event at a time (`Sse.separately`). Gemini's
   remembers across events whether a tool was asked for, as it may say so before it says it stopped.
+- What differs between the platforms is in `Platform` alone, one per platform (`src/main/scalajvm`,
+  `src/main/scalajs`): the backends `resource` makes (the JDK's HTTP client, or the Fetch API), and whether a
+  request may come from a browser's page, for which `AnthropicApi` adds `anthropic-dangerous-direct-browser-access`.
+  Everything else is shared, so use nothing the JS side lacks: no `java.util.Locale` (lower case by character, as
+  `LlmProvider.parse` does), nor `java.time`. The tests run on both, so they run their effects in `SyncIO`,
+  never `IO.unsafeRunSync`, which JavaScript lacks; tests of one platform alone go in `src/test/scalajs` or
+  `src/test/scalajvm`.
 - `LlmConfig.toString` redacts the API key, so hosts may log a configuration. Keep any new secret out of `toString`
   and out of `LlmError` messages likewise.
 
@@ -86,8 +93,12 @@ changes, overwriting whatever is here. So make changes there, never here. The sh
 
 ### Build
 
-- The root project `iris` is the library itself, published as `iris`. Its id is the library's name because the private
-  project includes this build by reference (`ProjectRef(file("iris"), "iris")`), alongside projects of its own.
+- The library is one `projectMatrix`, `iris` on the JVM and `irisJS` in JavaScript, published as `iris_3` and
+  `iris_sjs1_3`, which `irisRoot` aggregates (publishing nothing itself, and documenting the JVM side only). Their
+  ids carry the library's name because the private project includes this build by reference
+  (`ProjectRef(file("iris"), "iris")` and `"irisJS"`), alongside projects of its own.
+- The matrix pins `sourceDirectory` to this build's base, as sbt otherwise resolves a matrix's sources against the
+  working directory, which is not this build's when another includes it.
 - The library must never depend on anything in the project that includes it.
 - Versions come from git tags (`sbt-ci-release`); publishing a GitHub release publishes to Maven Central.
 
