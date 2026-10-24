@@ -25,7 +25,9 @@ sealed trait Part
 object Part:
 
   /**
-    * A part of written text.
+    * A part of written text. Two in a row, with nothing but breakpoints between
+    * them, are sent as paragraphs of their own, a blank line apart, since every
+    * provider would otherwise run them together.
     *
     * @param text
     *   The text.
@@ -104,11 +106,11 @@ object Part:
   */
 final case class Message(role: Role, content: List[Part]):
 
-  /** The text of this message, with any media left out. */
+  /** The text of this message, a paragraph per text part, media left out. */
   def text: String = content
     .collect:
-      case Part.Text(text) => text
-    .mkString
+      case Part.Text(text) if text.nonEmpty => text
+    .mkString(Message.paragraphBreak)
 
   /** This message without its cache breakpoints. */
   def uncached: Message =
@@ -137,6 +139,26 @@ object Message:
     */
   def apply(role: Role, text: String): Message =
     Message(role, List(Part.Text(text)))
+
+  /** What is sent between two text parts in a row. */
+  private[iris] val paragraphBreak: String = "\n\n"
+
+  /**
+    * The parts as sent: each text part saying something opens with a
+    * [[paragraphBreak]] where one said something before it with nothing but
+    * breakpoints between. A part is sent as the parts before it decide, never
+    * those after it, so that a cached prefix is sent alike whatever follows.
+    */
+  private[iris] def separated(parts: List[Part]): List[Part] = parts
+    .foldLeft((Vector.empty[Part], false)):
+      case ((sent, afterText), Part.Text(text)) if text.nonEmpty =>
+        val opened = if afterText then paragraphBreak + text else text
+        (sent :+ Part.Text(opened), true)
+      case ((sent, afterText), part @ (Part.Text(_) | Part.CacheBreakpoint)) =>
+        (sent :+ part, afterText)
+      case ((sent, _), part) => (sent :+ part, false)
+    ._1
+    .toList
 
 /**
   * The full history of a conversation with a model, sent whole with every

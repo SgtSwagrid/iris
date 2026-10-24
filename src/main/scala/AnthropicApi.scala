@@ -185,8 +185,8 @@ private[iris] object AnthropicApi extends ProviderApi:
   private def placed(chat: Chat): Placed = chat
     .messages
     .foldLeft((false, Vector.empty[Vector[Marked]])):
-      case ((cached, blocks), message) => message
-          .content
+      case ((cached, blocks), message) => Message
+          .separated(message.content)
           .foldLeft((cached, blocks :+ Vector.empty[Marked]))(place)
 
   /**

@@ -41,10 +41,19 @@ private[iris] final class JsonClient[F[_] : MonadThrow]
     options.copy(maxTokens = Some(api.leastReply)),
   )
 
-  /** Posts JSON with the provider's credentials, reading an `A` back. */
+  /**
+    * Posts JSON with the provider's credentials, reading an `A` back, failing
+    * with [[LlmError.TimedOut]] where no answer came in time.
+    */
   private def ask[A : Decoder](endpoint: Uri, body: String): F[A] = api
     .post(config, endpoint, body)
     .send(backend)
+    .adaptError { case _: SttpClientException.TimeoutException =>
+      LlmError.TimedOut(
+        api.provider.displayName,
+        config.timeout,
+      )
+    }
     .flatMap(response =>
       MonadThrow[F].fromEither(JsonHttp.parse[A](api.provider, response)),
     )
