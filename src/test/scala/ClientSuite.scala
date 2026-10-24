@@ -5,6 +5,7 @@ import cats.effect.unsafe.implicits.global
 import com.alecdorrington.iris.Fixtures.config
 import munit.FunSuite
 import scala.concurrent.duration.DurationInt
+import sttp.client4.SttpClientException
 import sttp.client4.impl.cats.CatsMonadAsyncError
 import sttp.client4.testing.{BackendStub, ResponseStub}
 import sttp.model.{Header, StatusCode}
@@ -49,6 +50,23 @@ class ClientSuite extends FunSuite:
         StopReason.Completed,
         Some(Usage(3, 1)),
       )),
+    )
+
+  test("a request no answer comes to in time is an error saying so"):
+    val slow = LlmClient[IO](
+      config,
+      BackendStub(CatsMonadAsyncError[IO])
+        .whenAnyRequest
+        .thenRespondF(request =>
+          IO.raiseError(SttpClientException.TimeoutException(
+            request,
+            Exception("read timed out"),
+          )),
+        ),
+    )
+    assertEquals(
+      result(slow),
+      Left(LlmError.TimedOut("Anthropic", config.timeout)),
     )
 
   test("an unsuccessful response is an error carrying its status"):

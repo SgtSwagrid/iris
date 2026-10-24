@@ -1,7 +1,7 @@
 ThisBuild / description :=
   "A provider-agnostic Scala client for large language models."
 
-ThisBuild / homepage := Some(uri("https://github.com/SgtSwagrid/Iris"))
+ThisBuild / homepage := Some(uri("https://github.com/SgtSwagrid/iris"))
 
 ThisBuild / organization         := "com.alecdorrington"
 ThisBuild / organizationName     := "SgtSwagrid"
