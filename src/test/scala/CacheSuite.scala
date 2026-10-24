@@ -2,13 +2,12 @@ package com.alecdorrington.iris
 
 import cats.~>
 import cats.arrow.FunctionK
-import cats.effect.IO
-import cats.effect.unsafe.implicits.global
+import cats.effect.SyncIO
 import com.alecdorrington.iris.Fixtures.{answer, config, json}
 import io.circe.Json
 import munit.FunSuite
 import sttp.client4.StringBody
-import sttp.client4.impl.cats.CatsMonadAsyncError
+import sttp.client4.impl.cats.CatsMonadError
 import sttp.client4.testing.{BackendStub, ResponseStub}
 import sttp.model.StatusCode
 
@@ -262,9 +261,9 @@ class CacheSuite extends FunSuite:
   private def expecting
     (config: LlmConfig, body: String)
     (accepts: Json => Boolean)
-    : LlmClient[IO] = LlmClient[IO](
+    : LlmClient[SyncIO] = LlmClient[SyncIO](
     config,
-    BackendStub(CatsMonadAsyncError[IO])
+    BackendStub(CatsMonadError[SyncIO]())
       .whenRequestMatches(request =>
         request.body match
           case StringBody(sent, _, _) => accepts(json(sent))
@@ -302,9 +301,9 @@ class CacheSuite extends FunSuite:
       body.hcursor.get[Int]("max_tokens").toOption.contains(0) &&
       prefixOnly(body),
     )
-    val refusing = new (IO ~> IO):
-      override def apply[A](request: IO[A]): IO[A] =
-        IO.raiseError(Exception("Refused."))
+    val refusing = new (SyncIO ~> SyncIO):
+      override def apply[A](request: SyncIO[A]): SyncIO[A] =
+        SyncIO.raiseError(Exception("Refused."))
     assert(
       new LlmClient.Forwarding(warming) {}
         .warm(chat)

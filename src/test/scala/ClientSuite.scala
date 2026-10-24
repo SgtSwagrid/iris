@@ -1,12 +1,11 @@
 package com.alecdorrington.iris
 
-import cats.effect.IO
-import cats.effect.unsafe.implicits.global
+import cats.effect.SyncIO
 import com.alecdorrington.iris.Fixtures.config
 import munit.FunSuite
 import scala.concurrent.duration.DurationInt
 import sttp.client4.SttpClientException
-import sttp.client4.impl.cats.CatsMonadAsyncError
+import sttp.client4.impl.cats.CatsMonadError
 import sttp.client4.testing.{BackendStub, ResponseStub}
 import sttp.model.{Header, StatusCode}
 
@@ -23,22 +22,18 @@ class ClientSuite extends FunSuite:
       headers: Seq[Header] = Seq.empty,
       config: LlmConfig = config,
     )
-    : LlmClient[IO] = LlmClient[IO](
+    : LlmClient[SyncIO] = LlmClient[SyncIO](
     config,
-    BackendStub(CatsMonadAsyncError[IO])
+    BackendStub(CatsMonadError[SyncIO]())
       .whenAnyRequest
       .thenRespond(ResponseStub.adjust(body, status, headers)),
   )
 
-  private def result(client: LlmClient[IO]): Either[Throwable, Reply] = client
-    .send(prompt)
-    .attempt
-    .unsafeRunSync()
+  private def result(client: LlmClient[SyncIO]): Either[Throwable, Reply] =
+    client.send(prompt).attempt.unsafeRunSync()
 
-  private def counted(client: LlmClient[IO]): Either[Throwable, Int] = client
-    .count(prompt)
-    .attempt
-    .unsafeRunSync()
+  private def counted(client: LlmClient[SyncIO]): Either[Throwable, Int] =
+    client.count(prompt).attempt.unsafeRunSync()
 
   test("a successful response becomes a reply"):
     val body = """{"content":[{"type":"text","text":"Hi"}],
@@ -53,12 +48,12 @@ class ClientSuite extends FunSuite:
     )
 
   test("a request no answer comes to in time is an error saying so"):
-    val slow = LlmClient[IO](
+    val slow = LlmClient[SyncIO](
       config,
-      BackendStub(CatsMonadAsyncError[IO])
+      BackendStub(CatsMonadError[SyncIO]())
         .whenAnyRequest
         .thenRespondF(request =>
-          IO.raiseError(SttpClientException.TimeoutException(
+          SyncIO.raiseError(SttpClientException.TimeoutException(
             request,
             Exception("read timed out"),
           )),
@@ -172,9 +167,9 @@ class ClientSuite extends FunSuite:
         """{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}""",
       ),
     ).foreach: (provider, name, key, body) =>
-      val keyed = LlmClient[IO](
+      val keyed = LlmClient[SyncIO](
         config.copy(model = provider.defaultModel),
-        BackendStub(CatsMonadAsyncError[IO])
+        BackendStub(CatsMonadError[SyncIO]())
           .whenRequestMatches(_.header(name).contains(key))
           .thenRespond(ResponseStub.adjust(body, StatusCode.Ok))
           .whenAnyRequest

@@ -28,10 +28,12 @@ who carried their words to mortals along the rainbow.
 Add the following to your `build.sbt`:
 
 ```scala
-libraryDependencies += "com.alecdorrington" %% "iris" % "0.1.0"
+libraryDependencies += "com.alecdorrington" %% "iris" % "0.2.0"
 ```
 
-Compiled with Scala `3.9.0`, with no intention to explicitly support older versions. JVM only.
+Compiled with Scala `3.9.0`, with no intention to explicitly support older versions.
+For the JVM and, through [Scala.js](https://www.scala-js.org/), for JavaScript, where sbt 2 resolves `%%` to the
+right artefact (sbt 1 needs `%%%`).
 
 ## 🚀 Usage
 
@@ -282,6 +284,18 @@ val fast = LlmConfig.from(name => sys.env.get(s"${name}_FAST").orElse(sys.env.ge
 
 A host whose replies run longer than most passes its own default for an unset `LLM_MAX_TOKENS`,
 as in `LlmConfig.fromEnv(defaultMaxTokens = 16_000)` or `LlmConfig.from(lookup, 16_000)`.
+
+## 🌐 In the browser
+
+In JavaScript, `LlmClient.resource` and `LlmStreamer.resource` send requests through the
+[Fetch API](https://developer.mozilla.org/docs/Web/API/Fetch_API), and everything else is as on the JVM.
+There is no environment to read, so `fromEnv` yields `None`: build an `LlmConfig` yourself, or read
+one with `LlmConfig.from` from wherever your page keeps its settings.
+
+A request made from a page carries the page's origin, which Anthropic refuses unless told otherwise, so in
+JavaScript every request to Anthropic says that it may come from a browser
+(`anthropic-dangerous-direct-browser-access`). Whoever can run the page can read its API key: send requests
+from a browser only with a key of the user's own, as a browser extension may, never with yours.
 
 ## 🤝 Contributing
 

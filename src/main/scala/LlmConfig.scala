@@ -1,6 +1,5 @@
 package com.alecdorrington.iris
 
-import java.util.Locale
 import scala.concurrent.duration.{DurationInt, FiniteDuration}
 
 /**
@@ -42,7 +41,7 @@ enum LlmProvider
     case Gemini    => LlmModel.Gemini2_5Flash
 
   /** The provider's name as [[LlmProvider.parse]] reads it, such as `openai`. */
-  def key: String = toString.toLowerCase(Locale.ROOT)
+  def key: String = toString.map(_.toLower)
 
 object LlmProvider:
 
@@ -56,8 +55,9 @@ object LlmProvider:
     *   A provider, or `None` for an unknown name.
     */
   def parse(name: String): Option[LlmProvider] =
-    // Not the default locale: by Turkish rules, `OPENAI` lowers to `openaı`.
-    name.trim.toLowerCase(Locale.ROOT) match
+    // By character, not by the default locale's rules, by which `OPENAI` lowers
+    // to `openaı` in Turkish; nor by `Locale.ROOT`'s, as JavaScript has none.
+    name.trim.map(_.toLower) match
       case "anthropic"         => Some(Anthropic)
       case "openai"            => Some(OpenAi)
       case "gemini" | "google" => Some(Gemini)

@@ -1,7 +1,6 @@
 package com.alecdorrington.iris
 
-import cats.effect.IO
-import cats.effect.unsafe.implicits.global
+import cats.effect.SyncIO
 import com.alecdorrington.iris.Fixtures.{config, json}
 import fs2.{Pipe, Stream}
 import io.circe.Json
@@ -9,15 +8,17 @@ import munit.FunSuite
 
 class StreamSuite extends FunSuite:
 
-  private def reply(body: String)(read: Pipe[IO, Json, Delta]): List[Delta] =
-    Stream
-      .emits(body.getBytes("UTF-8"))
-      .covary[IO]
-      .through(Sse.events)
-      .through(read)
-      .compile
-      .toList
-      .unsafeRunSync()
+  private def reply
+    (body: String)
+    (read: Pipe[SyncIO, Json, Delta])
+    : List[Delta] = Stream
+    .emits(body.getBytes("UTF-8"))
+    .covary[SyncIO]
+    .through(Sse.events)
+    .through(read)
+    .compile
+    .toList
+    .unsafeRunSync()
 
   private def deltas(body: String)(read: Json => List[Delta]): List[Delta] =
     reply(body)(Sse.separately(read))

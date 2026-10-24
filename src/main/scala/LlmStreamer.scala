@@ -5,7 +5,6 @@ import cats.syntax.traverse.*
 import fs2.Stream
 import sttp.capabilities.fs2.Fs2Streams
 import sttp.client4.StreamBackend
-import sttp.client4.httpclient.fs2.HttpClientFs2Backend
 
 /**
   * A client that delivers a reply as it is written. It is apart from
@@ -90,7 +89,7 @@ object LlmStreamer:
     *   A resource holding the client and its backend.
     */
   def resource[F[_] : Async](config: LlmConfig): Resource[F, LlmStreamer[F]] =
-    HttpClientFs2Backend.resource[F]().map(apply(config, _))
+    Platform.streamBackend[F].map(apply(config, _))
 
   /**
     * Creates a streaming client configured from the environment by
