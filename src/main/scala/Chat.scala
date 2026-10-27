@@ -35,6 +35,22 @@ object Part:
   final case class Text(text: String) extends Part
 
   /**
+    * Creates a text part of a value written as JSON, as its [[Structured]] type
+    * writes it.
+    *
+    * @tparam A
+    *   The type of the value.
+    *
+    * @param value
+    *   The value.
+    *
+    * @return
+    *   A text part of the value's JSON.
+    */
+  def json[A : Structured as structured](value: A): Text =
+    Text(structured.encoder(value).noSpaces)
+
+  /**
     * A picture, document or other media for the model to look at.
     *
     * @param mediaType

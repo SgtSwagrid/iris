@@ -86,6 +86,52 @@ for
 yield second.text
 ```
 
+### Typed answers
+
+`ask` asks for an answer of a type of your own rather than text. Derive a
+[`Structured`](src/main/scala/Structured.scala) type for your case classes, sealed traits and enums, and
+the model is told the [JSON Schema](https://json-schema.org) its reply must conform to, which is read back
+as that type:
+
+```scala
+import com.alecdorrington.iris.Structured
+
+enum Mood derives Structured:
+  case Pleased, Indifferent, Annoyed
+
+case class Review(summary: String, mood: Mood, score: Int, quotes: List[String]) derives Structured
+
+client.ask[Review](Prompt(s"Review this essay: $essay")) // IO[Review]
+```
+
+A reply that cannot be read, as one that is not JSON or leaves a field out, is answered with every reason
+it could not be, and the model is asked again, three times in all unless `attempts` says otherwise. The
+last unreadable reply fails with `LlmError.Unreadable`, which keeps its text. Each attempt goes through
+`send`, so a wrapper (see [Wrapping a client](#wrapping-a-client)) sees every one, and its usage.
+
+Strings, numbers, Booleans, options, lists, vectors, sequences, sets and maps keyed by strings are
+structured already. An optional field may be left out. A sealed trait or enum whose cases have no fields
+is written as the name of one, as `"Pleased"`, and any other as an object holding one case under its name,
+as `{"Circle":{"radius":1.5}}`. A recursive type, such as a tree, refers to itself by name. Any other type
+converts to and from one that is structured, and may refuse what it is given, as the model is then told:
+
+```scala
+case class Score(value: Int)
+
+given Structured[Score] = Structured[Int].emap(n =>
+  Either.cond(n >= 1 && n <= 10, Score(n), s"$n is not from 1 to 10"))(_.value)
+```
+
+`ask[String]` is the reply's text, as `send` gives it, and the model is told nothing of its form. A value
+is sent to the model as JSON in a part of its own:
+
+```scala
+client.ask[Review](Chat().user(Part.Text("Review this essay."), Part.json(essay)))
+```
+
+The schema is asked for in words, at the close of the user's last message, rather than through any
+provider's own structured output, so it works alike everywhere, and a cached prefix is sent as it was.
+
 ### Tuning and metadata
 
 Each request accepts [`ReplyOptions`](src/main/scala/ReplyOptions.scala)
@@ -226,14 +272,16 @@ Each provider keeps a cache per model, and caches nothing shorter than its own m
 A provider's refusal fails the effect with an [`LlmError`](src/main/scala/LlmError.scala):
 `Unsuccessful` for an unsuccessful response, carrying its status and body, `Malformed` for a
 response that could not be understood, and `TimedOut` for a request no answer came to within the
-configured timeout (`LlmConfig.timeout`), such as one whose reply took too long to write. Response
+configured timeout (`LlmConfig.timeout`), such as one whose reply took too long to write.
+`Unreadable` is for an `ask` whose every reply was not the answer asked for. Response
 bodies may contain provider detail you would rather not show to your own users, so consider logging
 them rather than passing them on.
 
 ### Wrapping a client
 
 Iris does no throttling, retrying or logging of its own, so that each host can wrap a client in
-exactly the policy it wants. `mapK` runs every request through one transformation, as a limit on
+exactly the policy it wants. `ask` asks again only for an answer it could not read, and never after a
+request that failed. `mapK` runs every request through one transformation, as a limit on
 requests in flight does:
 
 ```scala

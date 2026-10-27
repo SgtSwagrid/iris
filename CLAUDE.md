@@ -15,7 +15,7 @@ This is Iris, a Scala 3 library giving one provider-agnostic interface to the AP
 adapters for Anthropic, OpenAI and Google Gemini, built on Cats Effect, sttp and Circe. It is in beta.
 
 It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js. `LlmClient` is the public interface (`send` a `Chat`
-or a `Prompt`). Each `LlmProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
+or a `Prompt`, or `ask` for an answer of a type). Each `LlmProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
 `JsonHttp`), which tells the one `JsonClient` and the one `SseClient` all they need to know of it: its endpoints,
 request bodies, credentials, the chats it refuses, how its replies read, and how it counts tokens. Anything
 provider-specific goes there, never in the clients. `LlmConfig` holds a model (and so its provider), key, token limit and an optional base URL, and
@@ -40,6 +40,7 @@ longer.
   constructor parameter, the two enums would each read the other while it is still being made, and see `null`.
 - A set but unrecognised `LLM_PROVIDER` or `LLM_MODEL` means unconfigured (`None`), never a fall back to key inference.
 - The library does no throttling, retrying or logging of its own; those are the host's to wrap around a client.
+  The one exception is `ask`, which asks again after a reply it cannot read, never after a failed request.
   Nor does it run a tool it is asked for: `ReplyOptions.tools` offers them and `Reply.toolCalls`
   reports what was asked, but what a tool does, and whether it may, is the host's.
 - A `Part.CacheBreakpoint` ends a prefix worth caching and says nothing to the model. Anthropic is told of one by
@@ -65,6 +66,19 @@ longer.
   `reasoning_effort` (`Max` as `high`, its highest) and Gemini's `generationConfig.thinkingConfig.thinkingBudget`
   (fixed amounts within every thinking Gemini model's range). Iris never chooses one, and a model that cannot take one
   refuses the request; retrying at a lower effort is the host's to do.
+- `LlmClient.ask[A]` needs an `Answer[A]`: `Answer.text` for `String` (the reply as written, nothing said of it),
+  else `Answer.json` for any `Structured` type (`NotGiven[A =:= String]` keeps the two apart, whatever the given
+  priority rules). It is built on `send` alone, provider-agnostic: the schema is asked for in words closing the
+  last user message (never the system message, so a cached prefix is sent alike), not through a provider's
+  native structured output. An unreadable reply is answered with every decoding failure (decoders accumulate)
+  and asked again, `attempts` requests in all, then `LlmError.Unreadable`.
+- `Structured` is one type class of schema, encoder and decoder, so the three cannot disagree; never derive one
+  from a circe codec. Derivation (`Mirror`s) summons field instances lazily, so that a recursive type's given
+  can be made before the fields referring to it, and renders a recursive type into `$defs`, found by name (a
+  generic recursive type's given is a `def`, so identity would never meet itself). Cases of a sealed trait are
+  externally tagged (`{"Circle":{...}}`), or just their names where none has fields. Test derivation from
+  outside the package (`StructuredSuite` is in `com.alecdorrington.example`), as inline code reaches private
+  helpers only through accessors.
 - Unset optional fields are omitted one level deep, by `JsonHttp.objectOf`/`body`. Never deep-drop nulls: inside a
   tool's schema or a tool call's arguments, a null is a value.
 - `LlmStreamer` is a capability apart from `LlmClient`, since streaming needs a backend which can stream.

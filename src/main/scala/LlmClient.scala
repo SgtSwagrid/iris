@@ -64,6 +64,84 @@ trait LlmClient[F[_]]:
     send(prompt.toChat, options)
 
   /**
+    * Asks the model for an answer of a type, telling it what form the answer
+    * must take and reading its reply as one. A reply that cannot be read is
+    * followed by why, and the model asked again, until one can be or the
+    * attempts run out. Each attempt goes through [[send]], so a wrapper around
+    * the client sees every one.
+    *
+    * A `String` is the reply's text as written, as [[send]] gives it. Any
+    * [[Structured]] type is JSON conforming to its schema, which closes the
+    * chat's last user message:
+    *
+    * {{{
+    * case class Person(name: String, age: Int) derives Structured
+    *
+    * client.ask[Person](Prompt("Invent a person."))
+    * }}}
+    *
+    * @tparam A
+    *   The type of the answer.
+    *
+    * @param chat
+    *   The conversation so far, including any system message.
+    *
+    * @param options
+    *   The per-request options, alike for every attempt.
+    *
+    * @param attempts
+    *   The most replies to ask for, at least one.
+    *
+    * @return
+    *   An effect producing the answer, which fails with [[LlmError.Unreadable]]
+    *   where the last reply could not be read either.
+    */
+  final def ask[A]
+    (
+      chat: Chat,
+      options: ReplyOptions = ReplyOptions(),
+      attempts: Int = Answer.attempts,
+    )
+    (using Answer[A], MonadThrow[F])
+    : F[A] = Answer.ask(this, chat, options, attempts)
+
+  /**
+    * Asks the model for an answer of a type to a single-turn prompt.
+    *
+    * @tparam A
+    *   The type of the answer.
+    *
+    * @param prompt
+    *   The prompt to send.
+    *
+    * @return
+    *   An effect producing the answer.
+    */
+  final def ask[A](prompt: Prompt)(using Answer[A], MonadThrow[F]): F[A] =
+    ask[A](prompt.toChat)
+
+  /**
+    * Asks the model for an answer of a type to a single-turn prompt with
+    * options.
+    *
+    * @tparam A
+    *   The type of the answer.
+    *
+    * @param prompt
+    *   The prompt to send.
+    *
+    * @param options
+    *   The per-request options.
+    *
+    * @return
+    *   An effect producing the answer.
+    */
+  final def ask[A]
+    (prompt: Prompt, options: ReplyOptions)
+    (using Answer[A], MonadThrow[F])
+    : F[A] = ask[A](prompt.toChat, options)
+
+  /**
     * Counts the input tokens a chat would cost, as the provider counts them.
     * Fails with [[LlmError.Unsupported]] where the provider cannot count
     * (OpenAI).
