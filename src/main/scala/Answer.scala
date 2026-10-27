@@ -13,9 +13,9 @@ import scala.util.matching.Regex
   * A form the model's answer may take, for [[LlmClient.ask]]: what the model is
   * told of it, and how its reply is read.
   *
-  * A `String` is the reply's text as written, of which the model is told
-  * nothing. Any other [[Structured]] type is JSON, and the model is told its
-  * schema.
+  * A [[Reply]] is the reply whole, and a `String` its text as written, of
+  * neither of which the model is told anything. Any other [[Structured]] type
+  * is JSON, and the model is told its schema.
   *
   * @tparam A
   *   The type of the answer.
@@ -46,8 +46,18 @@ object Answer:
   val attempts: Int = 3
 
   /**
+    * The reply whole: its text, why it stopped, its usage and the tools it
+    * asked for, of which the model is told nothing, and which is never refused.
+    */
+  given reply: Answer[Reply] = new Answer[Reply]:
+
+    override val instructions: Option[String] = None
+
+    override def read(reply: Reply): Either[String, Reply] = Right(reply)
+
+  /**
     * The reply's text, as written, cut off or not, but no reply asking for a
-    * tool, whose call a text cannot hold.
+    * tool, whose call a text cannot hold, and which [[reply]] keeps.
     */
   given text: Answer[String] = new Answer[String]:
 

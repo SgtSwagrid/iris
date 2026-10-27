@@ -1,7 +1,7 @@
 package com.alecdorrington.iris
 
 /**
-  * The model's reply to a [[Chat]] or [[Prompt]].
+  * The model's reply to a [[Chat]], as [[LlmClient.ask]] gives it whole.
   *
   * @param text
   *   The text of the reply.

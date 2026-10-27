@@ -18,68 +18,24 @@ import sttp.client4.Backend
 trait LlmClient[F[_]]:
 
   /**
-    * Sends a chat to the model for its next reply.
+    * Asks the model for its next reply to a chat, read as an answer of a type:
+    * the one way a caller has a reply, as [[count]] and [[warm]] have none to
+    * read. It needs `F` to raise errors, as every client's effect can.
     *
-    * @param chat
-    *   The conversation so far, including any system message.
-    *
-    * @param options
-    *   The per-request options; unset fields fall back to the configuration or
-    *   the provider's defaults.
-    *
-    * @return
-    *   An effect producing the model's reply.
-    */
-  def send
-    (
-      chat: Chat,
-      options: ReplyOptions = ReplyOptions(),
-    )
-    : F[Reply]
-
-  /**
-    * Sends a single-turn prompt to the model.
-    *
-    * @param prompt
-    *   The prompt to send.
-    *
-    * @return
-    *   An effect producing the model's reply.
-    */
-  final def send(prompt: Prompt[?]): F[Reply] = send(prompt.toChat)
-
-  /**
-    * Sends a single-turn prompt to the model with options.
-    *
-    * @param prompt
-    *   The prompt to send.
-    *
-    * @param options
-    *   The per-request options.
-    *
-    * @return
-    *   An effect producing the model's reply.
-    */
-  final def send(prompt: Prompt[?], options: ReplyOptions): F[Reply] =
-    send(prompt.toChat, options)
-
-  /**
-    * Asks the model for an answer of a type, telling it what form the answer
-    * must take and reading its reply as one. A reply that cannot be read is
-    * followed by why, and the model asked again, until one can be or the
-    * attempts run out, but not where asking again could not help: a reply cut
-    * off at the token limit, asking for a tool, stopped for a reason of the
-    * provider's, such as a refusal, or saying nothing. Each attempt goes
-    * through [[send]], so a wrapper around the client sees every one.
-    *
-    * A `String` is the reply's text as written, as [[send]] gives it. Any
+    * A [[Reply]] is the reply whole: its text, why the model stopped, its token
+    * usage and the tools it asked for. A `String` is its text as written. Any
     * [[Structured]] type is JSON conforming to its schema, which closes the
-    * chat's last user message:
+    * chat's last user message. A reply that cannot be read as one is followed
+    * by why, and the model asked again, until one can be or the attempts run
+    * out, but not where asking again could not help: a reply cut off at the
+    * token limit, asking for a tool, stopped for a reason of the provider's,
+    * such as a refusal, or saying nothing. Every attempt goes through [[send]],
+    * so a wrapper overriding it sees each.
     *
     * {{{
     * case class Person(name: String, age: Int) derives Structured
     *
-    * client.ask[Person](Prompt("Invent a person."))
+    * client.ask[Person](Chat.of("Invent a person."))
     * }}}
     *
     * @tparam A
@@ -89,11 +45,13 @@ trait LlmClient[F[_]]:
     *   The conversation so far, including any system message.
     *
     * @param options
-    *   The per-request options, alike for every attempt.
+    *   The per-request options, alike for every attempt; unset fields fall back
+    *   to the configuration or the provider's defaults.
     *
     * @param attempts
     *   The most replies to ask for, which must be at least one, as the effect
-    *   otherwise fails with an `IllegalArgumentException`.
+    *   otherwise fails with an `IllegalArgumentException`. A [[Reply]] or a
+    *   `String` is read from the first.
     *
     * @return
     *   An effect producing the answer, which fails with [[LlmError.Unreadable]]
@@ -109,40 +67,21 @@ trait LlmClient[F[_]]:
     : F[A] = Answer.ask(send(_, options), chat, attempts)
 
   /**
-    * Asks the model for an answer of a type to a single-turn prompt.
+    * Sends a chat to the model for its next reply: the one request every other
+    * is made through, which a client implements and a wrapper overrides,
+    * passing it on with `super.send`. Callers ask through [[ask]].
     *
-    * @tparam A
-    *   The type of the answer.
-    *
-    * @param prompt
-    *   The prompt to send.
-    *
-    * @return
-    *   An effect producing the answer.
-    */
-  final def ask[A](prompt: Prompt[?])(using Answer[A], MonadThrow[F]): F[A] =
-    ask[A](prompt.toChat)
-
-  /**
-    * Asks the model for an answer of a type to a single-turn prompt with
-    * options.
-    *
-    * @tparam A
-    *   The type of the answer.
-    *
-    * @param prompt
-    *   The prompt to send.
+    * @param chat
+    *   The conversation so far, including any system message.
     *
     * @param options
-    *   The per-request options.
+    *   The per-request options; unset fields fall back to the configuration or
+    *   the provider's defaults.
     *
     * @return
-    *   An effect producing the answer.
+    *   An effect producing the model's reply.
     */
-  final def ask[A]
-    (prompt: Prompt[?], options: ReplyOptions)
-    (using Answer[A], MonadThrow[F])
-    : F[A] = ask[A](prompt.toChat, options)
+  protected def send(chat: Chat, options: ReplyOptions): F[Reply]
 
   /**
     * Counts the input tokens a chat would cost, as the provider counts them.
@@ -164,17 +103,6 @@ trait LlmClient[F[_]]:
       options: ReplyOptions = ReplyOptions(),
     )
     : F[Int]
-
-  /**
-    * Counts the input tokens a single-turn prompt would cost.
-    *
-    * @param prompt
-    *   The prompt to count.
-    *
-    * @return
-    *   An effect producing the number of input tokens.
-    */
-  final def count(prompt: Prompt[?]): F[Int] = count(prompt.toChat)
 
   /**
     * Writes the [[Chat.cacheable]] prefix of a chat into the provider's cache,
@@ -220,7 +148,7 @@ trait LlmClient[F[_]]:
   final def mapK[G[_]](transform: F ~> G): LlmClient[G] =
     val client = this
     new LlmClient[G]:
-      override def send(chat: Chat, options: ReplyOptions): G[Reply] =
+      override protected def send(chat: Chat, options: ReplyOptions): G[Reply] =
         transform(client.send(chat, options))
 
       override def count(chat: Chat, options: ReplyOptions): G[Int] =
@@ -234,7 +162,10 @@ object LlmClient:
   /**
     * A client passing every request on to another, for a wrapper to override
     * only what it changes. It passes [[LlmClient.warm]] on too, which the
-    * default would send through [[LlmClient.send]] instead.
+    * default would send through [[LlmClient.send]] instead. A wrapper seeing
+    * every request overrides all three: `send`, which every attempt of an `ask`
+    * goes through, and [[LlmClient.count]] and [[LlmClient.warm]], which go
+    * their own ways, each passing it on through `super`.
     *
     * @tparam F
     *   The effect type.
@@ -246,8 +177,8 @@ object LlmClient:
     (protected val underlying: LlmClient[F])
     extends LlmClient[F]:
 
-    override def send(chat: Chat, options: ReplyOptions): F[Reply] = underlying
-      .send(chat, options)
+    override protected def send(chat: Chat, options: ReplyOptions): F[Reply] =
+      underlying.send(chat, options)
 
     override def count(chat: Chat, options: ReplyOptions): F[Int] = underlying
       .count(chat, options)

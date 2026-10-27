@@ -1,7 +1,7 @@
 // Outside Iris's package, so that content resolves as it would for a user.
 package com.alecdorrington.example
 
-import com.alecdorrington.iris.{Chat, Message, Part, Prompt, Role, Structured}
+import com.alecdorrington.iris.{Chat, Message, Part, Role, Structured}
 import io.circe.Encoder
 import munit.FunSuite
 
@@ -22,30 +22,27 @@ class ContentSuite extends FunSuite:
     Chat(List(Message(Role.User, content.toList)))
 
   test("text is said as it is, never as json"):
-    assertEquals(
-      Prompt("Hi").toChat,
-      user(Part.Text("Hi")),
-    )
+    assertEquals(Chat.of("Hi"), user(Part.Text("Hi")))
     assertEquals(Part.of("Hi"), Part.Text("Hi"))
 
-  test("a structured value is said as its json, in a prompt or a chat"):
-    assertEquals(Prompt(ada).toChat, user(adaJson))
+  test("a structured value is said as its json, in a chat or a message"):
+    assertEquals(Chat.of(ada), user(adaJson))
     assertEquals(Chat().user(ada), user(adaJson))
     assertEquals(
       Message(Role.User, ada),
       Message(Role.User, List(adaJson)),
     )
 
-  test("a prompt keeps its system message, whatever the user says"):
+  test("a chat of one message is a chat to which it was said"):
     assertEquals(
-      Prompt(ada, Some("Review the person.")).toChat,
-      user(adaJson).withSystem("Review the person."),
+      Chat.of(ada).withSystem("Review the person."),
+      Chat().withSystem("Review the person.").user(ada),
     )
 
-  test("prompts saying the same are equal"):
+  test("chats saying the same are equal"):
     assertEquals(
-      Prompt(ada),
-      Prompt(Person("Ada", 36, None)),
+      Chat.of(ada),
+      Chat.of(Person("Ada", 36, None)),
     )
 
   test("a value with an encoder alone is said as its json"):

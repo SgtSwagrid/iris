@@ -6,7 +6,7 @@ import scala.util.NotGiven
 
 /**
   * What may be said to the model: how a value is written as a part of a
-  * message, wherever a [[Prompt]], [[Chat]] or [[Message]] takes one.
+  * message, wherever a [[Chat]] or [[Message]] takes one.
   *
   * A `String` is said as text, and a [[Part]] as itself. A value of a
   * [[Structured]] type is said as JSON as it writes it, so that it is written
