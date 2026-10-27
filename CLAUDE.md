@@ -152,7 +152,11 @@ it only through a release (below).
    `iris_sjs1_3` to Maven Central through `sbt-ci-release`, which takes the version from the tag, and `docs.yml`
    publishes the Scaladoc at [alecdorrington.com/iris](https://alecdorrington.com/iris/).
 3. Once Maven Central serves the new version, bump it in each project using Iris, by pull request there. Their
-   Scala Steward would otherwise propose it on its next weekly run.
+   Scala Steward would otherwise propose it on its next weekly run. A version that breaks callers needs their code
+   changed too, as README's *Upgrading* section says. For 0.3.0, as found in review: Themis passes requests on
+   with `super.send` in `Throttle`, `Allowances` and `Recall`, asks `ask[Reply]` in `ComparisonService`,
+   `EvaluationService`, `TaskImportService` and `TranscriptionService`, and its test fakes override the protected
+   `send`; Codeswitch's `Translator` asks where it sent.
 
 ## Instructions
 

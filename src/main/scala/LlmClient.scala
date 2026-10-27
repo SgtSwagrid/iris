@@ -19,7 +19,8 @@ trait LlmClient[F[_]]:
 
   /**
     * Asks the model for its next reply to a chat, read as an answer of a type:
-    * the one way a caller makes a request.
+    * the one way a caller has a reply, as [[count]] and [[warm]] have none to
+    * read. It needs `F` to raise errors, as every client's effect can.
     *
     * A [[Reply]] is the reply whole: its text, why the model stopped, its token
     * usage and the tools it asked for. A `String` is its text as written. Any
@@ -28,8 +29,8 @@ trait LlmClient[F[_]]:
     * by why, and the model asked again, until one can be or the attempts run
     * out, but not where asking again could not help: a reply cut off at the
     * token limit, asking for a tool, stopped for a reason of the provider's,
-    * such as a refusal, or saying nothing. Every request goes through [[send]],
-    * so a wrapper around the client sees each.
+    * such as a refusal, or saying nothing. Every attempt goes through [[send]],
+    * so a wrapper overriding it sees each.
     *
     * {{{
     * case class Person(name: String, age: Int) derives Structured
@@ -162,7 +163,9 @@ object LlmClient:
     * A client passing every request on to another, for a wrapper to override
     * only what it changes. It passes [[LlmClient.warm]] on too, which the
     * default would send through [[LlmClient.send]] instead. A wrapper seeing
-    * every request overrides `send`, passing it on with `super.send`.
+    * every request overrides all three: `send`, which every attempt of an `ask`
+    * goes through, and [[LlmClient.count]] and [[LlmClient.warm]], which go
+    * their own ways, each passing it on through `super`.
     *
     * @tparam F
     *   The effect type.

@@ -61,7 +61,7 @@ listed constant for a name Iris lists. A model's `name` is its provider's and it
 
 ### Asking
 
-Every request is made with `ask`, whose type says what to read the reply as: `ask[String]` its
+Every reply is asked for with `ask`, whose type says what to read it as: `ask[String]` its
 text, `ask[Reply]` the reply whole, with why the model stopped, its token usage and the tools it
 asked for, and any type of your own as [below](#typed-answers). A single-turn prompt is a chat of
 one message, `Chat.of`:
@@ -264,7 +264,7 @@ val weather = Tool("weather", "Looks up the weather.", schema)
 for
   asked  <- client.ask[Reply](chat, ReplyOptions(tools = List(weather)))
   result  = Part.ToolResult(asked.toolCalls.head.id, "weather", lookUp(asked.toolCalls.head))
-  answer <- client.ask[String](chat.assistant(asked).user(result))
+  answer <- client.ask[Reply](chat.assistant(asked).user(result), ReplyOptions(tools = List(weather)))
 yield answer
 ```
 
@@ -335,17 +335,33 @@ Semaphore[IO](16).map(permits => client.mapK(permits.permit.surroundK))
 ```
 
 A wrapper that treats requests differently extends `LlmClient.Forwarding`, which passes every
-request on, and overrides only what it changes. Every request, each attempt of an `ask` included, is
-made through the protected `send`, which a wrapper overrides to see it, passing it on with `super.send`:
+request on, and overrides only what it changes. Each attempt of an `ask` is made through the protected
+`send`; `count` and `warm` go their own ways. So a wrapper seeing every request overrides all three,
+passing each on through `super`:
 
 ```scala
 def logged(client: LlmClient[IO]): LlmClient[IO] = new LlmClient.Forwarding(client):
   override protected def send(chat: Chat, options: ReplyOptions): IO[Reply] =
     super.send(chat, options).flatTap(reply => IO.println(reply.usage))
+  override def count(chat: Chat, options: ReplyOptions): IO[Int] =
+    super.count(chat, options).flatTap(tokens => IO.println(tokens))
+  override def warm(chat: Chat, options: ReplyOptions): IO[Reply] =
+    super.warm(chat, options).flatTap(reply => IO.println(reply.usage))
 ```
 
 Both pass `warm` on to the client they wrap, as a wrapper must: the default `warm` sends through
 `send`, which would lose however the provider itself warms.
+
+### Upgrading from 0.2
+
+- `client.send(chat, options)` is `client.ask[Reply](chat, options)`, or `ask[String]` for its text alone.
+- `Prompt(text)` is `Chat.of(text)`, and `Prompt(text, Some(system))` is `Chat.of(text).withSystem(system)`.
+  `ask`, `count` and `stream` take that chat where they took a prompt.
+- A wrapper extends `LlmClient.Forwarding` and passes a request on with `super.send`, where it called the
+  wrapped client's `send`; one holding another client asks it with `ask[Reply]`.
+- `ask[String]` fails with `LlmError.Unreadable` on a reply asking for a tool, where `send(…).map(_.text)` gave
+  its text; ask for `ask[Reply]` to keep the call.
+- `LlmError` has a new case, `Unreadable`, which a match over every case must take.
 
 ## ⚙️ Configuration
 
