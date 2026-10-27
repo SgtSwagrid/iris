@@ -1,7 +1,7 @@
 package com.alecdorrington.iris
 
 import cats.effect.SyncIO
-import com.alecdorrington.iris.Fixtures.config
+import com.alecdorrington.iris.Fixtures.{config, Sending}
 import munit.FunSuite
 import scala.concurrent.duration.DurationInt
 import sttp.client4.SttpClientException
@@ -29,8 +29,12 @@ class ClientSuite extends FunSuite:
       .thenRespond(ResponseStub.adjust(body, status, headers)),
   )
 
-  private def result(client: LlmClient[SyncIO]): Either[Throwable, Reply] =
-    client.ask[Reply](prompt).attempt.unsafeRunSync()
+  private def result
+    (client: LlmClient[SyncIO])
+    : Either[Throwable, Reply[Nothing]] = Sending(client)
+    .sent(prompt)
+    .attempt
+    .unsafeRunSync()
 
   private def counted(client: LlmClient[SyncIO]): Either[Throwable, Int] =
     client.count(prompt).attempt.unsafeRunSync()
@@ -115,7 +119,7 @@ class ClientSuite extends FunSuite:
     )
 
   test("a chat with nothing in it never reaches the provider"):
-    val empty = client("{}").ask[Reply](Chat()).attempt.unsafeRunSync()
+    val empty = Sending(client("{}")).sent(Chat()).attempt.unsafeRunSync()
     assert(
       empty
         .left

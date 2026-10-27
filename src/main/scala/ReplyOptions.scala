@@ -16,7 +16,9 @@ package com.alecdorrington.iris
   *   sampling.
   *
   * @param stopSequences
-  *   The sequences at which the model stops generating.
+  *   The sequences at which the model stops generating, in the text it writes,
+  *   which for [[LlmClient.ask]] is JSON, in whose strings a newline is never
+  *   written as itself.
   *
   * @param tools
   *   The tools the model may ask to have run.

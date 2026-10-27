@@ -35,7 +35,7 @@ private[iris] trait ProviderApi:
   def credentials(config: LlmConfig): Seq[Header]
 
   /** One whole answer, as a reply or why it is none. */
-  def replies: Decoder[Either[LlmError, Reply]]
+  def replies: Decoder[Either[LlmError, Reply[Nothing]]]
 
   /** The reply a stream's events make up, read as they arrive. */
   def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta]

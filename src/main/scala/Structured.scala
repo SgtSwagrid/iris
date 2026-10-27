@@ -6,6 +6,7 @@ import io.circe.{Decoder, DecodingFailure, Encoder, HCursor, Json, JsonObject}
 import io.circe.DecodingFailure.Reason
 import io.circe.syntax.*
 import java.nio.charset.StandardCharsets
+import scala.annotation.implicitNotFound
 import scala.compiletime.{constValueTuple, erasedValue, summonAll, summonFrom}
 import scala.deriving.Mirror
 
@@ -50,6 +51,9 @@ import scala.deriving.Mirror
   *   The decoder reading a value from JSON, which reports every failure at once
   *   where accumulating.
   */
+@implicitNotFound(
+  "${A} cannot be asked for or said as JSON: give it `derives Structured`, or a Structured of a codec and schema with Structured.of.",
+)
 final class Structured[A] private (
   val encoder: Encoder[A],
   val decoder: Decoder[A],

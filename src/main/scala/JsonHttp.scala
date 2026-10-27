@@ -25,26 +25,12 @@ private[iris] object JsonHttp:
       _.addPath(path),
     )
 
-  /** Refuses an empty chat, or one with a message of breakpoints alone. */
+  /** Refuses a chat no provider would answer, as [[Chat.unanswerable]] says. */
   def answerable(provider: LlmProvider, chat: Chat): Either[LlmError, Unit] =
-    for
-      _ <- Either.cond(
-        chat.messages.nonEmpty,
-        (),
-        LlmError.Unsendable(
-          provider.displayName,
-          "it has no messages",
-        ),
-      )
-      _ <- Either.cond(
-        !chat.messages.exists(_.silent),
-        (),
-        LlmError.Unsendable(
-          provider.displayName,
-          "one of its messages says nothing",
-        ),
-      )
-    yield ()
+    chat
+      .unanswerable
+      .map(LlmError.Unsendable(provider.displayName, _))
+      .toLeft(())
 
   /**
     * A JSON object of the fields, leaving out null ones. Nulls nested inside a
