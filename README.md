@@ -148,9 +148,10 @@ the field's type. Code examples are left out, and links written as their labels.
 case class Review(summary: String, mood: Mood, score: Score) derives Structured
 ```
 
-A comment is read where its type is compiled, as it always is for `derives Structured`, and not at all
-under `-Xdrop-docs`; a type converted with `imap` or `emap` is described by its own Scaladoc where it has
-one there. Scala keeps no comment written on a parameter itself, so describe a field with `@param`.
+A comment is read by [Cadmus](https://github.com/SgtSwagrid/cadmus) where its type is compiled, as it always
+is for `derives Structured`, and not at all under `-Xdrop-docs`; a type converted with `imap` or `emap` is
+described by its own Scaladoc where it has one there, or anywhere if you compile with `-Xread-docs`. Scala keeps
+no comment written on a parameter itself, so describe a field with `@param`.
 
 `ask[String]` is the reply's text, as `send` gives it, and the model is told nothing of its form.
 
@@ -393,4 +394,5 @@ Issues and pull requests are very welcome; for anything large, please open an is
 - [Eunomia](https://github.com/SgtSwagrid/eunomia), a sibling, for filtering, ordering and paging lists.
 - [Dike](https://github.com/SgtSwagrid/dike), a sibling, for ranking by pairwise comparison, with a model as the judge.
 - [qr4s](https://github.com/SgtSwagrid/qr4s), a sibling, for generating QR codes, on the JVM and in the browser.
+- [Cadmus](https://github.com/SgtSwagrid/cadmus), a sibling, for reading Scaladoc comments at compile time.
 - This library was made using [Scala Library Template](https://github.com/SgtSwagrid/scala-library-template).

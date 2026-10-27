@@ -1,6 +1,7 @@
 package com.alecdorrington.iris
 
 import cats.syntax.all.*
+import com.alecdorrington.cadmus.Scaladoc
 import io.circe.{Decoder, DecodingFailure, Encoder, HCursor, Json, JsonObject}
 import io.circe.DecodingFailure.Reason
 import io.circe.syntax.*
@@ -105,7 +106,12 @@ final class Structured[A] private (
     *   A structured type converted from this one.
     */
   inline def emap[B](to: A => Either[String, B])(from: B => A): Structured[B] =
-    converted(to, from, TypeName.of[B], Scaladoc.of[B])
+    converted(
+      to,
+      from,
+      TypeName.of[B],
+      Structured.documented[B].flatMap(_.description),
+    )
 
   /**
     * Describes this type's values in words, as of bounds an [[emap]] keeps them
@@ -249,21 +255,28 @@ object Structured:
     inline mirror match
       case sum: Mirror.SumOf[A] => union(
           TypeName.of[A],
-          Scaladoc.of[A],
+          documented[A].flatMap(_.description),
           labels[sum.MirroredElemLabels],
           cases[sum.MirroredElemTypes],
           sum.ordinal,
         )
       case product: Mirror.ProductOf[A] => record(
           TypeName.of[A],
-          Scaladoc.of[A],
+          documented[A],
           labels[product.MirroredElemLabels],
-          Scaladoc.fields[A],
           summonAll[Tuple.Map[product.MirroredElemTypes, Structured]]
             .toList
             .asInstanceOf[List[Structured[?]]],
           product.fromProduct,
         )
+
+  /**
+    * A type's Scaladoc in plain words, read by Cadmus where the type is
+    * compiled alongside, and never under `-Xdrop-docs`.
+    */
+  private inline def documented[A]: Option[Scaladoc] = Scaladoc
+    .of[A]
+    .map(_.plain)
 
   private inline def labels[Labels <: Tuple]: List[String] =
     constValueTuple[Labels].toList.asInstanceOf[List[String]]
@@ -357,16 +370,15 @@ object Structured:
   private def record[A]
     (
       name: TypeName,
-      description: Option[String],
+      doc: Option[Scaladoc],
       labels: List[String],
-      descriptions: List[Option[String]],
       fields: => List[Structured[?]],
       build: Product => A,
     )
     : Structured[A] =
     lazy val named = labels
       .lazyZip(fields.map(_.asInstanceOf[Structured[Any]]))
-      .lazyZip(descriptions)
+      .lazyZip(labels.map(label => doc.flatMap(_.params.get(label))))
       .map(Shape.Field.apply)
     new Structured(
       Encoder
@@ -393,7 +405,7 @@ object Structured:
       Shape.Record(named),
       name,
       definable = true,
-      description = description,
+      description = doc.flatMap(_.description),
     )
 
   /** A field as written, left out where it is optional and unset. */
