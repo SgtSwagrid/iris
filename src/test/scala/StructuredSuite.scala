@@ -230,6 +230,6 @@ class StructuredSuite extends FunSuite:
 
   test("a value is sent to the model as its json"):
     assertEquals(
-      Part.json(Person("Ada", 36, None)),
+      Part.of(Person("Ada", 36, None)),
       Part.Text("""{"name":"Ada","age":36}"""),
     )

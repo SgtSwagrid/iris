@@ -158,6 +158,20 @@ class AskSuite extends FunSuite:
       Right("Ada, 36."),
     )
 
+  test("a value asked about is sent as json, followed by the instructions"):
+    val told = client(sent =>
+      if sent == List(Message(
+          Role.User,
+          s"$adaJson\n\n$instructions",
+        ))
+      then said(adaJson)
+      else said("Not told."),
+    )
+    assertEquals(
+      told.ask[Person](Prompt(ada), ReplyOptions()).attempt.unsafeRunSync(),
+      Right(ada),
+    )
+
   test("a structured answer may be any structured type"):
     val colours = client(_ => said("""["Red","Blue"]"""))
     assertEquals(

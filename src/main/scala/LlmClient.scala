@@ -46,7 +46,7 @@ trait LlmClient[F[_]]:
     * @return
     *   An effect producing the model's reply.
     */
-  final def send(prompt: Prompt): F[Reply] = send(prompt.toChat)
+  final def send(prompt: Prompt[?]): F[Reply] = send(prompt.toChat)
 
   /**
     * Sends a single-turn prompt to the model with options.
@@ -60,7 +60,7 @@ trait LlmClient[F[_]]:
     * @return
     *   An effect producing the model's reply.
     */
-  final def send(prompt: Prompt, options: ReplyOptions): F[Reply] =
+  final def send(prompt: Prompt[?], options: ReplyOptions): F[Reply] =
     send(prompt.toChat, options)
 
   /**
@@ -117,7 +117,7 @@ trait LlmClient[F[_]]:
     * @return
     *   An effect producing the answer.
     */
-  final def ask[A](prompt: Prompt)(using Answer[A], MonadThrow[F]): F[A] =
+  final def ask[A](prompt: Prompt[?])(using Answer[A], MonadThrow[F]): F[A] =
     ask[A](prompt.toChat)
 
   /**
@@ -137,7 +137,7 @@ trait LlmClient[F[_]]:
     *   An effect producing the answer.
     */
   final def ask[A]
-    (prompt: Prompt, options: ReplyOptions)
+    (prompt: Prompt[?], options: ReplyOptions)
     (using Answer[A], MonadThrow[F])
     : F[A] = ask[A](prompt.toChat, options)
 
@@ -171,7 +171,7 @@ trait LlmClient[F[_]]:
     * @return
     *   An effect producing the number of input tokens.
     */
-  final def count(prompt: Prompt): F[Int] = count(prompt.toChat)
+  final def count(prompt: Prompt[?]): F[Int] = count(prompt.toChat)
 
   /**
     * Writes the [[Chat.cacheable]] prefix of a chat into the provider's cache,

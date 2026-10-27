@@ -46,7 +46,7 @@ trait LlmStreamer[F[_]]:
     * @return
     *   A stream of the reply's text, ending with a [[Delta.End]].
     */
-  final def stream(prompt: Prompt): Stream[F, Delta] = stream(prompt.toChat)
+  final def stream(prompt: Prompt[?]): Stream[F, Delta] = stream(prompt.toChat)
 
 object LlmStreamer:
 

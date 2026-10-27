@@ -72,6 +72,12 @@ longer.
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
   native structured output. An unreadable reply is answered with every decoding failure (decoders accumulate)
   and asked again, `attempts` requests in all, then `LlmError.Unreadable`.
+- What goes in is a `Content[A]` everywhere (`Prompt`, `Chat.user`/`assistant`, `Message.apply`, `Part.of`):
+  `String` as text, a `Part` as itself, a `Structured` value as its JSON, else an `Encoder`'s JSON. `NotGiven`s keep
+  the givens apart, `Structured` winning, so a value is said as the schema the model is told describes it.
+  `Prompt[A]` keeps its `Content` in a `using` clause, so `Prompt[?]` serves every signature. `Chat.user` and
+  `assistant` take `A*` of one content type rather than an overload beside `Part*`: Scala 3 never ranks a varargs
+  alternative more specific, so a single part was ambiguous. Mixed kinds go through `Part.of`.
 - `Structured` is one type class of schema, encoder and decoder, so the three cannot disagree; never derive one
   from a circe codec. Derivation (`Mirror`s) summons field instances lazily, so that a recursive type's given
   can be made before the fields referring to it, and renders a recursive type into `$defs`, found by name (a

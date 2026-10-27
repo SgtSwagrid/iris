@@ -140,12 +140,20 @@ A comment is read where its type is compiled, as it always is for `derives Struc
 with `imap` or `emap` is described by its own Scaladoc where it has one there. Scala keeps no comment
 written on a parameter itself, so describe a field with `@param`.
 
-`ask[String]` is the reply's text, as `send` gives it, and the model is told nothing of its form. A value
-is sent to the model as JSON in a part of its own:
+`ask[String]` is the reply's text, as `send` gives it, and the model is told nothing of its form.
+
+What goes in is alike everywhere: a `Prompt`, a chat's `user` and `assistant` messages and `Part.of` each
+take any [`Content`](src/main/scala/Content.scala), saying text as it is, a part as itself, and any other
+value as JSON, as its `Structured` type writes it, or else as its circe `Encoder` does:
 
 ```scala
-client.ask[Review](Chat().user(Part.Text("Review this essay."), Part.json(essay)))
+client.ask[Review](Prompt(essay, system = Some("Review the essay you are given.")))
+client.ask[Review](Chat().user(Part.of("Review this essay."), Part.of(essay)))
+client.ask[Review](chat.assistant(review).user("Now make it kinder."))
 ```
+
+Several values of one kind make one message of several parts, as `chat.user(first, second)` does; values of
+different kinds are made parts first, with `Part.of`.
 
 The schema is asked for in words, at the close of the user's last message, rather than through any
 provider's own structured output, so it works alike everywhere, and a cached prefix is sent as it was.

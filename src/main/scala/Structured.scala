@@ -13,7 +13,7 @@ import scala.deriving.Mirror
   * A type whose values travel to and from the model as JSON: how a value is
   * written, how one is read back, and the [JSON
   * Schema](https://json-schema.org) the model is told they conform to.
-  * [[LlmClient.ask]] asks for one, and [[Part.json]] sends one.
+  * [[LlmClient.ask]] asks for one, and [[Content]] sends one.
   *
   * Strings, numbers, Booleans, options, lists, vectors, sequences, sets and
   * maps keyed by strings have one, and case classes, sealed traits and enums
