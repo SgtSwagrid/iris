@@ -28,7 +28,7 @@ who carried their words to mortals along the rainbow.
 Add the following to your `build.sbt`:
 
 ```scala
-libraryDependencies += "com.alecdorrington" %% "iris" % "0.2.0"
+libraryDependencies += "com.alecdorrington" %% "iris" % "0.3.0"
 ```
 
 Compiled with Scala `3.9.0`, with no intention to explicitly support older versions.
