@@ -454,40 +454,40 @@ class AdapterSuite extends FunSuite:
       Some(64),
     )
 
-  test("anthropic responses parse into replies"):
+  test("anthropic responses parse into answers"):
     val body = """{"content":[{"type":"text","text":"Hello!"}],
          "stop_reason":"end_turn",
          "usage":{"input_tokens":10,"output_tokens":5}}"""
     assertEquals(
       answer(AnthropicApi, body),
-      Right(Reply(
+      Right(Answer(
         "Hello!",
         StopReason.Completed,
         Some(Usage(10, 5)),
       )),
     )
 
-  test("openai responses parse into replies"):
+  test("openai responses parse into answers"):
     val body =
       """{"choices":[{"message":{"content":"Hello!"},"finish_reason":"length"}],
          "usage":{"prompt_tokens":4,"completion_tokens":2}}"""
     assertEquals(
       answer(OpenAiApi, body),
-      Right(Reply(
+      Right(Answer(
         "Hello!",
         StopReason.MaxTokens,
         Some(Usage(4, 2)),
       )),
     )
 
-  test("gemini responses parse into replies"):
+  test("gemini responses parse into answers"):
     val body =
       """{"candidates":[{"content":{"parts":[{"text":"Hello!"}],"role":"model"},
          "finishReason":"STOP"}],
          "usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}}"""
     assertEquals(
       answer(GeminiApi, body),
-      Right(Reply(
+      Right(Answer(
         "Hello!",
         StopReason.Completed,
         Some(Usage(7, 3)),
@@ -596,7 +596,7 @@ class AdapterSuite extends FunSuite:
       """{"choices":[{"message":{"content":"Hi"},"finish_reason":"stop"}]}"""
     assertEquals(
       answer(OpenAiApi, body),
-      Right(Reply("Hi", StopReason.Completed, None)),
+      Right(Answer("Hi", StopReason.Completed, None)),
     )
 
   test("only blocks of text contribute to the reply"):

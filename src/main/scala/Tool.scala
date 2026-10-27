@@ -4,7 +4,7 @@ import io.circe.Json
 
 /**
   * A tool the model may ask to have run, offered through
-  * [[ReplyOptions.tools]]. The model asks in [[Reply.toolCalls]], and the host
+  * [[ReplyOptions.tools]]. The model asks in [[Answer.toolCalls]], and the host
   * answers with a [[Part.ToolResult]]. Iris never runs a tool itself.
   *
   * @param name

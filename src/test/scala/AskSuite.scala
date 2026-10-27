@@ -20,7 +20,7 @@ class AskSuite extends FunSuite:
 
   private val adaJson = """{"name":"Ada","age":36}"""
 
-  private val instructions = Asking.instructions(Structured[Person])
+  private val instructions = Question.instructions(Structured[Person])
 
   /** Anthropic's answer of the text, stopping as said, costing as said. */
   private def said
@@ -81,15 +81,15 @@ class AskSuite extends FunSuite:
   private def asked[A : Structured]
     (
       client: LlmClient[SyncIO],
-      attempts: Int = Asking.attempts,
+      attempts: Int = Question.attempts,
     )
     : Either[Throwable, Option[A]] = client
     .ask[A](prompt, attempts = attempts)
-    .map(_.answer)
+    .map(_.value)
     .attempt
     .unsafeRunSync()
 
-  test("a structured answer is read from the json the model replies with"):
+  test("a structured answer is read from the json the model answers with"):
     assertEquals(
       asked[Person](client(_ => said(adaJson))),
       Right(Some(ada)),
@@ -115,11 +115,7 @@ class AskSuite extends FunSuite:
       else said("Not told."),
     )
     assertEquals(
-      told
-        .ask[Person](chat, attempts = 1)
-        .map(_.answer)
-        .attempt
-        .unsafeRunSync(),
+      told.ask[Person](chat, attempts = 1).map(_.value).attempt.unsafeRunSync(),
       Right(Some(ada)),
     )
 
@@ -181,11 +177,11 @@ class AskSuite extends FunSuite:
 
   test("the last unreadable reply fails the ask, keeping every reply"):
     asked[Person](client(_ => said("Ada, 36."))) match
-      case Left(LlmError.Unreadable(attempts, detail, replies)) =>
+      case Left(LlmError.Unreadable(attempts, detail, answers)) =>
         assertEquals(attempts, 3)
         assertEquals(detail, "It is not JSON.")
         assertEquals(
-          replies.map(_.text),
+          answers.map(_.text),
           List.fill(3)("Ada, 36."),
         )
       case other => fail(s"Expected the ask to be unreadable, not $other.")
@@ -201,8 +197,8 @@ class AskSuite extends FunSuite:
   /** Whether a reply fails the ask at once, though more attempts are left. */
   private def failsAtOnce(answer: String, detail: String): Unit =
     asked[Person](client(_ => answer)) match
-      case Left(LlmError.Unreadable(attempts, said, replies)) => assertEquals(
-          (attempts, said, replies.size),
+      case Left(LlmError.Unreadable(attempts, said, answers)) => assertEquals(
+          (attempts, said, answers.size),
           (1, detail, 1),
         )
       case other => fail(s"Expected the ask to fail at once, not $other.")
@@ -234,7 +230,7 @@ class AskSuite extends FunSuite:
     do
       asking.attempt.unsafeRunSync() match
         case Right(reply) =>
-          assertEquals(reply.answer, None)
+          assertEquals(reply.value, None)
           assertEquals(reply.text, "Let me look.")
           assertEquals(reply.stopReason, StopReason.ToolCall)
           assertEquals(
@@ -300,7 +296,7 @@ class AskSuite extends FunSuite:
     )
 
   test("text is asked for as JSON, as every type is"):
-    val schema = Asking.instructions(Structured[String])
+    val schema = Question.instructions(Structured[String])
     assert(
       schema.endsWith("""{"type":"string"}"""),
       schema,
@@ -327,7 +323,7 @@ class AskSuite extends FunSuite:
     assertEquals(
       told
         .ask[Person](Chat.of(ada), ReplyOptions())
-        .map(_.answer)
+        .map(_.value)
         .attempt
         .unsafeRunSync(),
       Right(Some(ada)),
@@ -351,11 +347,11 @@ class AskSuite extends FunSuite:
     )
     assertEquals(
       corrected.ask[Person](prompt).attempt.unsafeRunSync(),
-      Right(Reply(
+      Right(Answer(
         text = adaJson,
         stopReason = StopReason.Completed,
         usage = Some(Usage(30, 7)),
-        answer = Some(ada),
+        value = Some(ada),
         attempts = 2,
       )),
     )
@@ -369,11 +365,11 @@ class AskSuite extends FunSuite:
         counting = new LlmClient.Forwarding(corrected):
           override protected def send
             (chat: Chat, options: ReplyOptions)
-            : SyncIO[Reply[Nothing]] = sent.update(_ + 1) *>
+            : SyncIO[Answer[Nothing]] = sent.update(_ + 1) *>
             super.send(chat, options)
         reply <- counting.ask[Person](prompt)
         total <- sent.get
-      yield (reply.answer, total)
+      yield (reply.value, total)
     assertEquals(counted.unsafeRunSync(), (Some(ada), 2))
 
   /** A client failing the test if it is ever asked to send. */
@@ -395,9 +391,9 @@ class AskSuite extends FunSuite:
 
   test("text unquoted is not JSON, so is asked for again, then unreadable"):
     asked[String](client(_ => said("Paris"))) match
-      case Left(LlmError.Unreadable(attempts, detail, replies)) =>
+      case Left(LlmError.Unreadable(attempts, detail, answers)) =>
         assertEquals(
-          (attempts, replies.map(_.text)),
+          (attempts, answers.map(_.text)),
           (3, List.fill(3)("Paris")),
         )
         assert(
@@ -425,8 +421,8 @@ class AskSuite extends FunSuite:
   private def failsAtOnceAs[A : Structured]
     (answer: String, detail: String)
     : Unit = asked[A](client(_ => answer)) match
-    case Left(LlmError.Unreadable(attempts, said, replies)) => assertEquals(
-        (attempts, said, replies.size),
+    case Left(LlmError.Unreadable(attempts, said, answers)) => assertEquals(
+        (attempts, said, answers.size),
         (1, detail, 1),
       )
     case other => fail(s"Expected the ask to fail at once, not $other.")
@@ -438,7 +434,7 @@ class AskSuite extends FunSuite:
       "name":"weather","input":{}}],"stop_reason":"end_turn"}"""
     client(_ => forced).ask[Person](prompt).attempt.unsafeRunSync() match
       case Right(reply) =>
-        assertEquals(reply.answer, None)
+        assertEquals(reply.value, None)
         assertEquals(
           reply.toolCalls.map(_.tool),
           List("weather"),
@@ -464,7 +460,7 @@ class AskSuite extends FunSuite:
     )
     later.ask[Person](prompt).attempt.unsafeRunSync() match
       case Right(reply) => assertEquals(
-          (reply.answer, reply.attempts, reply.usage),
+          (reply.value, reply.attempts, reply.usage),
           (None, 2, Some(Usage(30, 7))),
         )
       case other => fail(s"Expected the call, not $other.")
@@ -489,7 +485,7 @@ class AskSuite extends FunSuite:
     val calling  = Part.ToolCall("call_1", "weather", Json.obj())
     val answered = Chat()
       .user("What is the weather?")
-      .assistant(Reply(
+      .assistant(Answer(
         "",
         StopReason.ToolCall,
         None,
@@ -524,7 +520,7 @@ class AskSuite extends FunSuite:
     assertEquals(
       checked
         .ask[String](answered, attempts = 1)
-        .map(_.answer)
+        .map(_.value)
         .attempt
         .unsafeRunSync(),
       Right(Some("Snowing in Zug.")),
@@ -553,11 +549,11 @@ class AskSuite extends FunSuite:
     do
       assertEquals(
         answering(model, body).ask[Person](prompt).attempt.unsafeRunSync(),
-        Right(Reply(
+        Right(Answer(
           adaJson,
           StopReason.Completed,
           Some(Usage(5, 3)),
-          answer = Some(ada),
+          value = Some(ada),
         )),
       )
 
@@ -571,7 +567,7 @@ class AskSuite extends FunSuite:
     assertEquals(
       answering(LlmModel.Gpt5, forced)
         .ask[Person](prompt)
-        .map(reply => (reply.answer, reply.toolCalls.map(_.tool)))
+        .map(reply => (reply.value, reply.toolCalls.map(_.tool)))
         .attempt
         .unsafeRunSync(),
       Right((None, List("weather"))),

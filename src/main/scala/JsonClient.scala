@@ -17,17 +17,17 @@ private[iris] final class JsonClient[F[_] : MonadThrow]
 
   override protected def send
     (chat: Chat, options: ReplyOptions)
-    : F[Reply[Nothing]] = MonadThrow[F]
+    : F[Answer[Nothing]] = MonadThrow[F]
     .fromEither(
       api
         .acceptable(config, chat, options)
         .flatMap(_ => api.endpoint(config, options, false)),
     )
     .flatMap(endpoint =>
-      ask[Either[LlmError, Reply[Nothing]]](
+      ask[Either[LlmError, Answer[Nothing]]](
         endpoint,
         api.body(config, chat, options),
-      )(using api.replies),
+      )(using api.answers),
     )
     .flatMap(MonadThrow[F].fromEither(_))
 
@@ -38,7 +38,7 @@ private[iris] final class JsonClient[F[_] : MonadThrow]
     )
 
   /** Warms with the shortest reply the provider allows. */
-  override def warm(chat: Chat, options: ReplyOptions): F[Reply[Nothing]] =
+  override def warm(chat: Chat, options: ReplyOptions): F[Answer[Nothing]] =
     send(
       chat.cacheable,
       options.copy(maxTokens = Some(api.leastReply)),

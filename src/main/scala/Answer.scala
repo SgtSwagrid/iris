@@ -1,15 +1,15 @@
 package com.alecdorrington.iris
 
 /**
-  * The model's reply to a [[Chat]], with the answer read from it: everything
-  * [[LlmClient.ask]] gives, alike for every type of answer. Its text, stop
-  * reason and tool calls are those of the last reply asked for. A reply as the
-  * provider gave it, before any answer is read, as `send` and `warm` give it
-  * and [[LlmError.Unreadable]] keeps it, is a `Reply[Nothing]`, whose usage is
-  * its own, with no answer and one attempt.
+  * The model's answer to a [[Chat]], with its value read from what the model
+  * wrote: everything [[LlmClient.ask]] gives, alike for every type. Its text,
+  * stop reason and tool calls are those of the last reply asked for. A reply as
+  * the provider gave it, before any value is read, as `send` and `warm` give it
+  * and [[LlmError.Unreadable]] keeps it, is an `Answer[Nothing]`, whose usage
+  * is its own, with no value and one attempt.
   *
   * @tparam A
-  *   The type of the answer.
+  *   The type of the value.
   *
   * @param text
   *   The text of the last reply, as the model wrote it.
@@ -24,20 +24,20 @@ package com.alecdorrington.iris
   * @param toolCalls
   *   The tools the model asks to have run before it goes on, if any.
   *
-  * @param answer
-  *   The answer read from the last reply, or `None` where the model asked for
-  *   tools instead. A reply from which no answer can be read fails the ask.
+  * @param value
+  *   The value read from the last reply, or `None` where the model asked for
+  *   tools instead. A reply from which no value can be read fails the ask.
   *
   * @param attempts
   *   The number of replies asked for, this one included.
   */
-final case class Reply[+A]
+final case class Answer[+A]
   (
     text: String,
     stopReason: StopReason = StopReason.Completed,
     usage: Option[Usage] = None,
     toolCalls: List[Part.ToolCall] = List.empty,
-    answer: Option[A] = None,
+    value: Option[A] = None,
     attempts: Int = 1,
   )
 

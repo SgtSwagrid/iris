@@ -104,7 +104,7 @@ enum LlmError(message: String) extends Exception(message):
     * again could not help, as for a reply cut off at the token limit.
     *
     * @param attempts
-    *   The number of replies asked for.
+    *   The number of answers asked for.
     *
     * @param detail
     *   The description of why the last reply could not be read, as the model
@@ -112,15 +112,15 @@ enum LlmError(message: String) extends Exception(message):
     *   refusal of a value may or a map's keys do, and so is kept out of the
     *   message.
     *
-    * @param replies
-    *   The replies asked for, oldest first, with their usage, also kept out of
+    * @param answers
+    *   The answers asked for, oldest first, with their usage, also kept out of
     *   the message.
     */
   case Unreadable
     (
       attempts: Int,
       detail: String,
-      replies: List[Reply[Nothing]],
+      answers: List[Answer[Nothing]],
     )
     extends LlmError(
       s"The model's reply could not be read as asked (attempts: $attempts)",

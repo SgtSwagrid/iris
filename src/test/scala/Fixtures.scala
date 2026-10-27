@@ -10,8 +10,10 @@ object Fixtures:
   def json(body: String): Json = parse(body).toOption.get
 
   /** What a provider makes of a response body that a test knows it can read. */
-  def answer(api: ProviderApi, body: String): Either[LlmError, Reply[Nothing]] =
-    decode[Either[LlmError, Reply[Nothing]]](body)(using api.replies)
+  def answer
+    (api: ProviderApi, body: String)
+    : Either[LlmError, Answer[Nothing]] =
+    decode[Either[LlmError, Answer[Nothing]]](body)(using api.answers)
       .toOption
       .get
 
@@ -28,4 +30,4 @@ object Fixtures:
         chat: Chat,
         options: ReplyOptions = ReplyOptions(),
       )
-      : F[Reply[Nothing]] = send(chat, options)
+      : F[Answer[Nothing]] = send(chat, options)
