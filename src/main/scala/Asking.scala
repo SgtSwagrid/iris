@@ -94,10 +94,12 @@ private[iris] object Asking:
 
   /**
     * Whether a reply asks for tools, by its calls or why it stopped, as OpenAI
-    * says it stopped as usual for a call it was made to make.
+    * says it stopped as usual for a call it was made to make. A call cut off at
+    * the token limit may be cut short, so is no call, but cut off.
     */
   private def calledTools(reply: Reply[Nothing]): Boolean =
-    reply.stopReason == StopReason.ToolCall || reply.toolCalls.nonEmpty
+    reply.stopReason == StopReason.ToolCall ||
+    reply.toolCalls.nonEmpty && reply.stopReason != StopReason.MaxTokens
 
   /**
     * The last reply with the answer read from it, counting every attempt: its

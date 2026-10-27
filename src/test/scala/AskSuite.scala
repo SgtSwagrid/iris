@@ -443,6 +443,13 @@ class AskSuite extends FunSuite:
         )
       case other => fail(s"Expected the call, not $other.")
 
+  test("a call cut off at the token limit is cut off, not a call"):
+    failsAtOnceAs[Person](
+      """{"content":[{"type":"tool_use","id":"call_1","name":"weather",
+        "input":{"city":"Zu"}}],"stop_reason":"max_tokens"}""",
+      "It was cut off at the token limit before it was complete.",
+    )
+
   test(
     "a tool asked for on a later attempt is given with every attempt's usage",
   ):
