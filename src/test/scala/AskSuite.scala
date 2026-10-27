@@ -12,7 +12,9 @@ import sttp.client4.testing.{BackendStub, ResponseStub}
 
 class AskSuite extends FunSuite:
 
-  private val prompt = Prompt("Invent a person.")
+  private val asking = "Invent a person."
+
+  private val prompt = Chat.of(asking)
 
   private val ada = Person("Ada", 36, None)
 
@@ -65,7 +67,7 @@ class AskSuite extends FunSuite:
       attempts: Int = Answer.attempts,
     )
     : Either[Throwable, A] = client
-    .ask[A](prompt.toChat, attempts = attempts)
+    .ask[A](prompt, attempts = attempts)
     .attempt
     .unsafeRunSync()
 
@@ -78,11 +80,8 @@ class AskSuite extends FunSuite:
   test("the schema closes the user's message, as a paragraph of its own"):
     assert(instructions.contains(Structured[Person].schema.noSpaces))
     val told = client(sent =>
-      if sent == List(Message(
-          Role.User,
-          s"${ prompt.user }\n\n$instructions",
-        ))
-      then said(adaJson)
+      if sent == List(Message(Role.User, s"$asking\n\n$instructions")) then
+        said(adaJson)
       else said("Not told."),
     )
     assertEquals(
@@ -282,7 +281,7 @@ class AskSuite extends FunSuite:
   test("a text answer is the reply as written, the model told nothing"):
     assert(summon[Answer[String]] eq Answer.text)
     val plain = client(sent =>
-      if sent == List(Message(Role.User, prompt.user)) then said("Ada, 36.")
+      if sent == List(Message(Role.User, asking)) then said("Ada, 36.")
       else said("Told something."),
     )
     assertEquals(
@@ -300,7 +299,7 @@ class AskSuite extends FunSuite:
       else said("Not told."),
     )
     assertEquals(
-      told.ask[Person](Prompt(ada), ReplyOptions()).attempt.unsafeRunSync(),
+      told.ask[Person](Chat.of(ada), ReplyOptions()).attempt.unsafeRunSync(),
       Right(ada),
     )
 
@@ -315,6 +314,25 @@ class AskSuite extends FunSuite:
       Right(42),
     )
 
+  test("a whole reply is the reply as it came, the model told nothing"):
+    assert(summon[Answer[Reply]] eq Answer.reply)
+    val calling = """{"content":[{"type":"text","text":"Let me look."},
+      {"type":"tool_use","id":"call_1","name":"weather","input":{}}],
+      "stop_reason":"tool_use"}"""
+    val plain   = client(sent =>
+      if sent == List(Message(Role.User, asking)) then calling
+      else said("Told something."),
+    )
+    asked[Reply](plain, attempts = 1) match
+      case Right(reply) =>
+        assertEquals(reply.text, "Let me look.")
+        assertEquals(reply.stopReason, StopReason.ToolCall)
+        assertEquals(
+          reply.toolCalls.map(_.tool),
+          List("weather"),
+        )
+      case other => fail(s"Expected the reply whole, not $other.")
+
   test("a wrapper around the client sees every attempt"):
     val corrected =
       client(sent => if sent.size > 1 then said(adaJson) else said("Ada, 36."))
@@ -322,8 +340,9 @@ class AskSuite extends FunSuite:
       for
         sent <- Ref.of[SyncIO, Int](0)
         counting = new LlmClient.Forwarding(corrected):
-          override def send(chat: Chat, options: ReplyOptions): SyncIO[Reply] =
-            sent.update(_ + 1) *> underlying.send(chat, options)
+          override protected def send
+            (chat: Chat, options: ReplyOptions)
+            : SyncIO[Reply] = sent.update(_ + 1) *> super.send(chat, options)
         person <- counting.ask[Person](prompt)
         total  <- sent.get
       yield (person, total)

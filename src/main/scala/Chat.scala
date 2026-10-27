@@ -186,9 +186,9 @@ object Message:
   *
   * {{{
   * for
-  *   first  <- client.send(chat)
-  *   next    = chat.assistant(first.text).user("Tell me more.")
-  *   second <- client.send(next)
+  *   first  <- client.ask[String](chat)
+  *   next    = chat.assistant(first).user("Tell me more.")
+  *   second <- client.ask[String](next)
   * yield second
   * }}}
   *
@@ -315,6 +315,22 @@ final case class Chat
       case None => said :+ Message(Role.User, breakpoints :+ Part.Text("."))
 
 object Chat:
+
+  /**
+    * Creates a chat of one user message, as a single-turn prompt, saying a
+    * value as its [[Content]] says it. A system message is set with
+    * [[Chat.withSystem]].
+    *
+    * @tparam A
+    *   The type of the value.
+    *
+    * @param user
+    *   What the user says: text, a part, or a value said as JSON.
+    *
+    * @return
+    *   A chat of one user message.
+    */
+  def of[A : Content](user: A): Chat = Chat().user(user)
 
   /** A message saying each value as its content says it. */
   private def said[A : Content as A](role: Role, values: Seq[A]): Message =

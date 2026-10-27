@@ -15,19 +15,20 @@ private[iris] final class JsonClient[F[_] : MonadThrow]
   )
   extends LlmClient[F]:
 
-  override def send(chat: Chat, options: ReplyOptions): F[Reply] = MonadThrow[F]
-    .fromEither(
-      api
-        .acceptable(config, chat, options)
-        .flatMap(_ => api.endpoint(config, options, false)),
-    )
-    .flatMap(endpoint =>
-      ask[Either[LlmError, Reply]](
-        endpoint,
-        api.body(config, chat, options),
-      )(using api.replies),
-    )
-    .flatMap(MonadThrow[F].fromEither(_))
+  override protected def send(chat: Chat, options: ReplyOptions): F[Reply] =
+    MonadThrow[F]
+      .fromEither(
+        api
+          .acceptable(config, chat, options)
+          .flatMap(_ => api.endpoint(config, options, false)),
+      )
+      .flatMap(endpoint =>
+        ask[Either[LlmError, Reply]](
+          endpoint,
+          api.body(config, chat, options),
+        )(using api.replies),
+      )
+      .flatMap(MonadThrow[F].fromEither(_))
 
   override def count(chat: Chat, options: ReplyOptions): F[Int] = MonadThrow[F]
     .fromEither(api.counting(config, chat, options))

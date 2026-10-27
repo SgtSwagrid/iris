@@ -14,8 +14,9 @@ Keep it concise and actionable.
 This is Iris, a Scala 3 library giving one provider-agnostic interface to the APIs of large language models, with
 adapters for Anthropic, OpenAI and Google Gemini, built on Cats Effect, sttp and Circe. It is in beta.
 
-It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js. `LlmClient` is the public interface (`send` a `Chat`
-or a `Prompt`, or `ask` for an answer of a type). Each `LlmProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
+It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js. `LlmClient` is the public interface: callers `ask` a `Chat`
+for an answer of a type (`Reply` whole, `String`, or any `Structured` type), and `send` is the protected request every
+`ask` makes, which `JsonClient` implements and wrappers override (`LlmClient.Forwarding`, `mapK`). Each `LlmProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
 `JsonHttp`), which tells the one `JsonClient` and the one `SseClient` all they need to know of it: its endpoints,
 request bodies, credentials, the chats it refuses, how its replies read, and how it counts tokens. Anything
 provider-specific goes there, never in the clients. `LlmConfig` holds a model (and so its provider), key, token limit and an optional base URL, and
@@ -68,7 +69,8 @@ longer.
   refuses the request; retrying at a lower effort is the host's to do.
 - `LlmClient.ask[A]` needs an `Answer[A]`: `Answer.text` for `String` (the reply as written, nothing said of it),
   else `Answer.json` for any `Structured` type (`NotGiven[A =:= String]` keeps the two apart, whatever the given
-  priority rules). It is built on `send` alone, provider-agnostic: the schema is asked for in words closing the
+  priority rules), and `Answer.reply` for `Reply` (the reply whole, never refused). It is built on `send`
+  alone, provider-agnostic, and passes `Answer.ask` the client's `send` as a function, as `send` is protected: the schema is asked for in words closing the
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
   native structured output. An unreadable reply is answered with every decoding failure (decoders accumulate)
   and asked again, `attempts` requests in all, then `LlmError.Unreadable`, carrying every reply. Asking again
@@ -80,10 +82,11 @@ longer.
   the model was told and may repeat the reply (a host's `emap` message, a `Map`'s keys), so hosts may log it.
   Iris's own wording names no values (`Answer.reason` rewrites circe's, which quote them). JSON is read from the
   whole reply, then its last fence, then its outermost value, so a fence inside a JSON string is never taken.
-- What goes in is a `Content[A]` everywhere (`Prompt`, `Chat.user`/`assistant`, `Message.apply`, `Part.of`):
+- What goes in is a `Content[A]` everywhere (`Chat.of`, `Chat.user`/`assistant`, `Message.apply`, `Part.of`):
   `String` as text, a `Part` as itself, a `Structured` value as its JSON, else an `Encoder`'s JSON. `NotGiven`s keep
   the givens apart, `Structured` winning, so a value is said as the schema the model is told describes it.
-  `Prompt[A]` keeps its `Content` in a `using` clause, so `Prompt[?]` serves every signature. `Chat.user` and
+  A single-turn prompt is `Chat.of(content)`, never an overload of `Chat.apply`, which would capture
+  `Chat(messages)` (the case class's own `apply` needs the default `system`, so loses). `Chat.user` and
   `assistant` take `A*` of one content type rather than an overload beside `Part*`: Scala 3 never ranks a varargs
   alternative more specific, so a single part was ambiguous. Mixed kinds go through `Part.of`.
 - `Structured` is one type class of schema, encoder and decoder, so the three cannot disagree; never derive one

@@ -13,7 +13,7 @@ class ClientSuite extends FunSuite:
 
   private val gemini = config.copy(model = LlmModel.Gemini2_5Flash)
 
-  private val prompt = Prompt("Hello")
+  private val prompt = Chat.of("Hello")
 
   private def client
     (
@@ -30,7 +30,7 @@ class ClientSuite extends FunSuite:
   )
 
   private def result(client: LlmClient[SyncIO]): Either[Throwable, Reply] =
-    client.send(prompt).attempt.unsafeRunSync()
+    client.ask[Reply](prompt).attempt.unsafeRunSync()
 
   private def counted(client: LlmClient[SyncIO]): Either[Throwable, Int] =
     client.count(prompt).attempt.unsafeRunSync()
@@ -115,7 +115,7 @@ class ClientSuite extends FunSuite:
     )
 
   test("a chat with nothing in it never reaches the provider"):
-    val empty = client("{}").send(Chat()).attempt.unsafeRunSync()
+    val empty = client("{}").ask[Reply](Chat()).attempt.unsafeRunSync()
     assert(
       empty
         .left

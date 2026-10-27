@@ -37,17 +37,6 @@ trait LlmStreamer[F[_]]:
     )
     : Stream[F, Delta]
 
-  /**
-    * Sends a single-turn prompt, streaming the reply as it arrives.
-    *
-    * @param prompt
-    *   The prompt to send.
-    *
-    * @return
-    *   A stream of the reply's text, ending with a [[Delta.End]].
-    */
-  final def stream(prompt: Prompt[?]): Stream[F, Delta] = stream(prompt.toChat)
-
 object LlmStreamer:
 
   /**
