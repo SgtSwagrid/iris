@@ -367,7 +367,7 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
   - `.text` is the JSON the model wrote, quoted and escaped; read `.value` for the text itself.
   - A reply cut off at the token limit, stopped by the provider, as on a refusal, or blank now fails with
     `LlmError.Unreadable`, where `send` gave it. Code that looked at a returned `StopReason.MaxTokens` matches
-    `Unreadable(_, _, replies)` and looks at `replies.last.stopReason`.
+    `Unreadable(_, _, answers)` and looks at `answers.last.stopReason`.
   - A reply of prose, or text unquoted (`Paris`), is not JSON, so is asked for again, three requests in all
     unless `attempts` says otherwise, each seen by a wrapper.
   - A prompt asking for JSON of its own asks for that type instead, rather than for `String`, whose schema
