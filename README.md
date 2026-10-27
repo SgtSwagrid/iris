@@ -28,7 +28,7 @@ who carried their words to mortals along the rainbow.
 Add the following to your `build.sbt`:
 
 ```scala
-libraryDependencies += "com.alecdorrington" %% "iris" % "0.2.0"
+libraryDependencies += "com.alecdorrington" %% "iris" % "0.3.0"
 ```
 
 Compiled with Scala `3.9.0`, with no intention to explicitly support older versions.
@@ -59,10 +59,10 @@ A model Iris does not list yet is named with its provider, as
 listed constant for a name Iris lists. A model's `name` is its provider's and its own, as
 `anthropic:claude-opus-5-5`, which is how a configuration logs it.
 
-### Question
+### Asking
 
 Every reply is asked for with `ask`, whose type says what the answer is: `String`, or any type of your
-own as [below](#typed-answers). Every type is asked for alike, and every ask gives the same: a
+own as [below](#typed-answers). Every type is asked for alike, and every ask gives the same: an
 [`Answer`](src/main/scala/Answer.scala) holding its `value`, with the reply's `text`, why the model stopped
 (`stopReason`), the token `usage` of every attempt, the `toolCalls` it made, and how many `attempts` it
 took. A single-turn prompt is a chat of one message, `Chat.of`:
