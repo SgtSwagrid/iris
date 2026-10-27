@@ -34,6 +34,7 @@ lazy val iris = projectMatrix
     Dependencies.sttpClient,
     Dependencies.circe,
     Dependencies.cats,
+    Dependencies.cadmus,
     Dependencies.munit,
   )
   .jvmPlatform(scalaVersions = Seq(scala3))

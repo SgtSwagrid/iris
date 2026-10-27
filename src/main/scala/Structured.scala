@@ -1,6 +1,7 @@
 package com.alecdorrington.iris
 
 import cats.syntax.all.*
+import com.alecdorrington.cadmus.Scaladoc
 import io.circe.{Decoder, DecodingFailure, Encoder, HCursor, Json, JsonObject}
 import io.circe.DecodingFailure.Reason
 import io.circe.syntax.*
@@ -101,7 +102,11 @@ final class Structured[A] private (
     *   A structured type converted from this one.
     */
   inline def emap[B](to: A => Either[String, B])(from: B => A): Structured[B] =
-    converted(to, from, Scaladoc.of[B])
+    converted(
+      to,
+      from,
+      Structured.described[B].flatMap(_.description),
+    )
 
   private def converted[B]
     (
@@ -218,21 +223,25 @@ object Structured:
     inline mirror match
       case sum: Mirror.SumOf[A] => union(
           constValue[sum.MirroredLabel],
-          Scaladoc.of[A],
+          described[A].flatMap(_.description),
           labels[sum.MirroredElemLabels],
           cases[sum.MirroredElemTypes],
           sum.ordinal,
         )
       case product: Mirror.ProductOf[A] => record(
           constValue[product.MirroredLabel],
-          Scaladoc.of[A],
+          described[A],
           labels[product.MirroredElemLabels],
-          Scaladoc.fields[A],
           summonAll[Tuple.Map[product.MirroredElemTypes, Structured]]
             .toList
             .asInstanceOf[List[Structured[?]]],
           product.fromProduct,
         )
+
+  /** A type's Scaladoc in plain words, where it is compiled alongside. */
+  private inline def described[A]: Option[Scaladoc] = Scaladoc
+    .of[A]
+    .map(_.plain)
 
   private inline def labels[Labels <: Tuple]: List[String] =
     constValueTuple[Labels].toList.asInstanceOf[List[String]]
@@ -267,21 +276,20 @@ object Structured:
   /**
     * The structured type of a case class, its fields summoned only when first
     * needed, so that a recursive type can be made before the fields that refer
-    * back to it.
+    * back to it. Each field is described by its class's `@param` tag.
     */
   private def record[A]
     (
       name: String,
-      description: Option[String],
+      doc: Option[Scaladoc],
       labels: List[String],
-      descriptions: List[Option[String]],
       fields: => List[Structured[?]],
       build: Product => A,
     )
     : Structured[A] =
     lazy val named = labels
       .lazyZip(fields.map(_.asInstanceOf[Structured[Any]]))
-      .lazyZip(descriptions)
+      .lazyZip(labels.map(label => doc.flatMap(_.params.get(label))))
       .map(Shape.Field.apply)
     new Structured(
       Encoder
@@ -308,7 +316,7 @@ object Structured:
       Shape.Record(named),
       Some(name),
       false,
-      description,
+      doc.flatMap(_.description),
     )
 
   /** A field as written, left out where it is optional and unset. */
