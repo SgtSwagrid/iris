@@ -15,7 +15,7 @@ This is Iris, a Scala 3 library giving one provider-agnostic interface to the AP
 adapters for Anthropic, OpenAI and Google Gemini, built on Cats Effect, sttp and Circe. It is in beta.
 
 It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js. `LlmClient` is the public interface: callers `ask` a `Chat`
-for an answer of any `Structured` type, `String` included, as a uniform `Reply[A]`, and `send` is the protected request every
+for an answer of any `Structured` type, `String` included, as a uniform `Answer[A]`, and `send` is the protected request every
 `ask` makes, which `JsonClient` implements and wrappers override (`LlmClient.Forwarding`, `mapK`). Each `LlmProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
 `JsonHttp`), which tells the one `JsonClient` and the one `SseClient` all they need to know of it: its endpoints,
 request bodies, credentials, the chats it refuses, how its replies read, and how it counts tokens. Anything
@@ -27,7 +27,7 @@ longer.
 - Clients are stateless: no session identity reaches the provider, and a conversation's whole history travels with
   each `Chat`. Keep it that way.
 - Every `ProviderApi` must normalise what it returns: the reply text, a `StopReason` (unknown labels kept as `Other`) and
-  token usage in `Reply`. An unsuccessful response is `LlmError.Unsuccessful` (status and body) and an unreadable one
+  token usage in `Answer`. An unsuccessful response is `LlmError.Unsuccessful` (status and body) and an unreadable one
   `LlmError.Malformed`, so hosts can tell rate limits from broken responses; a request no answer comes to
   within `LlmConfig.timeout` is `LlmError.TimedOut`, such as one whose reply takes too long to write;
   other transport failures are sttp's own.
@@ -42,7 +42,7 @@ longer.
 - A set but unrecognised `LLM_PROVIDER` or `LLM_MODEL` means unconfigured (`None`), never a fall back to key inference.
 - The library does no throttling, retrying or logging of its own; those are the host's to wrap around a client.
   The one exception is `ask`, which asks again after a reply it cannot read, never after a failed request.
-  Nor does it run a tool it is asked for: `ReplyOptions.tools` offers them and `Reply.toolCalls`
+  Nor does it run a tool it is asked for: `ReplyOptions.tools` offers them and `Answer.toolCalls`
   reports what was asked, but what a tool does, and whether it may, is the host's.
 - A `Part.CacheBreakpoint` ends a prefix worth caching and says nothing to the model. Anthropic is told of one by
   `cache_control` on the block before it (in its message, else the previous message's last, else the system message),
@@ -67,12 +67,13 @@ longer.
   `reasoning_effort` (`Max` as `max`, or as `high` on the models in `OpenAiApi.cappedAtHigh`, such as `gpt-5`) and Gemini's `generationConfig.thinkingConfig.thinkingBudget`
   (fixed amounts within every thinking Gemini model's range). Iris never chooses one, and a model that cannot take one
   refuses the request; retrying at a lower effort is the host's to do.
-- `LlmClient.ask[A : Structured]` reads every type one way, `String` included, and always gives a `Reply[A]`:
+- `LlmClient.ask[A : Structured]` reads every type one way, `String` included, and always gives an `Answer[A]`:
   the last reply's text, stop reason and tool calls, the usage of every attempt summed, the attempts, and
-  `answer: Option[A]`, `None` where the model asked for a tool. Never add a per-type reading or a different
-  result for some types: the user wants every ask uniform. The provider's own reply is a `Reply[Nothing]`
-  (`Reply` is covariant), which `send`, `warm` and `Unreadable` give. `ask` is built on `send` alone,
-  provider-agnostic, and passes `Asking.ask` the client's `send` as a function, as `send` is protected: the schema is asked for in words closing the
+  `value: Option[A]`, `None` where the model asked for a tool. Never read one type differently from another, as
+  the removed `Answer` type class once did, nor give some types a different result: the user wants every ask
+  uniform. The provider's own reply is an `Answer[Nothing]`
+  (`Answer` is covariant), which `send`, `warm` and `Unreadable` give. `ask` is built on `send` alone,
+  provider-agnostic, and passes `Question.ask` the client's `send` as a function, as `send` is protected: the schema is asked for in words closing the
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
   native structured output. An unreadable reply is answered with every decoding failure (decoders accumulate)
   and asked again, `attempts` requests in all, then `LlmError.Unreadable`, carrying every reply. A reply asking
@@ -84,9 +85,9 @@ longer.
   uninstructed, so `JsonHttp.answerable` refuses it with the provider's name before any request; a chat ending
   with the assistant's message gets the instructions in a user message after it, so the model answers afresh
   (the user chose this over continuing a prefill). Usage is summed only when every attempt reports it. `Unreadable`'s message carries neither the replies nor `detail`, which is what
-  the model was told and may repeat the reply (a host's `emap` message, a `Map`'s keys), so hosts may log it.
-  Iris's own wording names no values (`Asking.reason` rewrites circe's, which quote them). JSON is read from the
-  whole reply, then its last fence, then its outermost value, so a fence inside a JSON string is never taken.
+  the model was told, circe's own failures, which quote the reply's values, so hosts may log it. JSON is read
+  from the whole reply, then its last fence, and nowhere else (the user chose this over finding JSON amid prose),
+  so a fence inside a JSON string is never taken.
 - What goes in is a `Content[A]` everywhere (`Chat.of`, `Chat.user`/`assistant`, `Message.apply`, `Part.of`):
   `String` as text, a `Part` as itself, a `Structured` value as its JSON, else an `Encoder`'s JSON. `NotGiven`s keep
   the givens apart, `Structured` winning, so a value is said as the schema the model is told describes it.
@@ -159,9 +160,9 @@ it only through a release (below).
 3. Once Maven Central serves the new version, bump it in each project using Iris, by pull request there. Their
    Scala Steward would otherwise propose it on its next weekly run. A version that breaks callers needs their code
    changed too, as README's *Upgrading* section says. For 0.3.0, as found in review: Themis passes requests on
-   with `super.send` in `Throttle`, `Allowances` and `Recall` (whose replies are `Reply[Nothing]`), asks where it
+   with `super.send` in `Throttle`, `Allowances` and `Recall` (whose replies are `Answer[Nothing]`), asks where it
    sent in `ComparisonService`, `EvaluationService`, `TaskImportService` and `TranscriptionService`, reading
-   `answer`, its `MaxTokens` branches (`TranscriptionService`, `EvaluationService`) become `Unreadable` cases,
+   `value`, its `MaxTokens` branches (`TranscriptionService`, `EvaluationService`) become `Unreadable` cases,
    and its test fakes override the protected `send`. Codeswitch's `Translator` asks `ask[List[String]]` and drops
    its own array parsing and JSON-format prompt, and its `explain` takes `Unreadable`.
 

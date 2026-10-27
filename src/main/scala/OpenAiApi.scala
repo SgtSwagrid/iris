@@ -31,8 +31,8 @@ private[iris] object OpenAiApi extends ProviderApi:
   override def credentials(config: LlmConfig): Seq[Header] =
     Seq(Header.authorization("Bearer", config.apiKey))
 
-  override val replies: Decoder[Either[LlmError, Reply[Nothing]]] =
-    Decoder[Response].map(_.toReply)
+  override val answers: Decoder[Either[LlmError, Answer[Nothing]]] =
+    Decoder[Response].map(_.toAnswer)
 
   override def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta] = Sse
     .separately(deltas)(events)
@@ -260,14 +260,14 @@ private[iris] object OpenAiApi extends ProviderApi:
     )
     derives Decoder:
 
-    def toReply: Either[LlmError, Reply[Nothing]] = choices
+    def toAnswer: Either[LlmError, Answer[Nothing]] = choices
       .headOption
       .toRight(LlmError.Malformed(
         LlmProvider.OpenAi.displayName,
         "no choices",
       ))
       .map: choice =>
-        Reply(
+        Answer(
           text = choice.message.content.getOrElse(""),
           stopReason = stopReason(choice.finishReason),
           usage = usage.flatMap(_.toUsage),

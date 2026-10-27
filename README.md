@@ -59,11 +59,11 @@ A model Iris does not list yet is named with its provider, as
 listed constant for a name Iris lists. A model's `name` is its provider's and its own, as
 `anthropic:claude-opus-5-5`, which is how a configuration logs it.
 
-### Asking
+### Question
 
 Every reply is asked for with `ask`, whose type says what the answer is: `String`, or any type of your
 own as [below](#typed-answers). Every type is asked for alike, and every ask gives the same: a
-[`Reply`](src/main/scala/Reply.scala) holding the `answer`, with the reply's `text`, why the model stopped
+[`Answer`](src/main/scala/Answer.scala) holding its `value`, with the reply's `text`, why the model stopped
 (`stopReason`), the token `usage` of every attempt, the `toolCalls` it made, and how many `attempts` it
 took. A single-turn prompt is a chat of one message, `Chat.of`:
 
@@ -71,7 +71,7 @@ took. A single-turn prompt is a chat of one message, `Chat.of`:
 import com.alecdorrington.iris.{Chat, LlmClient}
 
 LlmClient.fromEnv[IO].use {
-  case Some(client) => client.ask[String](Chat.of("Hello!")).map(_.answer)
+  case Some(client) => client.ask[String](Chat.of("Hello!")).map(_.value)
   case None         => // No provider configured.
 }
 ```
@@ -89,7 +89,7 @@ val chat = Chat().withSystem("You are terse.").user("Name a colour.")
 for
   first  <- client.ask[String](chat)
   second <- client.ask[String](chat.assistant(first).user("And another."))
-yield second.answer
+yield second.value
 ```
 
 ### Typed answers
@@ -107,20 +107,21 @@ enum Mood derives Structured:
 
 case class Review(summary: String, mood: Mood, score: Int, quotes: List[String]) derives Structured
 
-client.ask[Review](Chat.of(s"Review this essay: $essay")) // IO[Reply[Review]]
+client.ask[Review](Chat.of(s"Review this essay: $essay")) // IO[Answer[Review]]
 ```
 
 A reply that cannot be read, as one that is not JSON or leaves a field out, is answered with every reason
 it could not be, and the model is asked again, three times in all unless `attempts` says otherwise, as in
-`client.ask[Review](chat, attempts = 5)`. JSON is found within a code fence, and an object or array within
-prose around it, though the model is asked for JSON alone; a string, number or Boolean amid prose is asked for
-again. A reply asking for a tool is given at once, with no `answer`. A reply that asking again could not help
-fails at once: one cut off at the token limit, which is never read, as what parses may be cut short, one the
-provider stopped, as on a refusal, and one saying nothing. A chat in which the user says nothing fails with
-`LlmError.Unsendable` before any request. The last unreadable reply fails with `LlmError.Unreadable`, which keeps every reply asked for, usage
-included, and what the model was told was wrong with the last, which may repeat what it said; both are kept
-out of its message, so that it may be logged. Each attempt is a request of its own, so a wrapper (see
-[Wrapping a client](#wrapping-a-client)) sees every one too.
+`client.ask[Review](chat, attempts = 5)`. JSON is read from the whole reply, or else from its last code
+fence, though the model is asked for JSON alone; JSON amid prose with no fence is asked for again. The model
+is told what was wrong as circe says it. A reply asking for a tool is given at once, with no `value`. A reply
+that asking again could not help fails at once: one cut off at the token limit, which is never read, as what
+parses may be cut short, one the provider stopped, as on a refusal, and one saying nothing. A chat in which
+the user says nothing fails with `LlmError.Unsendable` before any request. The last unreadable reply fails
+with `LlmError.Unreadable`, which keeps every reply asked for, usage included, and what the model was told was
+wrong with the last, which may repeat what it said; both are kept out of its message, so that it may be
+logged. Each attempt is a request of its own, so a wrapper (see [Wrapping a client](#wrapping-a-client)) sees
+every one too.
 
 Strings, numbers, Booleans, options, lists, vectors, sequences, sets and maps keyed by strings are
 structured already. An optional field may be left out. A sealed trait or enum whose cases have no fields
@@ -184,7 +185,7 @@ provider's own structured output, so it works alike everywhere, and a cached pre
 
 Each request accepts [`ReplyOptions`](src/main/scala/ReplyOptions.scala)
 (token limit, temperature, top-p, stop sequences, effort), and each
-[`Reply`](src/main/scala/Reply.scala) carries the reply text along with a
+[`Answer`](src/main/scala/Answer.scala) carries the reply text along with a
 normalised `StopReason` and token usage counts, which add up with `+`.
 
 ```scala
@@ -259,7 +260,7 @@ both halves together.
 
 ### Tools
 
-Offer the model tools it may ask to have run, and it will say so in `Reply.toolCalls`, with no `answer`.
+Offer the model tools it may ask to have run, and it will say so in `Answer.toolCalls`, with no `value`.
 Iris never runs a tool itself; what one does, and whether it is allowed to, is yours to decide.
 
 ```scala
@@ -271,7 +272,7 @@ for
   asked  <- client.ask[String](chat, ReplyOptions(tools = List(weather)))
   result  = Part.ToolResult(asked.toolCalls.head.id, "weather", lookUp(asked.toolCalls.head))
   answer <- client.ask[String](chat.assistant(asked).user(result), ReplyOptions(tools = List(weather)))
-yield answer.answer
+yield answer.value
 ```
 
 A reply which asked for a tool has `StopReason.ToolCall`, on every provider, and so does a
@@ -305,7 +306,7 @@ val asking = (question: String) =>
 for
   _       <- client.warm(asking(""))
   answers <- questions.parTraverse(question => client.ask[String](asking(question)))
-yield answers.flatMap(_.answer)
+yield answers.flatMap(_.value)
 ```
 
 Requests sent at once cannot read what none of them has written yet, so `warm` writes the prefix
@@ -347,11 +348,11 @@ passing each on through `super`:
 
 ```scala
 def logged(client: LlmClient[IO]): LlmClient[IO] = new LlmClient.Forwarding(client):
-  override protected def send(chat: Chat, options: ReplyOptions): IO[Reply[Nothing]] =
+  override protected def send(chat: Chat, options: ReplyOptions): IO[Answer[Nothing]] =
     super.send(chat, options).flatTap(reply => IO.println(reply.usage))
   override def count(chat: Chat, options: ReplyOptions): IO[Int] =
     super.count(chat, options).flatTap(tokens => IO.println(tokens))
-  override def warm(chat: Chat, options: ReplyOptions): IO[Reply[Nothing]] =
+  override def warm(chat: Chat, options: ReplyOptions): IO[Answer[Nothing]] =
     super.warm(chat, options).flatTap(reply => IO.println(reply.usage))
 ```
 
@@ -360,26 +361,26 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
 
 ### Upgrading from 0.2
 
-- `client.send(chat, options)` is `client.ask[String](chat, options)`, whose `Reply` holds the text as its
-  `answer`, beside the stop reason, usage and tool calls the old `Reply` had. The model is now told to reply
+- `client.send(chat, options)` is `client.ask[String](chat, options)`, an `Answer` whose `value` is the text,
+  beside the stop reason, usage and tool calls the old `Reply` had. The model is now told to reply
   with a JSON string, as for any type, which changes what a reply is:
-  - `.text` is the JSON the model wrote, quoted and escaped; read `.answer` for the text itself.
+  - `.text` is the JSON the model wrote, quoted and escaped; read `.value` for the text itself.
   - A reply cut off at the token limit, stopped by the provider, as on a refusal, or blank now fails with
     `LlmError.Unreadable`, where `send` gave it. Code that looked at a returned `StopReason.MaxTokens` matches
-    `Unreadable(_, _, replies)` and looks at `replies.last.stopReason`.
+    `Unreadable(_, _, answers)` and looks at `answers.last.stopReason`.
   - A reply of prose, or text unquoted (`Paris`), is not JSON, so is asked for again, three requests in all
     unless `attempts` says otherwise, each seen by a wrapper.
   - A prompt asking for JSON of its own asks for that type instead, rather than for `String`, whose schema
     would contradict the prompt.
   - Stop sequences match the JSON the model writes, as *Tuning and metadata* says.
-- `Reply` is generic: name it as `Reply[?]`, or `Reply[Nothing]` for a reply as the provider gave it, and match
-  it by its six fields, `answer` and `attempts` the last.
+- `Reply` is now `Answer`, and generic: name it as `Answer[?]`, or `Answer[Nothing]` for a reply as the provider
+  gave it, and match it by its six fields, `value` and `attempts` the last.
 - `Prompt(text)` is `Chat.of(text)`, and `Prompt(text, Some(system))` is `Chat.of(text).withSystem(system)`.
   `ask`, `count` and `stream` take that chat where they took a prompt. A chat in which the user says nothing
   is refused.
 - A wrapper extends `LlmClient.Forwarding` and passes a request on with `super.send`, where it called the
-  wrapped client's `send`, whose replies are now `Reply[Nothing]`; one holding another client asks it.
-- A reply asking for a tool is a `Reply` with no `answer` and its `toolCalls`.
+  wrapped client's `send`, whose replies are now `Answer[Nothing]`; one holding another client asks it.
+- A reply asking for a tool is an `Answer` with no `value` and its `toolCalls`.
 - `LlmError` has a new case, `Unreadable`, which a match over every case must take.
 
 ## ⚙️ Configuration

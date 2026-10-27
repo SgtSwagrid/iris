@@ -36,7 +36,7 @@ trait LlmClient[F[_]]:
     * {{{
     * case class Person(name: String, age: Int) derives Structured
     *
-    * client.ask[Person](Chat.of("Invent a person.")).map(_.answer)
+    * client.ask[Person](Chat.of("Invent a person.")).map(_.value)
     * }}}
     *
     * @tparam A
@@ -50,7 +50,7 @@ trait LlmClient[F[_]]:
     *   to the configuration or the provider's defaults.
     *
     * @param attempts
-    *   The most replies to ask for, three unless given, which must be at least
+    *   The most answers to ask for, three unless given, which must be at least
     *   one, as the effect otherwise fails with an `IllegalArgumentException`.
     *
     * @return
@@ -63,10 +63,10 @@ trait LlmClient[F[_]]:
     (
       chat: Chat,
       options: ReplyOptions = ReplyOptions(),
-      attempts: Int = Asking.attempts,
+      attempts: Int = Question.attempts,
     )
     (using MonadThrow[F])
-    : F[Reply[A]] = Asking.ask(send(_, options), chat, attempts)
+    : F[Answer[A]] = Question.ask(send(_, options), chat, attempts)
 
   /**
     * Sends a chat to the model for its next reply: the one request every other
@@ -83,7 +83,7 @@ trait LlmClient[F[_]]:
     * @return
     *   An effect producing the model's reply.
     */
-  protected def send(chat: Chat, options: ReplyOptions): F[Reply[Nothing]]
+  protected def send(chat: Chat, options: ReplyOptions): F[Answer[Nothing]]
 
   /**
     * Counts the input tokens a chat would cost, as the provider counts them.
@@ -129,7 +129,7 @@ trait LlmClient[F[_]]:
       chat: Chat,
       options: ReplyOptions = ReplyOptions(),
     )
-    : F[Reply[Nothing]] = send(
+    : F[Answer[Nothing]] = send(
     chat.cacheable,
     options.copy(maxTokens = Some(1)),
   )
@@ -152,12 +152,12 @@ trait LlmClient[F[_]]:
     new LlmClient[G]:
       override protected def send
         (chat: Chat, options: ReplyOptions)
-        : G[Reply[Nothing]] = transform(client.send(chat, options))
+        : G[Answer[Nothing]] = transform(client.send(chat, options))
 
       override def count(chat: Chat, options: ReplyOptions): G[Int] =
         transform(client.count(chat, options))
 
-      override def warm(chat: Chat, options: ReplyOptions): G[Reply[Nothing]] =
+      override def warm(chat: Chat, options: ReplyOptions): G[Answer[Nothing]] =
         transform(client.warm(chat, options))
 
 object LlmClient:
@@ -182,12 +182,12 @@ object LlmClient:
 
     override protected def send
       (chat: Chat, options: ReplyOptions)
-      : F[Reply[Nothing]] = underlying.send(chat, options)
+      : F[Answer[Nothing]] = underlying.send(chat, options)
 
     override def count(chat: Chat, options: ReplyOptions): F[Int] = underlying
       .count(chat, options)
 
-    override def warm(chat: Chat, options: ReplyOptions): F[Reply[Nothing]] =
+    override def warm(chat: Chat, options: ReplyOptions): F[Answer[Nothing]] =
       underlying.warm(chat, options)
 
   /**

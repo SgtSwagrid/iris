@@ -8,7 +8,7 @@ package com.alecdorrington.iris
   *   The reply's token limit, overriding the configured one.
   *
   * @param temperature
-  *   The sampling temperature; higher values give more varied replies. Not sent
+  *   The sampling temperature; higher values give more varied answers. Not sent
   *   to Anthropic models that reject sampling.
   *
   * @param topP

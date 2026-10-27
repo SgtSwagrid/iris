@@ -2,8 +2,7 @@ package com.alecdorrington.iris
 
 import cats.MonadThrow
 import cats.syntax.all.*
-import io.circe.{DecodingFailure, Json, ParsingFailure}
-import io.circe.DecodingFailure.Reason
+import io.circe.Json
 import io.circe.parser.parse
 import scala.util.matching.Regex
 
@@ -12,9 +11,9 @@ import scala.util.matching.Regex
   * type's JSON Schema, and its reply read as JSON conforming to it, or answered
   * with why it could not be and asked again.
   */
-private[iris] object Asking:
+private[iris] object Question:
 
-  /** The most replies an ask asks for, unless told otherwise. */
+  /** The most answers an ask asks for, unless told otherwise. */
   val attempts: Int = 3
 
   /**
@@ -25,11 +24,11 @@ private[iris] object Asking:
     */
   def ask[F[_] : MonadThrow, A : Structured as A]
     (
-      send: Chat => F[Reply[Nothing]],
+      send: Chat => F[Answer[Nothing]],
       chat: Chat,
       attempts: Int,
     )
-    : F[Reply[A]] =
+    : F[Answer[A]] =
     if attempts < 1 then
       MonadThrow[F].raiseError(IllegalArgumentException(
         s"An ask needs at least one attempt, not $attempts.",
@@ -48,19 +47,19 @@ private[iris] object Asking:
   /** The attempts at one answer. */
   private final class Attempts[F[_] : MonadThrow, A]
     (
-      send: Chat => F[Reply[Nothing]],
+      send: Chat => F[Answer[Nothing]],
       structured: Structured[A],
       attempts: Int,
     ):
 
-    /** Sends the chat, after the replies so far, and reads what comes back. */
+    /** Sends the chat, after the answers so far, and reads what comes back. */
     def attempt
       (
         chat: Chat,
-        replies: Vector[Reply[Nothing]],
+        answers: Vector[Answer[Nothing]],
       )
-      : F[Reply[A]] =
-      send(chat).flatMap(reply => answered(chat, replies :+ reply))
+      : F[Answer[A]] =
+      send(chat).flatMap(reply => answered(chat, answers :+ reply))
 
     /**
       * The answer, none where the model asked for tools, a failure where asking
@@ -69,27 +68,27 @@ private[iris] object Asking:
     private def answered
       (
         chat: Chat,
-        replies: Vector[Reply[Nothing]],
+        answers: Vector[Answer[Nothing]],
       )
-      : F[Reply[A]] =
-      val reply = replies.last
-      if calledTools(reply) then summed(replies, None).pure[F]
+      : F[Answer[A]] =
+      val reply = answers.last
+      if calledTools(reply) then summed(answers, None).pure[F]
       else
         hopeless(reply) match
-          case Some(fatal) => unreadable(replies, fatal)
+          case Some(fatal) => unreadable(answers, fatal)
           case None => read(structured, reply).leftMap(stopped(reply, _)) match
-              case Right(value) => summed(replies, Some(value)).pure[F]
-              case Left(why) if replies.size < attempts =>
-                attempt(corrected(chat, reply, why), replies)
-              case Left(why) => unreadable(replies, why)
+              case Right(value) => summed(answers, Some(value)).pure[F]
+              case Left(why) if answers.size < attempts =>
+                attempt(corrected(chat, reply, why), answers)
+              case Left(why) => unreadable(answers, why)
 
     private def unreadable
       (
-        replies: Vector[Reply[Nothing]],
+        answers: Vector[Answer[Nothing]],
         detail: String,
       )
-      : F[Reply[A]] = LlmError
-      .Unreadable(replies.size, detail, replies.toList)
+      : F[Answer[A]] = LlmError
+      .Unreadable(answers.size, detail, answers.toList)
       .raiseError
 
   /**
@@ -97,7 +96,7 @@ private[iris] object Asking:
     * says it stopped as usual for a call it was made to make. A call cut off at
     * the token limit may be cut short, so is no call, but cut off.
     */
-  private def calledTools(reply: Reply[Nothing]): Boolean =
+  private def calledTools(reply: Answer[Nothing]): Boolean =
     reply.stopReason == StopReason.ToolCall ||
     reply.toolCalls.nonEmpty && reply.stopReason != StopReason.MaxTokens
 
@@ -107,22 +106,22 @@ private[iris] object Asking:
     */
   private def summed[A]
     (
-      replies: Vector[Reply[Nothing]],
+      answers: Vector[Answer[Nothing]],
       answer: Option[A],
     )
-    : Reply[A] = replies
+    : Answer[A] = answers
     .last
     .copy(
-      usage = replies.toList.traverse(_.usage).flatMap(_.reduceOption(_ + _)),
-      answer = answer,
-      attempts = replies.size,
+      usage = answers.toList.traverse(_.usage).flatMap(_.reduceOption(_ + _)),
+      value = answer,
+      attempts = answers.size,
     )
 
   /** The answer a reply holds, or why it holds none. */
   private def read[A]
     (
       structured: Structured[A],
-      reply: Reply[Nothing],
+      reply: Answer[Nothing],
     )
     : Either[String, A] = parsed(reply.text).flatMap(decoded(structured, _))
 
@@ -133,7 +132,7 @@ private[iris] object Asking:
     * said nothing. A reply ended by a stop sequence is read, and if it cannot
     * be, asked for again, told so, as only Anthropic reports one.
     */
-  private def hopeless(reply: Reply[Nothing]): Option[String] =
+  private def hopeless(reply: Answer[Nothing]): Option[String] =
     reply.stopReason match
       case StopReason.MaxTokens =>
         Some("It was cut off at the token limit before it was complete.")
@@ -142,7 +141,7 @@ private[iris] object Asking:
       case _                            => None
 
   /** Why a reply could not be read, said to have ended at a stop sequence. */
-  private def stopped(reply: Reply[Nothing], why: String): String =
+  private def stopped(reply: Answer[Nothing], why: String): String =
     if reply.stopReason == StopReason.StopSequence then
       s"It stopped at a stop sequence. $why"
     else why
@@ -164,7 +163,7 @@ private[iris] object Asking:
   private def corrected
     (
       chat: Chat,
-      reply: Reply[Nothing],
+      reply: Answer[Nothing],
       why: String,
     )
     : Chat = chat
@@ -173,27 +172,14 @@ private[iris] object Asking:
 
   /**
     * The JSON of a reply: the whole reply, else what its last code fence holds,
-    * as of a draft followed by an answer, else its outermost object or array,
-    * as prose may surround it. A fence within a JSON string is part of it.
+    * as of a draft followed by an answer. A fence within a JSON string is part
+    * of it.
     */
   private def parsed(text: String): Either[String, Json] =
-    val fence = fenced(text)
-    (text.trim :: fence.toList ++ outermost(text))
+    (text.trim :: fenced(text).toList)
       .map(parse)
       .collectFirst { case Right(json) => json }
-      .toRight(s"It is not JSON${ where(parse(fence.getOrElse(text.trim))) }.")
-
-  /**
-    * Where a parse failed, as its message says, without what it read there. A
-    * parser in JavaScript says nowhere.
-    */
-  private def where(read: Either[ParsingFailure, Json]): String = read
-    .left
-    .toOption
-    .flatMap(failure => position.findFirstIn(failure.message))
-    .fold("")(" " + _)
-
-  private val position: Regex = """\(line \d+, column \d+\)""".r
+      .toRight("It is not JSON.")
 
   /** What the last code fence holds, its language named or not. */
   private def fenced(text: String): Option[String] = fence
@@ -204,47 +190,11 @@ private[iris] object Asking:
 
   private val fence: Regex = """(?s)```(?:[\w-]+\s)?\s*(.*?)\s*```""".r
 
-  /** The text from the first opening brace or bracket to the last closing one. */
-  private def outermost(text: String): Option[String] =
-    val start = text.indexWhere(c => c == '{' || c == '[')
-    val end   = text.lastIndexWhere(c => c == '}' || c == ']')
-    Option.when(start >= 0 && end > start)(text.substring(start, end + 1))
-
+  /** Every failure to decode the JSON, as circe says it. */
   private def decoded[A]
     (structured: Structured[A], json: Json)
     : Either[String, A] = structured
     .decoder
     .decodeAccumulating(json.hcursor)
     .toEither
-    .leftMap(_.map(described).toList.mkString("\n"))
-
-  /** A decoding failure, by where and why, without the values it met. */
-  private def described(failure: DecodingFailure): String =
-    s"At ${ place(failure) }: ${ reason(failure) }"
-
-  /** Where a failure was met, which circe gives as empty at the top. */
-  private def place(failure: DecodingFailure): String = failure
-    .pathToRootString
-    .filter(_.nonEmpty)
-    .getOrElse("the top")
-
-  private def reason(failure: DecodingFailure): String = failure.reason match
-    case Reason.WrongTypeExpectation(expected, json) =>
-      s"Expected ${ article(expected) }, not ${ kind(json) }"
-    case Reason.MissingField          => "Missing required field"
-    case Reason.CustomReason(message) => message
-
-  /** A JSON type's name with its article, as `an integer`. */
-  private def article(kind: String): String = kind match
-    case "boolean"                           => "a Boolean"
-    case vowel if "aeiou".contains(vowel(0)) => s"an $vowel"
-    case other                               => s"a $other"
-
-  private def kind(json: Json): String = json.fold(
-    "null",
-    _ => "a Boolean",
-    _ => "a number",
-    _ => "a string",
-    _ => "an array",
-    _ => "an object",
-  )
+    .leftMap(_.map(_.getMessage).toList.mkString("\n"))

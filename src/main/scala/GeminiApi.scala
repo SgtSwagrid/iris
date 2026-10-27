@@ -27,8 +27,8 @@ private[iris] object GeminiApi extends ProviderApi:
   override def credentials(config: LlmConfig): Seq[Header] =
     Seq(Header("x-goog-api-key", config.apiKey))
 
-  override val replies: Decoder[Either[LlmError, Reply[Nothing]]] =
-    Decoder[Response].map(_.toReply)
+  override val answers: Decoder[Either[LlmError, Answer[Nothing]]] =
+    Decoder[Response].map(_.toAnswer)
 
   override def counting
     (
@@ -268,7 +268,7 @@ private[iris] object GeminiApi extends ProviderApi:
       * This response as a reply, failing without a candidate: a blocked prompt
       * gets `200` and none, which would pass for an empty reply.
       */
-    def toReply: Either[LlmError, Reply[Nothing]] = candidates
+    def toAnswer: Either[LlmError, Answer[Nothing]] = candidates
       .flatMap(_.headOption)
       .toRight(LlmError.Malformed(
         LlmProvider.Gemini.displayName,
@@ -276,7 +276,7 @@ private[iris] object GeminiApi extends ProviderApi:
       ))
       .map: candidate =>
         val calls = toolCalls(candidate)
-        Reply(
+        Answer(
           text = text(candidate),
           stopReason = stopped(calls.nonEmpty, candidate.finishReason),
           usage = usageMetadata.flatMap(_.toUsage),

@@ -316,7 +316,7 @@ class ToolSuite extends FunSuite:
     )
 
   test("a model's reply can be appended and answered"):
-    val reply = Reply(
+    val reply = Answer(
       "Let me look.",
       StopReason.ToolCall,
       None,

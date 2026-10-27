@@ -31,7 +31,7 @@ class ClientSuite extends FunSuite:
 
   private def result
     (client: LlmClient[SyncIO])
-    : Either[Throwable, Reply[Nothing]] = Sending(client)
+    : Either[Throwable, Answer[Nothing]] = Sending(client)
     .sent(prompt)
     .attempt
     .unsafeRunSync()
@@ -44,7 +44,7 @@ class ClientSuite extends FunSuite:
          "stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}"""
     assertEquals(
       result(client(body)),
-      Right(Reply(
+      Right(Answer(
         "Hi",
         StopReason.Completed,
         Some(Usage(3, 1)),
