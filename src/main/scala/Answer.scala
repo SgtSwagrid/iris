@@ -45,12 +45,19 @@ object Answer:
   /** The most replies [[LlmClient.ask]] asks for, unless told otherwise. */
   val attempts: Int = 3
 
-  /** The reply's text, as written. */
+  /**
+    * The reply's text, as written, cut off or not, but no reply asking for a
+    * tool, whose call a text cannot hold.
+    */
   given text: Answer[String] = new Answer[String]:
 
     override val instructions: Option[String] = None
 
-    override def read(reply: Reply): Either[String, String] = Right(reply.text)
+    override def read(reply: Reply): Either[String, String] = Either.cond(
+      reply.stopReason != StopReason.ToolCall,
+      reply.text,
+      calledTool,
+    )
 
   /**
     * JSON conforming to a structured type's schema, for every type but
@@ -113,7 +120,7 @@ object Answer:
 
     private def answered(chat: Chat, replies: Vector[Reply]): F[A] =
       val reply = replies.last
-      A.read(reply) match
+      A.read(reply).leftMap(stopped(reply, _)) match
         case Right(value) => value.pure[F]
         case Left(why)    => hopeless(reply) match
             case Some(fatal)                     => unreadable(replies, fatal)
@@ -127,18 +134,24 @@ object Answer:
   /**
     * Why asking again could not help a reply that could not be read, where it
     * could not: it was cut short, asked for a tool, stopped for a reason of the
-    * provider's, such as a refusal, or said nothing.
+    * provider's, such as a refusal, or said nothing. A reply ended by a stop
+    * sequence is asked for again, told so, as only Anthropic reports one.
     */
   private def hopeless(reply: Reply): Option[String] = reply.stopReason match
     case StopReason.MaxTokens =>
       Some("It was cut off at the token limit before it was complete.")
-    case StopReason.StopSequence =>
-      Some("It stopped at a stop sequence before it was complete.")
-    case StopReason.ToolCall =>
-      Some("It asked for a tool instead of answering.")
+    case StopReason.ToolCall          => Some(calledTool)
     case StopReason.Other(reason)     => Some(s"It stopped, as `$reason`.")
     case _ if reply.text.trim.isEmpty => Some("It said nothing.")
     case _                            => None
+
+  private val calledTool: String = "It asked for a tool instead of answering."
+
+  /** Why a reply could not be read, said to have ended at a stop sequence. */
+  private def stopped(reply: Reply, why: String): String =
+    if reply.stopReason == StopReason.StopSequence then
+      s"It stopped at a stop sequence. $why"
+    else why
 
   /**
     * Closes the user's last message with the instructions, or else adds them in
@@ -158,17 +171,21 @@ object Answer:
     .user(s"That reply could not be read:\n$why\n\nReply again as asked.")
 
   /**
-    * The JSON of a reply: what a code fence holds, wherever it is, else the
-    * whole reply, else its outermost object or array, as prose may surround it.
+    * The JSON of a reply: the whole reply, else what its last code fence holds,
+    * as of a draft followed by an answer, else its outermost object or array,
+    * as prose may surround it. A fence within a JSON string is part of it.
     */
   private def parsed(text: String): Either[String, Json] =
-    val tried = (fenced(text).toList :+ text.trim) ++ outermost(text)
-    val read  = tried.map(parse)
-    read
+    val fence = fenced(text)
+    (text.trim :: fence.toList ++ outermost(text))
+      .map(parse)
       .collectFirst { case Right(json) => json }
-      .toRight(s"It is not JSON${ read.headOption.fold("")(where) }.")
+      .toRight(s"It is not JSON${ where(parse(fence.getOrElse(text.trim))) }.")
 
-  /** Where a parse failed, as its message says, without what it read there. */
+  /**
+    * Where a parse failed, as its message says, without what it read there. A
+    * parser in JavaScript says nowhere.
+    */
   private def where(read: Either[ParsingFailure, Json]): String = read
     .left
     .toOption
@@ -177,9 +194,11 @@ object Answer:
 
   private val position: Regex = """\(line \d+, column \d+\)""".r
 
-  /** What the first code fence holds, its language named or not. */
+  /** What the last code fence holds, its language named or not. */
   private def fenced(text: String): Option[String] = fence
-    .findFirstMatchIn(text)
+    .findAllMatchIn(text)
+    .toList
+    .lastOption
     .map(_.group(1))
 
   private val fence: Regex = """(?s)```(?:[\w-]+\s)?\s*(.*?)\s*```""".r
@@ -200,9 +219,13 @@ object Answer:
 
   /** A decoding failure, by where and why, without the values it met. */
   private def described(failure: DecodingFailure): String =
-    s"At ${ failure.pathToRootString.getOrElse("the top") }: ${ reason(
-        failure,
-      ) }"
+    s"At ${ place(failure) }: ${ reason(failure) }"
+
+  /** Where a failure was met, which circe gives as empty at the top. */
+  private def place(failure: DecodingFailure): String = failure
+    .pathToRootString
+    .filter(_.nonEmpty)
+    .getOrElse("the top")
 
   private def reason(failure: DecodingFailure): String = failure.reason match
     case Reason.WrongTypeExpectation(expected, json) =>

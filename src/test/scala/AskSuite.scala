@@ -202,12 +202,74 @@ class AskSuite extends FunSuite:
         )
       case other => fail(s"Expected the call to be kept, not $other.")
 
-  test("a text answer is truncated or calls tools as the reply does"):
+  test("a text answer is the reply cut off, as the reply is"):
     val cut = client(_ => said("Ada, thirty", "max_tokens"))
     assertEquals(
       asked[String](cut),
       Right("Ada, thirty"),
     )
+
+  test("a text answer is no reply asking for a tool, which it fails keeping"):
+    val calling = """{"content":[{"type":"text","text":"Let me look."},
+      {"type":"tool_use","id":"call_1","name":"weather","input":{}}],
+      "stop_reason":"tool_use"}"""
+    asked[String](client(_ => calling)) match
+      case Left(LlmError.Unreadable(1, detail, List(reply))) =>
+        assertEquals(
+          detail,
+          "It asked for a tool instead of answering.",
+        )
+        assertEquals(
+          reply.toolCalls.map(_.tool),
+          List("weather"),
+        )
+      case other => fail(s"Expected the call to fail at once, not $other.")
+
+  test("a fence within a JSON string is part of it, not the answer"):
+    val fenced = """{"name":"```Ada```","age":36}"""
+    assertEquals(
+      asked[Person](client(_ => said(fenced))),
+      Right(Person("```Ada```", 36, None)),
+    )
+
+  test("of two fences, the last is the answer"):
+    val drafted = s"Draft:\n```json\n{\"name\":\"Bea\",\"age\":1}\n```\n" +
+      s"Final:\n```json\n$adaJson\n```"
+    assertEquals(
+      asked[Person](client(_ => said(drafted))),
+      Right(ada),
+    )
+
+  test("a reply ended by a stop sequence is asked for again, told so"):
+    val stopped = client: sent =>
+      val told = sent.lastOption.map(_.text).getOrElse("")
+      if told.contains("It stopped at a stop sequence. It is not JSON") then
+        said(adaJson)
+      else said("Ada, 36", "stop_sequence")
+    assertEquals(asked[Person](stopped), Right(ada))
+
+  test("a map's keys may be told the model, but stay out of the message"):
+    asked[Map[String, Int]](
+      client(_ => said("""{"secret":"x"}""")),
+      1,
+    ) match
+      case Left(failure @ LlmError.Unreadable(_, detail, _)) =>
+        assertEquals(
+          detail,
+          "At .secret: Expected an integer, not a string",
+        )
+        assert(!failure.getMessage.contains("secret"))
+      case other => fail(s"Expected the ask to be unreadable, not $other.")
+
+  test("a number out of range or not whole is told so"):
+    for (written, detail) <- List(
+        "3000000000" -> "At the top: Expected an integer that fits in Int",
+        "3.5"        -> "At the top: Expected a whole number",
+      )
+    do
+      asked[Int](client(_ => said(written)), 1) match
+        case Left(LlmError.Unreadable(_, said, _)) => assertEquals(said, detail)
+        case other => fail(s"Expected the ask to be unreadable, not $other.")
 
   test("an ask of no attempts is refused before any request"):
     val never = client(_ => throw AssertionError("A request was made."))

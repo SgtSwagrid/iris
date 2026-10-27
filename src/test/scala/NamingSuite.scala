@@ -135,3 +135,46 @@ class NamingSuite extends FunSuite:
       Structured[Int].described("From 1 to 10.").schema,
       json("""{"description":"From 1 to 10.","type":"integer"}"""),
     )
+
+final case class RawChapter(title: String, parts: List[Chapter])
+  derives Structured
+
+/** A chapter, made from a raw one. */
+final case class Chapter(title: String, parts: List[Chapter])
+
+object Chapter:
+
+  given Structured[Chapter] = Structured[RawChapter].imap(raw =>
+    Chapter(raw.title, raw.parts),
+  )(chapter => RawChapter(chapter.title, chapter.parts))
+
+final case class `Odd Name`(next: Option[`Odd Name`]) derives Structured
+
+class ConvertedNamingSuite extends FunSuite:
+
+  test("a type converted from one it recurs through is defined, not unending"):
+    val schema = Structured[Chapter].schema
+    assertEquals(
+      schema.hcursor.downField("$defs").keys.map(_.toList),
+      Some(List("Chapter")),
+    )
+    val chapter = Chapter(
+      "Iris",
+      List(Chapter("Usage", List.empty)),
+    )
+    val chapters = Structured[Chapter]
+    assertEquals(
+      chapters.decoder.decodeJson(chapters.encoder(chapter)),
+      Right(chapter),
+    )
+
+  test("a name a reference cannot hold as it is is escaped there"):
+    val schema = Structured[`Odd Name`].schema
+    assertEquals(
+      schema.hcursor.get[String]("$ref"),
+      Right("#/$defs/Odd%20Name"),
+    )
+    assertEquals(
+      schema.hcursor.downField("$defs").keys.map(_.toList),
+      Some(List("Odd Name")),
+    )

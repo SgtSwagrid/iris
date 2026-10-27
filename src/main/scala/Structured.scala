@@ -4,6 +4,7 @@ import cats.syntax.all.*
 import io.circe.{Decoder, DecodingFailure, Encoder, HCursor, Json, JsonObject}
 import io.circe.DecodingFailure.Reason
 import io.circe.syntax.*
+import java.nio.charset.StandardCharsets
 import scala.compiletime.{constValueTuple, erasedValue, summonAll, summonFrom}
 import scala.deriving.Mirror
 
@@ -56,6 +57,7 @@ final class Structured[A] private (
   private[iris] val optional: Boolean = false,
   private[iris] val definable: Boolean = false,
   private[iris] val description: Option[String] = None,
+  private[iris] val note: Option[String] = None,
 ):
 
   /** What this type's schema is made of, read when first needed. */
@@ -106,25 +108,31 @@ final class Structured[A] private (
     converted(to, from, TypeName.of[B], Scaladoc.of[B])
 
   /**
-    * Describes this type's values as the text says, in place of any other
-    * description, as of bounds an [[emap]] keeps them within.
+    * Describes this type's values in words, as of bounds an [[emap]] keeps them
+    * within, beside whatever else describes them: the type's Scaladoc, or the
+    * `@param` of a field of the type.
     *
-    * @param description
-    *   The description.
+    * @param text
+    *   The words.
     *
     * @return
     *   This structured type, described.
     */
-  def described(description: String): Structured[A] = new Structured(
+  def described(text: String): Structured[A] = new Structured(
     encoder,
     decoder,
     shape,
     name,
     optional,
     definable,
-    Some(description),
+    description,
+    Some(note.fold(text)(Shape.joined(_, text))),
   )
 
+  /**
+    * A type converted from this one, as this one is but for its name and its
+    * own Scaladoc, and still defined where it recurs through this one.
+    */
   private def converted[B]
     (
       to: A => Either[String, B],
@@ -138,7 +146,9 @@ final class Structured[A] private (
     shape,
     named,
     optional,
-    description = described.orElse(description),
+    definable,
+    described.orElse(description),
+    note,
   )
 
 object Structured:
@@ -280,16 +290,45 @@ object Structured:
     (kind: String, name: String)
     : Structured[A] = new Structured(
     Encoder[A],
-    expecting(kind, Decoder[A]),
+    expecting(kind, name, Decoder[A]),
     Shape.Fixed(Json.obj("type" -> kind.asJson)),
     TypeName.standard(name),
   )
 
   /** A decoder saying what it expected, where circe's names only the type. */
-  private def expecting[A](kind: String, decoder: Decoder[A]): Decoder[A] =
-    Decoder.instance(cursor =>
-      decoder(cursor).leftMap(_ => expected(kind, cursor)),
+  private def expecting[A]
+    (
+      kind: String,
+      name: String,
+      decoder: Decoder[A],
     )
+    : Decoder[A] = Decoder.instance(cursor =>
+    decoder(cursor).leftMap(_ => mismatched(kind, name, cursor)),
+  )
+
+  /**
+    * Why a simple type could not be read: a number out of its range or not
+    * whole, or a value of another kind, as circe names only the type.
+    */
+  private def mismatched
+    (
+      kind: String,
+      name: String,
+      cursor: HCursor,
+    )
+    : DecodingFailure = cursor.value.asNumber match
+    case Some(number) if kind == "integer" && number.toBigInt.isEmpty =>
+      DecodingFailure(
+        Reason.CustomReason("Expected a whole number"),
+        cursor,
+      )
+    case Some(_) if kind == "integer" || kind == "number" =>
+      val noun = if kind == "integer" then "an integer" else "a number"
+      DecodingFailure(
+        Reason.CustomReason(s"Expected $noun that fits in $name"),
+        cursor,
+      )
+    case _ => expected(kind, cursor)
 
   /** The name of a standard type constructor applied to structured types. */
   private def applied(name: String, arguments: Structured[?]*): TypeName =
@@ -511,10 +550,15 @@ private[iris] enum Shape:
       )
     case Record(fields) => Shape.closed(
         fields.map(field =>
-          field.label -> Shape.describedAs(
-            describe(field.structured),
-            field.description,
-          ),
+          field.label ->
+            field
+              .description
+              .fold(describe(field.structured))(own =>
+                Shape.describedAs(
+                  describe(field.structured),
+                  Some(field.structured.note.fold(own)(Shape.joined(own, _))),
+                ),
+              ),
         ),
         fields.filterNot(_.structured.optional).map(_.label),
       )
@@ -646,11 +690,34 @@ private[iris] object Shape:
     )
     : Json = describedAs(
     structured.shape.schema(described(_, shown)),
-    structured.description,
+    (structured.description ++ structured.note).reduceOption(joined),
   )
 
+  /** Two descriptions, as paragraphs of one. */
+  def joined(first: String, second: String): String = s"$first\n\n$second"
+
   private def reference(name: String): Json =
-    Json.obj("$ref" -> s"#/$$defs/$name".asJson)
+    Json.obj("$ref" -> s"#/$$defs/${ pointed(name) }".asJson)
+
+  /**
+    * A definition's name as a JSON Pointer token in a URI fragment: `~` and `/`
+    * escaped as the pointer does, and anything else a fragment cannot hold
+    * percent-encoded.
+    */
+  private def pointed(name: String): String = name
+    .replace("~", "~0")
+    .replace("/", "~1")
+    .getBytes(StandardCharsets.UTF_8)
+    .map(byte =>
+      val char = (byte & 0xFF).toChar
+      if byte >= 0 && fragment.contains(char) then char.toString
+      else f"%%${ byte & 0xFF }%02X",
+    )
+    .mkString
+
+  private val fragment: Set[Char] =
+    (('A' to 'Z') ++ ('a' to 'z') ++ ('0' to '9') ++ "-._~!$&'()*+,;=:@/?")
+      .toSet
 
   /** An object of exactly the given properties. */
   private def closed

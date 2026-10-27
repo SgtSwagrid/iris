@@ -68,10 +68,9 @@ trait LlmClient[F[_]]:
     * must take and reading its reply as one. A reply that cannot be read is
     * followed by why, and the model asked again, until one can be or the
     * attempts run out, but not where asking again could not help: a reply cut
-    * off at the token limit or a stop sequence, asking for a tool, stopped for
-    * a reason of the provider's, such as a refusal, or saying nothing. Each
-    * attempt goes through [[send]], so a wrapper around the client sees every
-    * one.
+    * off at the token limit, asking for a tool, stopped for a reason of the
+    * provider's, such as a refusal, or saying nothing. Each attempt goes
+    * through [[send]], so a wrapper around the client sees every one.
     *
     * A `String` is the reply's text as written, as [[send]] gives it. Any
     * [[Structured]] type is JSON conforming to its schema, which closes the
@@ -93,7 +92,8 @@ trait LlmClient[F[_]]:
     *   The per-request options, alike for every attempt.
     *
     * @param attempts
-    *   The most replies to ask for, which must be at least one.
+    *   The most replies to ask for, which must be at least one, as the effect
+    *   otherwise fails with an `IllegalArgumentException`.
     *
     * @return
     *   An effect producing the answer, which fails with [[LlmError.Unreadable]]

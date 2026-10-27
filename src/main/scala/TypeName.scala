@@ -44,7 +44,10 @@ private[iris] object TypeName:
         '{ $named.applied($applied) }
       case other => symbolic(other)
 
-  /** A type argument's name, as its structured type has it, where it has one. */
+  /**
+    * A type argument's name, as its structured type has it, where it has one,
+    * or else as it is written, as a type constructor's is.
+    */
   private def argument
     (using Quotes)
     (argument: quotes.reflect.TypeRepr)
@@ -52,16 +55,38 @@ private[iris] object TypeName:
     case '[a] => Expr.summon[Structured[a]] match
         case Some(structured) => '{ $structured.name }
         case None             => naming[a]
+    case _ => shown(argument)
 
-  /** The name of a type's symbol: a singleton's term, else its class. */
+  /**
+    * The name of a type's symbol: a singleton's term, else its class, or else,
+    * as for a union, the type as it is written.
+    */
   private def symbolic
     (using Quotes)
     (repr: quotes.reflect.TypeRepr)
     : Expr[TypeName] =
     import quotes.reflect.*
-    val symbol = repr match
-      case singleton: TermRef => singleton.termSymbol
-      case other              => other.typeSymbol
+    repr match
+      case singleton: TermRef                   => named(singleton.termSymbol)
+      case union: OrType                        => shown(union)
+      case both: AndType                        => shown(both)
+      case other if other.typeSymbol.isNoSymbol => shown(other)
+      case other                                => named(other.typeSymbol)
+
+  private def named
+    (using Quotes)
+    (symbol: quotes.reflect.Symbol)
+    : Expr[TypeName] =
     val full  = Expr(symbol.fullName.replace("$", ""))
     val short = Expr(symbol.name.replace("$", ""))
+    '{ TypeName($full, $short) }
+
+  /** A type's name as it is written, in full and in short. */
+  private def shown
+    (using Quotes)
+    (repr: quotes.reflect.TypeRepr)
+    : Expr[TypeName] =
+    import quotes.reflect.*
+    val full  = Expr(repr.show)
+    val short = Expr(repr.show(using Printer.TypeReprShortCode))
     '{ TypeName($full, $short) }

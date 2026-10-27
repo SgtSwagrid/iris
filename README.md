@@ -108,11 +108,11 @@ A reply that cannot be read, as one that is not JSON or leaves a field out, is a
 it could not be, and the model is asked again, three times in all unless `attempts` says otherwise, as in
 `client.ask[Review](chat, attempts = 5)`. JSON is found within a code fence, or within prose around it,
 though the model is asked for JSON alone. A reply that asking again could not help fails at once: one cut
-off at the token limit or a stop sequence, one asking for a tool, one the provider stopped, as on a
-refusal, and one saying nothing. The last unreadable reply fails with `LlmError.Unreadable`, which keeps
-every reply asked for, usage included, out of its message, and says what was wrong with them without
-repeating them. Each attempt goes through `send`, so a wrapper (see [Wrapping a client](#wrapping-a-client))
-sees every one too.
+off at the token limit, one asking for a tool, one the provider stopped, as on a refusal, and one saying
+nothing. The last unreadable reply fails with `LlmError.Unreadable`, which keeps every reply asked for, usage
+included, and what the model was told was wrong with the last, which may repeat what it said; both are kept
+out of its message, so that it may be logged. Each attempt goes through `send`, so a wrapper (see
+[Wrapping a client](#wrapping-a-client)) sees every one too.
 
 Strings, numbers, Booleans, options, lists, vectors, sequences, sets and maps keyed by strings are
 structured already. An optional field may be left out. A sealed trait or enum whose cases have no fields
@@ -120,7 +120,8 @@ is written as the name of one, as `"Pleased"`, and any other as an object holdin
 as `{"Circle":{"radius":1.5}}`. A recursive type, such as a tree, refers to itself by name, each type told
 apart by its full name and type arguments. Any other type converts to and from one that is structured, and
 may refuse what it is given, as the model is then told. Say what it keeps to with `described`, so that the
-model knows before it answers:
+model knows before it answers; the words stay beside whatever else describes the type, its Scaladoc or the
+`@param` of a field of it:
 
 ```scala
 case class Score(value: Int)

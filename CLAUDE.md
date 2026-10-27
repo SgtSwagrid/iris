@@ -72,11 +72,14 @@ longer.
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
   native structured output. An unreadable reply is answered with every decoding failure (decoders accumulate)
   and asked again, `attempts` requests in all, then `LlmError.Unreadable`, carrying every reply. Asking again
-  only helps a complete reply that said something, so one stopped at `MaxTokens`, a stop sequence, a `ToolCall`
-  or an `Other` reason, or one that is blank, fails at once: an identical chat is never resent. Those checks
-  come only after a read fails, so `ask[String]` still returns truncated text and tool calls as `send` does.
-  Failures told to the model and put in `Unreadable` never repeat the reply's values (`Answer.reason` rewrites
-  circe's, which quote them), so hosts may log them.
+  only helps a complete reply that said something, so one stopped at `MaxTokens`, a `ToolCall` or an `Other`
+  reason, or one that is blank, fails at once: an identical chat is never resent. A stop sequence is asked again,
+  the model told so, as only Anthropic reports one and others would read it as complete. Those checks come only
+  after a read fails, so `ask[String]` still returns truncated text as `send` does, but fails on a tool call,
+  which its text could not hold. `Unreadable`'s message carries neither the replies nor `detail`, which is what
+  the model was told and may repeat the reply (a host's `emap` message, a `Map`'s keys), so hosts may log it.
+  Iris's own wording names no values (`Answer.reason` rewrites circe's, which quote them). JSON is read from the
+  whole reply, then its last fence, then its outermost value, so a fence inside a JSON string is never taken.
 - What goes in is a `Content[A]` everywhere (`Prompt`, `Chat.user`/`assistant`, `Message.apply`, `Part.of`):
   `String` as text, a `Part` as itself, a `Structured` value as its JSON, else an `Encoder`'s JSON. `NotGiven`s keep
   the givens apart, `Structured` winning, so a value is said as the schema the model is told describes it.
