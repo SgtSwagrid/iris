@@ -76,7 +76,10 @@ longer.
   from a circe codec. Derivation (`Mirror`s) summons field instances lazily, so that a recursive type's given
   can be made before the fields referring to it, and renders a recursive type into `$defs`, found by name (a
   generic recursive type's given is a `def`, so identity would never meet itself). Cases of a sealed trait are
-  externally tagged (`{"Circle":{...}}`), or just their names where none has fields. Test derivation from
+  externally tagged (`{"Circle":{...}}`), or just their names where none has fields. Descriptions come from
+  Scaladoc through the `Scaladoc` macro (`Symbol.docstring`), which the compiler keeps by default for sources
+  compiled in the same run, as a `derives` clause's type always is; a comment on a parameter is never kept,
+  so fields are described by `@param`. `imap`/`emap` are inline so as to read the target type's. Test derivation from
   outside the package (`StructuredSuite` is in `com.alecdorrington.example`), as inline code reaches private
   helpers only through accessors.
 - Unset optional fields are omitted one level deep, by `JsonHttp.objectOf`/`body`. Never deep-drop nulls: inside a

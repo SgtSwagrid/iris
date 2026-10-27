@@ -31,6 +31,12 @@ import scala.deriving.Mirror
   * through definitions in the schema, named for its type, so that a type within
   * another of the same name, as `Page[Page[A]]`, is taken for it.
   *
+  * The schema describes a derived type, each of its cases and each of its
+  * fields as its Scaladoc does: a type or case by its description, and a field
+  * by its class's `@param` tag. Code examples are left out, and links written
+  * as their labels. A comment is read only where its type is compiled, which is
+  * always so for `derives Structured`.
+  *
   * @tparam A
   *   The type.
   *
@@ -47,6 +53,7 @@ final class Structured[A] private (
   shaped: => Shape,
   private[iris] val name: Option[String],
   private[iris] val optional: Boolean,
+  private[iris] val description: Option[String] = None,
 ):
 
   /** What this type's schema is made of, read when first needed. */
@@ -57,7 +64,8 @@ final class Structured[A] private (
 
   /**
     * Writes and reads another type as this one, with the same schema, as for a
-    * wrapper of a value.
+    * wrapper of a value. The other type's Scaladoc describes it, where it has
+    * one, and otherwise this type's.
     *
     * @tparam B
     *   The other type.
@@ -71,13 +79,14 @@ final class Structured[A] private (
     * @return
     *   A structured type converted from this one.
     */
-  def imap[B](to: A => B)(from: B => A): Structured[B] =
+  inline def imap[B](to: A => B)(from: B => A): Structured[B] =
     emap(to.andThen(Right(_)))(from)
 
   /**
     * Writes and reads another type as this one, with the same schema, refusing
     * some values read, as for a number within bounds. The model is told why a
-    * value was refused, as for any other that could not be read.
+    * value was refused, as for any other that could not be read. The other
+    * type's Scaladoc describes it, where it has one, and otherwise this type's.
     *
     * @tparam B
     *   The other type.
@@ -91,14 +100,23 @@ final class Structured[A] private (
     * @return
     *   A structured type converted from this one.
     */
-  def emap[B](to: A => Either[String, B])(from: B => A): Structured[B] =
-    new Structured(
-      encoder.contramap(from),
-      decoder.emap(to),
-      shape,
-      name,
-      optional,
+  inline def emap[B](to: A => Either[String, B])(from: B => A): Structured[B] =
+    converted(to, from, Scaladoc.of[B])
+
+  private def converted[B]
+    (
+      to: A => Either[String, B],
+      from: B => A,
+      described: Option[String],
     )
+    : Structured[B] = new Structured(
+    encoder.contramap(from),
+    decoder.emap(to),
+    shape,
+    name,
+    optional,
+    described.orElse(description),
+  )
 
 object Structured:
 
@@ -200,13 +218,16 @@ object Structured:
     inline mirror match
       case sum: Mirror.SumOf[A] => union(
           constValue[sum.MirroredLabel],
+          Scaladoc.of[A],
           labels[sum.MirroredElemLabels],
           cases[sum.MirroredElemTypes],
           sum.ordinal,
         )
       case product: Mirror.ProductOf[A] => record(
           constValue[product.MirroredLabel],
+          Scaladoc.of[A],
           labels[product.MirroredElemLabels],
+          Scaladoc.fields[A],
           summonAll[Tuple.Map[product.MirroredElemTypes, Structured]]
             .toList
             .asInstanceOf[List[Structured[?]]],
@@ -251,12 +272,17 @@ object Structured:
   private def record[A]
     (
       name: String,
+      description: Option[String],
       labels: List[String],
+      descriptions: List[Option[String]],
       fields: => List[Structured[?]],
       build: Product => A,
     )
     : Structured[A] =
-    lazy val named = labels.zip(fields.map(_.asInstanceOf[Structured[Any]]))
+    lazy val named = labels
+      .lazyZip(fields.map(_.asInstanceOf[Structured[Any]]))
+      .lazyZip(descriptions)
+      .map(Shape.Field.apply)
     new Structured(
       Encoder
         .AsObject
@@ -271,27 +297,25 @@ object Structured:
         if !cursor.value.isObject then expected("object", cursor).invalidNel
         else
           named
-            .traverse((label, field) =>
-              field.decoder.tryDecodeAccumulating(cursor.downField(label)),
+            .traverse(field =>
+              field
+                .structured
+                .decoder
+                .tryDecodeAccumulating(cursor.downField(field.label)),
             )
             .map(values => build(Tuple.fromArray(values.toArray))),
       ),
       Shape.Record(named),
       Some(name),
       false,
+      description,
     )
 
   /** A field as written, left out where it is optional and unset. */
-  private def written
-    (
-      field: (String, Structured[Any]),
-      value: Any,
-    )
-    : Option[(String, Json)] =
-    val (label, structured) = field
-    Some(structured.encoder(value))
-      .filterNot(json => structured.optional && json.isNull)
-      .map(label -> _)
+  private def written(field: Shape.Field, value: Any): Option[(String, Json)] =
+    Some(field.structured.encoder(value))
+      .filterNot(json => field.structured.optional && json.isNull)
+      .map(field.label -> _)
 
   /**
     * The structured type of a sealed trait or enum: the name of a case where no
@@ -300,6 +324,7 @@ object Structured:
   private def union[A]
     (
       name: String,
+      description: Option[String],
       labels: List[String],
       cases: => List[Structured[?]],
       ordinal: A => Int,
@@ -314,9 +339,10 @@ object Structured:
           cursor.as[String].toValidatedNel.andThen(enumerated(named, cursor))
         else tagged(named, cursor),
       ),
-      if bare then Shape.Enumerated(labels) else Shape.Tagged(named),
+      if bare then Shape.Enumerated(named) else Shape.Tagged(named),
       Some(name),
       false,
+      description,
     )
 
   /** A case as written, by its name alone where no case has fields. */
@@ -402,10 +428,10 @@ private[iris] enum Shape:
   case Keyed(value: Structured[?])
 
   /** An object of named fields, those not optional required. */
-  case Record(fields: List[(String, Structured[?])])
+  case Record(fields: List[Shape.Field])
 
-  /** The name of one of several cases. */
-  case Enumerated(labels: List[String])
+  /** The name of one of several cases of no fields, each as it is described. */
+  case Enumerated(cases: List[(String, Structured[?])])
 
   /** An object holding one of several cases under its name. */
   case Tagged(cases: List[(String, Structured[?])])
@@ -416,7 +442,7 @@ private[iris] enum Shape:
     case Nullable(value)          => List(value)
     case Listed(item, _)          => List(item)
     case Keyed(value)             => List(value)
-    case Record(fields)           => fields.map(_._2)
+    case Record(fields)           => fields.map(_.structured)
     case Tagged(cases)            => cases.map(_._2)
 
   /** This schema, its parts described as given. */
@@ -438,12 +464,29 @@ private[iris] enum Shape:
         "additionalProperties" -> describe(value),
       )
     case Record(fields) => Shape.closed(
-        fields.map((label, field) => label -> describe(field)),
-        fields.filterNot(_._2.optional).map(_._1),
+        fields.map(field =>
+          field.label -> Shape.describedAs(
+            describe(field.structured),
+            field.description,
+          ),
+        ),
+        fields.filterNot(_.structured.optional).map(_.label),
       )
-    case Enumerated(labels) => Json.obj(
+    case Enumerated(cases) if cases.forall(_._2.description.isEmpty) =>
+      Json.obj(
         "type" -> "string".asJson,
-        "enum" -> labels.asJson,
+        "enum" -> cases.map(_._1).asJson,
+      )
+    case Enumerated(cases) => Json.obj(
+        "anyOf" ->
+          cases
+            .map((label, value) =>
+              Shape.describedAs(
+                Json.obj("const" -> label.asJson),
+                value.description,
+              ),
+            )
+            .asJson,
       )
     case Tagged(cases) => Json.obj(
         "anyOf" ->
@@ -460,6 +503,25 @@ private[iris] enum Shape:
 private[iris] object Shape:
 
   /**
+    * A field of a case class.
+    *
+    * @param label
+    *   The field's name.
+    *
+    * @param structured
+    *   The field's structured type.
+    *
+    * @param description
+    *   The field's description, which replaces its type's.
+    */
+  final case class Field
+    (
+      label: String,
+      structured: Structured[Any],
+      description: Option[String],
+    )
+
+  /**
     * The schema of a structured type. Each type that recurs is described once
     * in `$defs`, and referred to by name wherever it appears.
     */
@@ -474,11 +536,19 @@ private[iris] object Shape:
           defined
             .toList
             .sortBy(_._1)
-            .map((name, recurs) =>
-              name -> recurs.shape.schema(described(_, names)),
-            )*,
+            .map((name, recurs) => name -> body(recurs, names))*,
         ),
       ))
+
+  /** A schema with a description first, in place of any of its own. */
+  def describedAs
+    (
+      schema: Json,
+      description: Option[String],
+    )
+    : Json = description.fold(schema)(text =>
+    schema.mapObject(("description" -> text.asJson) +: _.remove("description")),
+  )
 
   /** The types, by name, met again within themselves. */
   private def recurring
@@ -502,7 +572,18 @@ private[iris] object Shape:
     : Json = structured
     .name
     .filter(defined)
-    .fold(structured.shape.schema(described(_, defined)))(reference)
+    .fold(body(structured, defined))(reference)
+
+  /** A type's own schema, its parts described within it. */
+  private def body
+    (
+      structured: Structured[?],
+      defined: Set[String],
+    )
+    : Json = describedAs(
+    structured.shape.schema(described(_, defined)),
+    structured.description,
+  )
 
   private def reference(name: String): Json =
     Json.obj("$ref" -> s"#/$$defs/$name".asJson)

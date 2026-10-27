@@ -122,6 +122,24 @@ given Structured[Score] = Structured[Int].emap(n =>
   Either.cond(n >= 1 && n <= 10, Score(n), s"$n is not from 1 to 10"))(_.value)
 ```
 
+The schema describes each type to the model as its Scaladoc does: a type, and each case of a sealed trait
+or enum, by its description, and each field by its class's `@param` tag, which replaces the description of
+the field's type. Code examples are left out, and links written as their labels.
+
+```scala
+/**
+  * A review of an essay, for its author.
+  *
+  * @param score
+  *   Out of ten, where five is passable.
+  */
+case class Review(summary: String, mood: Mood, score: Score) derives Structured
+```
+
+A comment is read where its type is compiled, as it always is for `derives Structured`; a type converted
+with `imap` or `emap` is described by its own Scaladoc where it has one there. Scala keeps no comment
+written on a parameter itself, so describe a field with `@param`.
+
 `ask[String]` is the reply's text, as `send` gives it, and the model is told nothing of its form. A value
 is sent to the model as JSON in a part of its own:
 
