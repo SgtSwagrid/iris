@@ -34,8 +34,8 @@ longer.
   and its API `id`, which `LlmModel.parse` reads back. A model Iris does not list is an `LlmModel.Other`,
   made only by `LlmModel.of(provider, id)` (so that a listed id is always its listed case, and a blank one none, and
   Gemini's `models/` is dropped) and read as `provider:id`, so that a bare name must still be a listed one; list a new model as a case of its own. What one provider's models differ in
-  (Anthropic's sampling and prefill) is kept in its `ProviderApi` (`AnthropicApi`), as sets of the cases that still allow it, so that `Other`
-  is taken to be as new as the newest. A client prompts its configuration's model alone: no option names another,
+  (Anthropic's sampling and prefill, OpenAI's highest reasoning effort) is kept in its `ProviderApi` (`AnthropicApi`,
+  `OpenAiApi`), as sets of the older cases that differ from the newest, so that `Other` is taken to be as new as the newest. A client prompts its configuration's model alone: no option names another,
   so a request can never reach a provider that does not serve its model. `LlmProvider.defaultModel` must stay a `def`: as a
   constructor parameter, the two enums would each read the other while it is still being made, and see `null`.
 - A set but unrecognised `LLM_PROVIDER` or `LLM_MODEL` means unconfigured (`None`), never a fall back to key inference.
@@ -62,7 +62,7 @@ longer.
   texts. Callers never write a separator of their own between parts.
   `JsonHttp.plain` joins parts already separated, and `Message.text` joins text parts with the same blank line.
 - `ReplyOptions.effort` (`Effort`, `Low` to `Max`) is sent as Anthropic's `output_config.effort`, OpenAI's
-  `reasoning_effort` (`Max` as `high`, its highest) and Gemini's `generationConfig.thinkingConfig.thinkingBudget`
+  `reasoning_effort` (`Max` as `max`, or as `high` on the models in `OpenAiApi.cappedAtHigh`, such as `gpt-5`) and Gemini's `generationConfig.thinkingConfig.thinkingBudget`
   (fixed amounts within every thinking Gemini model's range). Iris never chooses one, and a model that cannot take one
   refuses the request; retrying at a lower effort is the host's to do.
 - Unset optional fields are omitted one level deep, by `JsonHttp.objectOf`/`body`. Never deep-drop nulls: inside a
