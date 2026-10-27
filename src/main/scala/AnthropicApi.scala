@@ -33,8 +33,8 @@ private[iris] object AnthropicApi extends ProviderApi:
     ),
   )
 
-  override val replies: Decoder[Either[LlmError, Reply]] = Decoder[Response]
-    .map(_.toReply)
+  override val replies: Decoder[Either[LlmError, Reply[Nothing]]] =
+    Decoder[Response].map(_.toReply)
 
   override def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta] = Sse
     .separately(deltas)(events)
@@ -346,7 +346,7 @@ private[iris] object AnthropicApi extends ProviderApi:
     ):
 
     /** This response as a reply, which may be empty, as on a refusal. */
-    def toReply: Either[LlmError, Reply] = Right(Reply(
+    def toReply: Either[LlmError, Reply[Nothing]] = Right(Reply(
       text = content.flatMap(_.said).mkString,
       stopReason = AnthropicApi.stopReason(stopReason),
       usage = usage.flatMap(_.toUsage),

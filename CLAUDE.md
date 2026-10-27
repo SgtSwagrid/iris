@@ -15,7 +15,7 @@ This is Iris, a Scala 3 library giving one provider-agnostic interface to the AP
 adapters for Anthropic, OpenAI and Google Gemini, built on Cats Effect, sttp and Circe. It is in beta.
 
 It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js. `LlmClient` is the public interface: callers `ask` a `Chat`
-for an answer of a type (`Reply` whole, `String`, or any `Structured` type), and `send` is the protected request every
+for an answer of any `Structured` type, `String` included, as a uniform `Reply[A]`, and `send` is the protected request every
 `ask` makes, which `JsonClient` implements and wrappers override (`LlmClient.Forwarding`, `mapK`). Each `LlmProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
 `JsonHttp`), which tells the one `JsonClient` and the one `SseClient` all they need to know of it: its endpoints,
 request bodies, credentials, the chats it refuses, how its replies read, and how it counts tokens. Anything
@@ -67,20 +67,21 @@ longer.
   `reasoning_effort` (`Max` as `max`, or as `high` on the models in `OpenAiApi.cappedAtHigh`, such as `gpt-5`) and Gemini's `generationConfig.thinkingConfig.thinkingBudget`
   (fixed amounts within every thinking Gemini model's range). Iris never chooses one, and a model that cannot take one
   refuses the request; retrying at a lower effort is the host's to do.
-- `LlmClient.ask[A]` needs an `Answer[A]`: `Answer.text` for `String` (the reply as written, nothing said of it),
-  else `Answer.json` for any `Structured` type (`NotGiven[A =:= String]` keeps the two apart, whatever the given
-  priority rules), and `Answer.reply` for `Reply` (the reply whole, never refused). It is built on `send`
-  alone, provider-agnostic, and passes `Answer.ask` the client's `send` as a function, as `send` is protected: the schema is asked for in words closing the
+- `LlmClient.ask[A : Structured]` reads every type one way, `String` included, and always gives a `Reply[A]`:
+  the last reply's text, stop reason and tool calls, the usage of every attempt summed, the attempts, and
+  `answer: Option[A]`, `None` where the model asked for a tool. Never add a per-type reading or a different
+  result for some types: the user wants every ask uniform. The provider's own reply is a `Reply[Nothing]`
+  (`Reply` is covariant), which `send`, `warm` and `Unreadable` give. `ask` is built on `send` alone,
+  provider-agnostic, and passes `Asking.ask` the client's `send` as a function, as `send` is protected: the schema is asked for in words closing the
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
   native structured output. An unreadable reply is answered with every decoding failure (decoders accumulate)
-  and asked again, `attempts` requests in all, then `LlmError.Unreadable`, carrying every reply. Asking again
-  only helps a complete reply that said something, so one stopped at `MaxTokens`, a `ToolCall` or an `Other`
-  reason, or one that is blank, fails at once: an identical chat is never resent. A stop sequence is asked again,
-  the model told so, as only Anthropic reports one and others would read it as complete. Those checks come only
-  after a read fails, so `ask[String]` still returns truncated text as `send` does, but fails on a tool call,
-  which its text could not hold. `Unreadable`'s message carries neither the replies nor `detail`, which is what
+  and asked again, `attempts` requests in all, then `LlmError.Unreadable`, carrying every reply. A `ToolCall`
+  reply is given at once with no answer. Asking again only helps a complete reply that said something, so one
+  stopped at `MaxTokens` or an `Other` reason, or one that is blank, fails at once: an identical chat is never
+  resent. A stop sequence is asked again, the model told so, as only Anthropic reports one and others would read
+  it as complete. `Unreadable`'s message carries neither the replies nor `detail`, which is what
   the model was told and may repeat the reply (a host's `emap` message, a `Map`'s keys), so hosts may log it.
-  Iris's own wording names no values (`Answer.reason` rewrites circe's, which quote them). JSON is read from the
+  Iris's own wording names no values (`Asking.reason` rewrites circe's, which quote them). JSON is read from the
   whole reply, then its last fence, then its outermost value, so a fence inside a JSON string is never taken.
 - What goes in is a `Content[A]` everywhere (`Chat.of`, `Chat.user`/`assistant`, `Message.apply`, `Part.of`):
   `String` as text, a `Part` as itself, a `Structured` value as its JSON, else an `Encoder`'s JSON. `NotGiven`s keep
@@ -154,9 +155,9 @@ it only through a release (below).
 3. Once Maven Central serves the new version, bump it in each project using Iris, by pull request there. Their
    Scala Steward would otherwise propose it on its next weekly run. A version that breaks callers needs their code
    changed too, as README's *Upgrading* section says. For 0.3.0, as found in review: Themis passes requests on
-   with `super.send` in `Throttle`, `Allowances` and `Recall`, asks `ask[Reply]` in `ComparisonService`,
-   `EvaluationService`, `TaskImportService` and `TranscriptionService`, and its test fakes override the protected
-   `send`; Codeswitch's `Translator` asks where it sent.
+   with `super.send` in `Throttle`, `Allowances` and `Recall` (whose replies are `Reply[Nothing]`), asks where it
+   sent in `ComparisonService`, `EvaluationService`, `TaskImportService` and `TranscriptionService`, reading
+   `answer`, and its test fakes override the protected `send`; Codeswitch's `Translator` asks where it sent.
 
 ## Instructions
 

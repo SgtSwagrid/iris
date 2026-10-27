@@ -120,7 +120,7 @@ enum LlmError(message: String) extends Exception(message):
     (
       attempts: Int,
       detail: String,
-      replies: List[Reply],
+      replies: List[Reply[Nothing]],
     )
     extends LlmError(
       s"The model's reply could not be read as asked (attempts: $attempts)",

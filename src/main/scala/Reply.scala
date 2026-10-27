@@ -1,26 +1,41 @@
 package com.alecdorrington.iris
 
 /**
-  * The model's reply to a [[Chat]], as [[LlmClient.ask]] gives it whole.
+  * The model's reply to a [[Chat]], with the answer read from it: everything
+  * [[LlmClient.ask]] gives, alike for every type of answer. A reply as the
+  * provider gave it, before any answer is read, is a `Reply[Nothing]`.
+  *
+  * @tparam A
+  *   The type of the answer.
   *
   * @param text
-  *   The text of the reply.
+  *   The text of the reply, as the model wrote it.
   *
   * @param stopReason
   *   The reason the model stopped.
   *
   * @param usage
-  *   The token counts for the request, where the provider reports them.
+  *   The token counts, summed over every attempt, where the provider reports
+  *   them.
   *
   * @param toolCalls
   *   The tools the model asks to have run before it goes on, if any.
+  *
+  * @param answer
+  *   The answer read from the reply, or `None` where the model asked for tools
+  *   instead, or none was read.
+  *
+  * @param attempts
+  *   The number of replies asked for before this one could be read.
   */
-final case class Reply
+final case class Reply[+A]
   (
     text: String,
     stopReason: StopReason = StopReason.Completed,
     usage: Option[Usage] = None,
     toolCalls: List[Part.ToolCall] = List.empty,
+    answer: Option[A] = None,
+    attempts: Int = 1,
   )
 
 /** The reason a model stopped generating, normalised across providers. */
@@ -85,6 +100,21 @@ final case class Usage
     inputTokens: Int,
     outputTokens: Int,
     cachedTokens: Int = 0,
+  ):
+
+  /**
+    * Adds the token counts of another request to these.
+    *
+    * @param other
+    *   The other request's counts.
+    *
+    * @return
+    *   The counts of both requests together.
+    */
+  def + (other: Usage): Usage = Usage(
+    inputTokens + other.inputTokens,
+    outputTokens + other.outputTokens,
+    cachedTokens + other.cachedTokens,
   )
 
 object Usage:

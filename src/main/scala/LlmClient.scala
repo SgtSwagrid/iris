@@ -18,24 +18,24 @@ import sttp.client4.Backend
 trait LlmClient[F[_]]:
 
   /**
-    * Asks the model for its next reply to a chat, read as an answer of a type:
-    * the one way a caller has a reply, as [[count]] and [[warm]] have none to
-    * read. It needs `F` to raise errors, as every client's effect can.
+    * Asks the model for its next reply to a chat, with an answer of a type read
+    * from it: the one way a caller has a reply, as [[count]] and [[warm]] have
+    * none to read. It needs `F` to raise errors, as every client's effect can.
     *
-    * A [[Reply]] is the reply whole: its text, why the model stopped, its token
-    * usage and the tools it asked for. A `String` is its text as written. Any
-    * [[Structured]] type is JSON conforming to its schema, which closes the
-    * chat's last user message. A reply that cannot be read as one is followed
-    * by why, and the model asked again, until one can be or the attempts run
-    * out, but not where asking again could not help: a reply cut off at the
-    * token limit, asking for a tool, stopped for a reason of the provider's,
-    * such as a refusal, or saying nothing. Every attempt goes through [[send]],
-    * so a wrapper overriding it sees each.
+    * Every type is asked for alike, `String` as much as a case class of one's
+    * own: the model is told the type's JSON Schema, closing the chat's last
+    * user message, and its reply read as JSON conforming to it. A reply that
+    * cannot be read is followed by why, and the model asked again, until one
+    * can be or the attempts run out, but not where asking again could not help:
+    * a reply cut off at the token limit, stopped for a reason of the
+    * provider's, such as a refusal, or saying nothing. A reply asking for a
+    * tool is given with no answer. Every attempt goes through [[send]], so a
+    * wrapper overriding it sees each.
     *
     * {{{
     * case class Person(name: String, age: Int) derives Structured
     *
-    * client.ask[Person](Chat.of("Invent a person."))
+    * client.ask[Person](Chat.of("Invent a person.")).map(_.answer)
     * }}}
     *
     * @tparam A
@@ -50,21 +50,22 @@ trait LlmClient[F[_]]:
     *
     * @param attempts
     *   The most replies to ask for, which must be at least one, as the effect
-    *   otherwise fails with an `IllegalArgumentException`. A [[Reply]] or a
-    *   `String` is read from the first.
+    *   otherwise fails with an `IllegalArgumentException`.
     *
     * @return
-    *   An effect producing the answer, which fails with [[LlmError.Unreadable]]
-    *   where the last reply could not be read either.
+    *   An effect producing the last reply with its answer, alike for every
+    *   type: its text, why the model stopped, the usage of every attempt and
+    *   the tools it asked for. It fails with [[LlmError.Unreadable]] where the
+    *   last reply could not be read either.
     */
-  final def ask[A]
+  final def ask[A : Structured]
     (
       chat: Chat,
       options: ReplyOptions = ReplyOptions(),
-      attempts: Int = Answer.attempts,
+      attempts: Int = Asking.attempts,
     )
-    (using Answer[A], MonadThrow[F])
-    : F[A] = Answer.ask(send(_, options), chat, attempts)
+    (using MonadThrow[F])
+    : F[Reply[A]] = Asking.ask(send(_, options), chat, attempts)
 
   /**
     * Sends a chat to the model for its next reply: the one request every other
@@ -81,7 +82,7 @@ trait LlmClient[F[_]]:
     * @return
     *   An effect producing the model's reply.
     */
-  protected def send(chat: Chat, options: ReplyOptions): F[Reply]
+  protected def send(chat: Chat, options: ReplyOptions): F[Reply[Nothing]]
 
   /**
     * Counts the input tokens a chat would cost, as the provider counts them.
@@ -127,7 +128,7 @@ trait LlmClient[F[_]]:
       chat: Chat,
       options: ReplyOptions = ReplyOptions(),
     )
-    : F[Reply] = send(
+    : F[Reply[Nothing]] = send(
     chat.cacheable,
     options.copy(maxTokens = Some(1)),
   )
@@ -148,13 +149,14 @@ trait LlmClient[F[_]]:
   final def mapK[G[_]](transform: F ~> G): LlmClient[G] =
     val client = this
     new LlmClient[G]:
-      override protected def send(chat: Chat, options: ReplyOptions): G[Reply] =
-        transform(client.send(chat, options))
+      override protected def send
+        (chat: Chat, options: ReplyOptions)
+        : G[Reply[Nothing]] = transform(client.send(chat, options))
 
       override def count(chat: Chat, options: ReplyOptions): G[Int] =
         transform(client.count(chat, options))
 
-      override def warm(chat: Chat, options: ReplyOptions): G[Reply] =
+      override def warm(chat: Chat, options: ReplyOptions): G[Reply[Nothing]] =
         transform(client.warm(chat, options))
 
 object LlmClient:
@@ -177,14 +179,15 @@ object LlmClient:
     (protected val underlying: LlmClient[F])
     extends LlmClient[F]:
 
-    override protected def send(chat: Chat, options: ReplyOptions): F[Reply] =
-      underlying.send(chat, options)
+    override protected def send
+      (chat: Chat, options: ReplyOptions)
+      : F[Reply[Nothing]] = underlying.send(chat, options)
 
     override def count(chat: Chat, options: ReplyOptions): F[Int] = underlying
       .count(chat, options)
 
-    override def warm(chat: Chat, options: ReplyOptions): F[Reply] = underlying
-      .warm(chat, options)
+    override def warm(chat: Chat, options: ReplyOptions): F[Reply[Nothing]] =
+      underlying.warm(chat, options)
 
   /**
     * Creates a client over an existing backend.

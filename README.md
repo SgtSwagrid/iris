@@ -61,16 +61,17 @@ listed constant for a name Iris lists. A model's `name` is its provider's and it
 
 ### Asking
 
-Every reply is asked for with `ask`, whose type says what to read it as: `ask[String]` its
-text, `ask[Reply]` the reply whole, with why the model stopped, its token usage and the tools it
-asked for, and any type of your own as [below](#typed-answers). A single-turn prompt is a chat of
-one message, `Chat.of`:
+Every reply is asked for with `ask`, whose type says what the answer is: `String`, or any type of your
+own as [below](#typed-answers). Every type is asked for alike, and every ask gives the same: a
+[`Reply`](src/main/scala/Reply.scala) holding the `answer`, with the reply's `text`, why the model stopped
+(`stopReason`), the token `usage` of every attempt, the `toolCalls` it made, and how many `attempts` it
+took. A single-turn prompt is a chat of one message, `Chat.of`:
 
 ```scala
 import com.alecdorrington.iris.{Chat, LlmClient}
 
 LlmClient.fromEnv[IO].use {
-  case Some(client) => client.ask[String](Chat.of("Hello!"))
+  case Some(client) => client.ask[String](Chat.of("Hello!")).map(_.answer)
   case None         => // No provider configured.
 }
 ```
@@ -88,7 +89,7 @@ val chat = Chat().withSystem("You are terse.").user("Name a colour.")
 for
   first  <- client.ask[String](chat)
   second <- client.ask[String](chat.assistant(first).user("And another."))
-yield second
+yield second.answer
 ```
 
 ### Typed answers
@@ -106,15 +107,15 @@ enum Mood derives Structured:
 
 case class Review(summary: String, mood: Mood, score: Int, quotes: List[String]) derives Structured
 
-client.ask[Review](Chat.of(s"Review this essay: $essay")) // IO[Review]
+client.ask[Review](Chat.of(s"Review this essay: $essay")) // IO[Reply[Review]]
 ```
 
 A reply that cannot be read, as one that is not JSON or leaves a field out, is answered with every reason
 it could not be, and the model is asked again, three times in all unless `attempts` says otherwise, as in
 `client.ask[Review](chat, attempts = 5)`. JSON is found within a code fence, or within prose around it,
-though the model is asked for JSON alone. A reply that asking again could not help fails at once: one cut
-off at the token limit, one asking for a tool, one the provider stopped, as on a refusal, and one saying
-nothing. The last unreadable reply fails with `LlmError.Unreadable`, which keeps every reply asked for, usage
+though the model is asked for JSON alone. A reply asking for a tool is given at once, with no `answer`. A
+reply that asking again could not help fails at once: one cut off at the token limit, one the provider
+stopped, as on a refusal, and one saying nothing. The last unreadable reply fails with `LlmError.Unreadable`, which keeps every reply asked for, usage
 included, and what the model was told was wrong with the last, which may repeat what it said; both are kept
 out of its message, so that it may be logged. Each attempt is a request of its own, so a wrapper (see
 [Wrapping a client](#wrapping-a-client)) sees every one too.
@@ -158,9 +159,8 @@ is for `derives Structured`, and not at all under `-Xdrop-docs`; a type converte
 described by its own Scaladoc where it has one there, or anywhere if you compile with `-Xread-docs`. Scala keeps
 no comment written on a parameter itself, so describe a field with `@param`.
 
-`ask[String]` is the reply's text, cut off or not, and `ask[Reply]` the reply whole, and the model is told
-nothing of the form of either. `ask[String]` fails at once on a reply asking for a tool, whose call its text
-could not hold; `ask[Reply]` keeps the call.
+`String` is asked for as every type is: the model is told the schema `{"type":"string"}` and replies with a
+JSON string, which is read back as any other answer.
 
 What goes in is alike everywhere: `Chat.of`, a chat's `user` and `assistant` messages and `Part.of` each
 take any [`Content`](src/main/scala/Content.scala), saying text as it is, a part as itself, and any other
@@ -186,7 +186,7 @@ Each request accepts [`ReplyOptions`](src/main/scala/ReplyOptions.scala)
 normalised `StopReason` and token usage counts.
 
 ```scala
-client.ask[Reply](chat, ReplyOptions(maxTokens = Some(1024), stopSequences = List("\n\n")))
+client.ask[String](chat, ReplyOptions(maxTokens = Some(1024), stopSequences = List("\n\n")))
 ```
 
 > [!NOTE]
@@ -248,12 +248,12 @@ LlmStreamer.fromEnv[IO].use {
 
 Nothing is sent until the stream is run, and a failure reaches it as an `LlmError` as it
 would anywhere else. `Delta.End` carries the token counts where the provider reports them
-as it ends; Anthropic counts the input at the start instead, so `ask[Reply]` remains the way
-to have both halves together.
+as it ends; Anthropic counts the input at the start instead, so `ask` remains the way to have
+both halves together.
 
 ### Tools
 
-Offer the model tools it may ask to have run, and it will say so in `Reply.toolCalls`.
+Offer the model tools it may ask to have run, and it will say so in `Reply.toolCalls`, with no `answer`.
 Iris never runs a tool itself; what one does, and whether it is allowed to, is yours to decide.
 
 ```scala
@@ -262,10 +262,10 @@ import com.alecdorrington.iris.{Part, Tool}
 val weather = Tool("weather", "Looks up the weather.", schema)
 
 for
-  asked  <- client.ask[Reply](chat, ReplyOptions(tools = List(weather)))
+  asked  <- client.ask[String](chat, ReplyOptions(tools = List(weather)))
   result  = Part.ToolResult(asked.toolCalls.head.id, "weather", lookUp(asked.toolCalls.head))
-  answer <- client.ask[Reply](chat.assistant(asked).user(result), ReplyOptions(tools = List(weather)))
-yield answer
+  answer <- client.ask[String](chat.assistant(asked).user(result), ReplyOptions(tools = List(weather)))
+yield answer.answer
 ```
 
 A reply which asked for a tool has `StopReason.ToolCall`, on every provider, and so does a
@@ -341,11 +341,11 @@ passing each on through `super`:
 
 ```scala
 def logged(client: LlmClient[IO]): LlmClient[IO] = new LlmClient.Forwarding(client):
-  override protected def send(chat: Chat, options: ReplyOptions): IO[Reply] =
+  override protected def send(chat: Chat, options: ReplyOptions): IO[Reply[Nothing]] =
     super.send(chat, options).flatTap(reply => IO.println(reply.usage))
   override def count(chat: Chat, options: ReplyOptions): IO[Int] =
     super.count(chat, options).flatTap(tokens => IO.println(tokens))
-  override def warm(chat: Chat, options: ReplyOptions): IO[Reply] =
+  override def warm(chat: Chat, options: ReplyOptions): IO[Reply[Nothing]] =
     super.warm(chat, options).flatTap(reply => IO.println(reply.usage))
 ```
 
@@ -354,13 +354,14 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
 
 ### Upgrading from 0.2
 
-- `client.send(chat, options)` is `client.ask[Reply](chat, options)`, or `ask[String]` for its text alone.
+- `client.send(chat, options)` is `client.ask[String](chat, options)`, whose `Reply` holds the text as its
+  `answer`, beside the stop reason, usage and tool calls the old `Reply` had. The model is now told to reply
+  with a JSON string, as for any type.
 - `Prompt(text)` is `Chat.of(text)`, and `Prompt(text, Some(system))` is `Chat.of(text).withSystem(system)`.
   `ask`, `count` and `stream` take that chat where they took a prompt.
 - A wrapper extends `LlmClient.Forwarding` and passes a request on with `super.send`, where it called the
-  wrapped client's `send`; one holding another client asks it with `ask[Reply]`.
-- `ask[String]` fails with `LlmError.Unreadable` on a reply asking for a tool, where `send(…).map(_.text)` gave
-  its text; ask for `ask[Reply]` to keep the call.
+  wrapped client's `send`, whose replies are now `Reply[Nothing]`; one holding another client asks it.
+- A reply asking for a tool is a `Reply` with no `answer` and its `toolCalls`.
 - `LlmError` has a new case, `Unreadable`, which a match over every case must take.
 
 ## ⚙️ Configuration

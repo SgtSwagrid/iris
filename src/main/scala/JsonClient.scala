@@ -15,20 +15,21 @@ private[iris] final class JsonClient[F[_] : MonadThrow]
   )
   extends LlmClient[F]:
 
-  override protected def send(chat: Chat, options: ReplyOptions): F[Reply] =
-    MonadThrow[F]
-      .fromEither(
-        api
-          .acceptable(config, chat, options)
-          .flatMap(_ => api.endpoint(config, options, false)),
-      )
-      .flatMap(endpoint =>
-        ask[Either[LlmError, Reply]](
-          endpoint,
-          api.body(config, chat, options),
-        )(using api.replies),
-      )
-      .flatMap(MonadThrow[F].fromEither(_))
+  override protected def send
+    (chat: Chat, options: ReplyOptions)
+    : F[Reply[Nothing]] = MonadThrow[F]
+    .fromEither(
+      api
+        .acceptable(config, chat, options)
+        .flatMap(_ => api.endpoint(config, options, false)),
+    )
+    .flatMap(endpoint =>
+      ask[Either[LlmError, Reply[Nothing]]](
+        endpoint,
+        api.body(config, chat, options),
+      )(using api.replies),
+    )
+    .flatMap(MonadThrow[F].fromEither(_))
 
   override def count(chat: Chat, options: ReplyOptions): F[Int] = MonadThrow[F]
     .fromEither(api.counting(config, chat, options))
@@ -37,10 +38,11 @@ private[iris] final class JsonClient[F[_] : MonadThrow]
     )
 
   /** Warms with the shortest reply the provider allows. */
-  override def warm(chat: Chat, options: ReplyOptions): F[Reply] = send(
-    chat.cacheable,
-    options.copy(maxTokens = Some(api.leastReply)),
-  )
+  override def warm(chat: Chat, options: ReplyOptions): F[Reply[Nothing]] =
+    send(
+      chat.cacheable,
+      options.copy(maxTokens = Some(api.leastReply)),
+    )
 
   /**
     * Posts JSON with the provider's credentials, reading an `A` back, failing

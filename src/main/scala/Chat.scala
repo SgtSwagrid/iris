@@ -189,7 +189,7 @@ object Message:
   *   first  <- client.ask[String](chat)
   *   next    = chat.assistant(first).user("Tell me more.")
   *   second <- client.ask[String](next)
-  * yield second
+  * yield second.answer
   * }}}
   *
   * A chat should end with the user's message: one ending with the assistant's
@@ -263,7 +263,7 @@ final case class Chat
     * @return
     *   A copy of this chat ending with the reply.
     */
-  def assistant(reply: Reply): Chat = appended(Message(
+  def assistant(reply: Reply[?]): Chat = appended(Message(
     Role.Assistant,
     Part.Text(reply.text) +: reply.toolCalls,
   ))
