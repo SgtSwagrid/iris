@@ -274,8 +274,9 @@ object Structured:
     * A type's Scaladoc in plain words, read by Cadmus where the type is
     * compiled alongside, and never under `-Xdrop-docs`.
     */
-  private inline def documented[A]: Option[Scaladoc] =
-    Scaladoc.of[A].map(_.plain)
+  private inline def documented[A]: Option[Scaladoc] = Scaladoc
+    .of[A]
+    .map(_.plain)
 
   private inline def labels[Labels <: Tuple]: List[String] =
     constValueTuple[Labels].toList.asInstanceOf[List[String]]
