@@ -48,10 +48,19 @@ private[iris] object OpenAiApi extends ProviderApi:
     .answerable(provider, chat)
     .flatMap(_ => pictorial(chat))
 
-  private def reasoning(effort: Effort): String = effort match
-    case Effort.Low               => "low"
-    case Effort.Medium            => "medium"
-    case Effort.High | Effort.Max => "high"
+  /**
+    * The models whose reasoning effort goes no higher than `high`. OpenAI's
+    * newer models also take `xhigh` and `max`, and an unlisted model is taken
+    * to be as new.
+    */
+  private val cappedAtHigh: Set[LlmModel] =
+    Set(LlmModel.Gpt5, LlmModel.Gpt5Mini)
+
+  private def reasoning(model: LlmModel, effort: Effort): String = effort match
+    case Effort.Low    => "low"
+    case Effort.Medium => "medium"
+    case Effort.High   => "high"
+    case Effort.Max    => if cappedAtHigh.contains(model) then "high" else "max"
 
   override def body
     (
@@ -70,8 +79,9 @@ private[iris] object OpenAiApi extends ProviderApi:
       "top_p"                 -> options.topP.asJson,
       "stop"                  -> JsonHttp.unlessEmpty(options.stopSequences),
       "tools"                 -> JsonHttp.unlessEmpty(options.tools.map(tool)),
-      "reasoning_effort"      -> options.effort.map(reasoning).asJson,
-      "stream"                -> Option.when(streamed)(true).asJson,
+      "reasoning_effort"      ->
+        options.effort.map(reasoning(config.model, _)).asJson,
+      "stream" -> Option.when(streamed)(true).asJson,
       // Usage is withheld from a stream unless asked for.
       "stream_options" ->
         Option.when(streamed)(Json.obj("include_usage" -> true.asJson)).asJson,

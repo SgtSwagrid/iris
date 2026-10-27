@@ -65,7 +65,11 @@ or else the CI pipeline won't allow it to be merged.
 - All sentences should start with a capital letter and end with a period (`.`).
   This includes after tags such as `@param` and `@return`.
 - Parameter descriptions (i.e. with `@param`) use definite articles (e.g. "The").
-- Return value descriptions (i.e. with `@return`) use indefinite articles (e.g. "A", "An").
+- Return value descriptions (i.e. with `@return`) are noun phrases.
+  Use "The" for a value the inputs determine (e.g. "The sum of ...", "The number of ..."),
+  "A" or "An" for one of many possible values, such as a new copy (e.g. "A copy of this chat ..."),
+  and "This" for the receiver changed (e.g. "This graph with ...").
+  Describe a Boolean result as "`true` if and only if ...".
 
 ## 🔁 Origin
 

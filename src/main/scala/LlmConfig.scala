@@ -37,8 +37,8 @@ enum LlmProvider
   /** The model prompted when none is configured. */
   def defaultModel: LlmModel = this match
     case Anthropic => LlmModel.ClaudeSonnet5_5
-    case OpenAi    => LlmModel.Gpt5
-    case Gemini    => LlmModel.Gemini2_5Flash
+    case OpenAi    => LlmModel.Gpt5_6Sol
+    case Gemini    => LlmModel.Gemini3_8Flash
 
   /** The provider's name as [[LlmProvider.parse]] reads it, such as `openai`. */
   def key: String = toString.map(_.toLower)

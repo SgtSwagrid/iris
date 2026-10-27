@@ -6,7 +6,8 @@ package com.alecdorrington.iris
   * more may answer a hard request better. A model that cannot be told refuses
   * the request with [[LlmError.Unsuccessful]].
   *
-  * OpenAI treats [[Max]] as [[High]]; Gemini is sent a thinking-token budget.
+  * OpenAI's models that go no higher than [[High]], such as GPT-5, are sent it
+  * for [[Max]]; Gemini is sent a thinking-token budget.
   */
 enum Effort:
 

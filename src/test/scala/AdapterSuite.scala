@@ -163,15 +163,24 @@ class AdapterSuite extends FunSuite:
       Some(4_096),
     )
 
-  test("openai is asked for its highest effort when asked for the most"):
+  /** The reasoning effort OpenAI is asked of a model for the most effort. */
+  private def most(model: LlmModel): Option[String] = json(OpenAiApi.body(
+    config.copy(model = model),
+    chat,
+    ReplyOptions(effort = Some(Effort.Max)),
+  )).hcursor.get[String]("reasoning_effort").toOption
+
+  test("openai is asked for its most effort when asked for the most"):
+    assertEquals(most(LlmModel.Gpt6Astra), Some("max"))
+    assertEquals(most(LlmModel.Gpt5_6Luna), Some("max"))
     assertEquals(
-      json(OpenAiApi.body(
-        config,
-        chat,
-        ReplyOptions(effort = Some(Effort.Max)),
-      )).hcursor.get[String]("reasoning_effort").toOption,
-      Some("high"),
+      most(LlmModel.of(LlmProvider.OpenAi, "gpt-new").get),
+      Some("max"),
     )
+
+  test("an openai model going no higher than high is asked for high"):
+    assertEquals(most(LlmModel.Gpt5), Some("high"))
+    assertEquals(most(LlmModel.Gpt5Mini), Some("high"))
 
   test("no effort is sent unless one is asked for"):
     assert(
