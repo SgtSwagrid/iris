@@ -24,7 +24,7 @@ class ScaladocSuite extends FunSuite:
 
   test("code examples are left out, and links written as labels or targets"):
     val comment = """/**
-      * Sent by [[LlmClient.ask]] and [[Part.json the json part]].
+      * Sent by [[LlmClient.ask]] and [[Part.of the part]].
       *
       * {{{
       * client.ask[Review](prompt)
@@ -32,7 +32,7 @@ class ScaladocSuite extends FunSuite:
       */"""
     assertEquals(
       Scaladoc.parse(comment).description,
-      Some("Sent by LlmClient.ask and the json part."),
+      Some("Sent by LlmClient.ask and the part."),
     )
 
   test("each parameter is described by its tag, however it is wrapped"):

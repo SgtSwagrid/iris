@@ -106,6 +106,19 @@ class AskSuite extends FunSuite:
     val fenced = client(_ => said(s"```json\n$adaJson\n```"))
     assertEquals(asked[Person](fenced), Right(ada))
 
+  test("an answer in a fence of one line, or none, is read alike"):
+    for written <- List(
+        s"```json $adaJson```",
+        s"```$adaJson```",
+        s"Here it is:\n```json\n$adaJson\n```\nI hope it helps.",
+        s"Here it is: $adaJson. I hope it helps.",
+      )
+    do
+      assertEquals(
+        asked[Person](client(_ => said(written))),
+        Right(ada),
+      )
+
   test("an unreadable reply is followed by why, and the model asked again"):
     val corrected = client: sent =>
       val again = sent.drop(1) match
@@ -128,23 +141,80 @@ class AskSuite extends FunSuite:
       else said("""{"name":1}""")
     assertEquals(asked[Person](corrected), Right(ada))
 
-  test("the last unreadable reply fails the ask"):
+  test("the last unreadable reply fails the ask, keeping every reply"):
     asked[Person](client(_ => said("Ada, 36."))) match
-      case Left(LlmError.Unreadable(attempts, detail, text)) =>
+      case Left(LlmError.Unreadable(attempts, detail, replies)) =>
         assertEquals(attempts, 3)
+        // JavaScript's parser says nowhere where it failed.
         assert(detail.startsWith("It is not JSON"))
-        assertEquals(text, "Ada, 36.")
+        assertEquals(
+          replies.map(_.text),
+          List.fill(3)("Ada, 36."),
+        )
       case other => fail(s"Expected the ask to be unreadable, not $other.")
 
-  test("a reply cut off at the token limit is unreadable"):
-    val cut = client(_ => said("""{"name":""", "max_tokens"))
+  test("why a reply could not be read repeats none of it"):
+    val wrong = client(_ => said("""{"name":"Ada","age":"thirty-six"}"""))
+    asked[Person](wrong, attempts = 1) match
+      case Left(failure @ LlmError.Unreadable(_, detail, _)) =>
+        assertEquals(
+          detail,
+          "At .age: Expected an integer, not a string",
+        )
+        assert(!failure.getMessage.contains("thirty-six"))
+      case other => fail(s"Expected the ask to be unreadable, not $other.")
+
+  /** Whether a reply fails the ask at once, though more attempts are left. */
+  private def failsAtOnce(answer: String, detail: String): Unit =
+    asked[Person](client(_ => answer)) match
+      case Left(LlmError.Unreadable(attempts, said, replies)) => assertEquals(
+          (attempts, said, replies.size),
+          (1, detail, 1),
+        )
+      case other => fail(s"Expected the ask to fail at once, not $other.")
+
+  test("a reply cut off at the token limit fails at once"):
+    failsAtOnce(
+      said("""{"name":""", "max_tokens"),
+      "It was cut off at the token limit before it was complete.",
+    )
+
+  test("a reply stopped by the provider fails at once"):
+    failsAtOnce(
+      said("I would rather not.", "refusal"),
+      "It stopped, as `refusal`.",
+    )
+
+  test("a reply of nothing fails at once, never asked again as it was"):
+    failsAtOnce(said(""), "It said nothing.")
+
+  test("a reply asking for a tool fails at once, keeping the call"):
+    val calling = """{"content":[{"type":"tool_use","id":"call_1",
+      "name":"weather","input":{"city":"Zug"}}],"stop_reason":"tool_use"}"""
+    failsAtOnce(
+      calling,
+      "It asked for a tool instead of answering.",
+    )
+    asked[Person](client(_ => calling)) match
+      case Left(LlmError.Unreadable(_, _, List(reply))) => assertEquals(
+          reply.toolCalls.map(_.tool),
+          List("weather"),
+        )
+      case other => fail(s"Expected the call to be kept, not $other.")
+
+  test("a text answer is truncated or calls tools as the reply does"):
+    val cut = client(_ => said("Ada, thirty", "max_tokens"))
     assertEquals(
-      asked[Person](cut, attempts = 1),
-      Left(LlmError.Unreadable(
-        1,
-        "It was cut off at the token limit before it was complete.",
-        """{"name":""",
-      )),
+      asked[String](cut),
+      Right("Ada, thirty"),
+    )
+
+  test("an ask of no attempts is refused before any request"):
+    val never = client(_ => throw AssertionError("A request was made."))
+    assert(
+      asked[Person](never, attempts = 0) match
+        case Left(_: IllegalArgumentException) => true
+        case _                                 => false,
     )
 
   test("a text answer is the reply as written, the model told nothing"):

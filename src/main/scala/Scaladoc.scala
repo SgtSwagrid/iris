@@ -59,10 +59,20 @@ private[iris] object Scaladoc:
   private def documented
     (using Quotes)
     (symbol: quotes.reflect.Symbol)
-    : Option[Scaladoc] = symbol
-    .docstring
-    .orElse(symbol.moduleClass.docstring)
+    : Option[Scaladoc] = docstring(symbol)
+    .orElse(docstring(symbol.moduleClass))
     .map(parse)
+
+  /**
+    * A symbol's comment. Compiled with `-Xdrop-docs`, Scala keeps no comments,
+    * and asking for one throws rather than giving none.
+    */
+  private def docstring
+    (using Quotes)
+    (symbol: quotes.reflect.Symbol)
+    : Option[String] =
+    try symbol.docstring
+    catch case _: RuntimeException => None
 
   /** The comment's lines, without its delimiters or the margin of each. */
   private def lines(comment: String): List[String] = comment

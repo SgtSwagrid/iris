@@ -71,7 +71,12 @@ longer.
   priority rules). It is built on `send` alone, provider-agnostic: the schema is asked for in words closing the
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
   native structured output. An unreadable reply is answered with every decoding failure (decoders accumulate)
-  and asked again, `attempts` requests in all, then `LlmError.Unreadable`.
+  and asked again, `attempts` requests in all, then `LlmError.Unreadable`, carrying every reply. Asking again
+  only helps a complete reply that said something, so one stopped at `MaxTokens`, a stop sequence, a `ToolCall`
+  or an `Other` reason, or one that is blank, fails at once: an identical chat is never resent. Those checks
+  come only after a read fails, so `ask[String]` still returns truncated text and tool calls as `send` does.
+  Failures told to the model and put in `Unreadable` never repeat the reply's values (`Answer.reason` rewrites
+  circe's, which quote them), so hosts may log them.
 - What goes in is a `Content[A]` everywhere (`Prompt`, `Chat.user`/`assistant`, `Message.apply`, `Part.of`):
   `String` as text, a `Part` as itself, a `Structured` value as its JSON, else an `Encoder`'s JSON. `NotGiven`s keep
   the givens apart, `Structured` winning, so a value is said as the schema the model is told describes it.
@@ -80,11 +85,16 @@ longer.
   alternative more specific, so a single part was ambiguous. Mixed kinds go through `Part.of`.
 - `Structured` is one type class of schema, encoder and decoder, so the three cannot disagree; never derive one
   from a circe codec. Derivation (`Mirror`s) summons field instances lazily, so that a recursive type's given
-  can be made before the fields referring to it, and renders a recursive type into `$defs`, found by name (a
-  generic recursive type's given is a `def`, so identity would never meet itself). Cases of a sealed trait are
+  can be made before the fields referring to it, and renders a recursive type into `$defs`. A type is told apart
+  by its `TypeName`, its full name with its type arguments applied, never by identity (a generic recursive
+  type's given is a `def`, so it would never meet itself) nor by simple name (two `User`s, or `Tree[Int]` beside
+  `Tree[String]`, would share a definition). A generic type is derived once for every argument, so the `TypeName`
+  macro names its arguments at runtime from their own `Structured` instances. Definitions are shown by short
+  name, in full only where two short names clash, in parentheses (`Tree(Int)`), which a `$ref` may hold. Cases of a sealed trait are
   externally tagged (`{"Circle":{...}}`), or just their names where none has fields. Descriptions come from
   Scaladoc through the `Scaladoc` macro (`Symbol.docstring`), which the compiler keeps by default for sources
-  compiled in the same run, as a `derives` clause's type always is; a comment on a parameter is never kept,
+  compiled in the same run, as a `derives` clause's type always is (under `-Xdrop-docs`, `docstring` throws, so
+  it is caught and taken as none); a comment on a parameter is never kept,
   so fields are described by `@param`. `imap`/`emap` are inline so as to read the target type's. Test derivation from
   outside the package (`StructuredSuite` is in `com.alecdorrington.example`), as inline code reaches private
   helpers only through accessors.

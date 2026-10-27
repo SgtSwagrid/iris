@@ -65,6 +65,19 @@ class ContentSuite extends FunSuite:
     assertEquals(Chat().user(picture), user(picture))
     assertEquals(Part.of(picture), picture)
 
+  test("a part is said as itself, whatever encoder of parts there is"):
+    given Encoder[Part]   = Encoder.instance(_ => io.circe.Json.Null)
+    val parts: List[Part] = List(Part.Text("x"), Part.CacheBreakpoint)
+    assertEquals(Part.of(parts.head), Part.Text("x"))
+    assertEquals(Chat().user(parts*), user(parts*))
+    assertEquals(
+      summon[Encoder[Part]](parts.head),
+      io.circe.Json.Null,
+    )
+
+  test("values of different kinds together are told to be made parts"):
+    assert(compileErrors("Chat().user(\"Look:\", 1.5)").contains("Part.of"))
+
   test("values of different kinds are said as parts of one message"):
     assertEquals(
       Chat().user(
