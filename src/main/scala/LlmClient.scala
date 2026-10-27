@@ -46,7 +46,7 @@ trait LlmClient[F[_]]:
     * @return
     *   An effect producing the model's reply.
     */
-  final def send(prompt: Prompt): F[Reply] = send(prompt.toChat)
+  final def send(prompt: Prompt[?]): F[Reply] = send(prompt.toChat)
 
   /**
     * Sends a single-turn prompt to the model with options.
@@ -60,8 +60,89 @@ trait LlmClient[F[_]]:
     * @return
     *   An effect producing the model's reply.
     */
-  final def send(prompt: Prompt, options: ReplyOptions): F[Reply] =
+  final def send(prompt: Prompt[?], options: ReplyOptions): F[Reply] =
     send(prompt.toChat, options)
+
+  /**
+    * Asks the model for an answer of a type, telling it what form the answer
+    * must take and reading its reply as one. A reply that cannot be read is
+    * followed by why, and the model asked again, until one can be or the
+    * attempts run out, but not where asking again could not help: a reply cut
+    * off at the token limit, asking for a tool, stopped for a reason of the
+    * provider's, such as a refusal, or saying nothing. Each attempt goes
+    * through [[send]], so a wrapper around the client sees every one.
+    *
+    * A `String` is the reply's text as written, as [[send]] gives it. Any
+    * [[Structured]] type is JSON conforming to its schema, which closes the
+    * chat's last user message:
+    *
+    * {{{
+    * case class Person(name: String, age: Int) derives Structured
+    *
+    * client.ask[Person](Prompt("Invent a person."))
+    * }}}
+    *
+    * @tparam A
+    *   The type of the answer.
+    *
+    * @param chat
+    *   The conversation so far, including any system message.
+    *
+    * @param options
+    *   The per-request options, alike for every attempt.
+    *
+    * @param attempts
+    *   The most replies to ask for, which must be at least one, as the effect
+    *   otherwise fails with an `IllegalArgumentException`.
+    *
+    * @return
+    *   An effect producing the answer, which fails with [[LlmError.Unreadable]]
+    *   where the last reply could not be read either.
+    */
+  final def ask[A]
+    (
+      chat: Chat,
+      options: ReplyOptions = ReplyOptions(),
+      attempts: Int = Answer.attempts,
+    )
+    (using Answer[A], MonadThrow[F])
+    : F[A] = Answer.ask(send(_, options), chat, attempts)
+
+  /**
+    * Asks the model for an answer of a type to a single-turn prompt.
+    *
+    * @tparam A
+    *   The type of the answer.
+    *
+    * @param prompt
+    *   The prompt to send.
+    *
+    * @return
+    *   An effect producing the answer.
+    */
+  final def ask[A](prompt: Prompt[?])(using Answer[A], MonadThrow[F]): F[A] =
+    ask[A](prompt.toChat)
+
+  /**
+    * Asks the model for an answer of a type to a single-turn prompt with
+    * options.
+    *
+    * @tparam A
+    *   The type of the answer.
+    *
+    * @param prompt
+    *   The prompt to send.
+    *
+    * @param options
+    *   The per-request options.
+    *
+    * @return
+    *   An effect producing the answer.
+    */
+  final def ask[A]
+    (prompt: Prompt[?], options: ReplyOptions)
+    (using Answer[A], MonadThrow[F])
+    : F[A] = ask[A](prompt.toChat, options)
 
   /**
     * Counts the input tokens a chat would cost, as the provider counts them.
@@ -93,7 +174,7 @@ trait LlmClient[F[_]]:
     * @return
     *   An effect producing the number of input tokens.
     */
-  final def count(prompt: Prompt): F[Int] = count(prompt.toChat)
+  final def count(prompt: Prompt[?]): F[Int] = count(prompt.toChat)
 
   /**
     * Writes the [[Chat.cacheable]] prefix of a chat into the provider's cache,

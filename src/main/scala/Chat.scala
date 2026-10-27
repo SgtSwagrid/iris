@@ -35,6 +35,22 @@ object Part:
   final case class Text(text: String) extends Part
 
   /**
+    * Creates a part saying a value, as its [[Content]] says it: text as text,
+    * and a structured or encodable value as JSON. Parts in a row make a message
+    * of several, as of an instruction and the value it is about.
+    *
+    * @tparam A
+    *   The type of the value.
+    *
+    * @param value
+    *   The value.
+    *
+    * @return
+    *   A part saying the value.
+    */
+  def of[A : Content as A](value: A): Part = A.part(value)
+
+  /**
     * A picture, document or other media for the model to look at.
     *
     * @param mediaType
@@ -126,19 +142,22 @@ final case class Message(role: Role, content: List[Part]):
 object Message:
 
   /**
-    * Creates a message of text alone.
+    * Creates a message of one part, saying a value as its [[Content]] says it.
+    *
+    * @tparam A
+    *   The type of the value.
     *
     * @param role
     *   The author of the message.
     *
-    * @param text
-    *   The text.
+    * @param value
+    *   The value: text, a part, or a value said as JSON.
     *
     * @return
-    *   A message of one text part.
+    *   A message of one part.
     */
-  def apply(role: Role, text: String): Message =
-    Message(role, List(Part.Text(text)))
+  def apply[A : Content as A](role: Role, value: A): Message =
+    Message(role, List(A.part(value)))
 
   /** What is sent between two text parts in a row. */
   private[iris] val paragraphBreak: String = "\n\n"
@@ -202,39 +221,38 @@ final case class Chat
   def appended(message: Message): Chat = copy(messages = messages :+ message)
 
   /**
-    * Appends a user message of text.
+    * Appends a user message saying each value as its [[Content]] says it: text
+    * as text, a part as itself, such as the result of a tool the model called,
+    * and any other value as JSON. Values of different kinds are given as parts,
+    * by [[Part.of]].
     *
-    * @param text
-    *   The text of the message.
-    *
-    * @return
-    *   A copy of this chat ending with the message.
-    */
-  def user(text: String): Chat = appended(Message(Role.User, text))
-
-  /**
-    * Appends a user message of several parts, such as the results of the tools
-    * the model called.
+    * @tparam A
+    *   The type of the values.
     *
     * @param content
-    *   The parts of the message, in reading order.
+    *   The values, in reading order.
     *
     * @return
     *   A copy of this chat ending with the message.
     */
-  def user(content: Part*): Chat = appended(Message(Role.User, content.toList))
+  def user[A : Content](content: A*): Chat =
+    appended(Chat.said(Role.User, content))
 
   /**
-    * Appends an assistant message of several parts.
+    * Appends an assistant message saying each value as its [[Content]] says it,
+    * as of an answer [[LlmClient.ask]] gave, to continue from.
+    *
+    * @tparam A
+    *   The type of the values.
     *
     * @param content
-    *   The parts of the message, in reading order.
+    *   The values, in reading order.
     *
     * @return
     *   A copy of this chat ending with the message.
     */
-  def assistant(content: Part*): Chat =
-    appended(Message(Role.Assistant, content.toList))
+  def assistant[A : Content](content: A*): Chat =
+    appended(Chat.said(Role.Assistant, content))
 
   /**
     * Appends the model's reply, tool calls included.
@@ -249,17 +267,6 @@ final case class Chat
     Role.Assistant,
     Part.Text(reply.text) +: reply.toolCalls,
   ))
-
-  /**
-    * Appends an assistant message of text.
-    *
-    * @param text
-    *   The text of the message.
-    *
-    * @return
-    *   A copy of this chat ending with the message.
-    */
-  def assistant(text: String): Chat = appended(Message(Role.Assistant, text))
 
   /**
     * Sets the system message.
@@ -306,3 +313,9 @@ final case class Chat
       case Some(last) => said.init :+
           last.copy(content = last.content ++ breakpoints)
       case None => said :+ Message(Role.User, breakpoints :+ Part.Text("."))
+
+object Chat:
+
+  /** A message saying each value as its content says it. */
+  private def said[A : Content as A](role: Role, values: Seq[A]): Message =
+    Message(role, values.map(A.part).toList)

@@ -86,6 +86,90 @@ for
 yield second.text
 ```
 
+### Typed answers
+
+`ask` asks for an answer of a type of your own rather than text. Derive a
+[`Structured`](src/main/scala/Structured.scala) type for your case classes, sealed traits and enums, and
+the model is told the [JSON Schema](https://json-schema.org) its reply must conform to, which is read back
+as that type:
+
+```scala
+import com.alecdorrington.iris.Structured
+
+enum Mood derives Structured:
+  case Pleased, Indifferent, Annoyed
+
+case class Review(summary: String, mood: Mood, score: Int, quotes: List[String]) derives Structured
+
+client.ask[Review](Prompt(s"Review this essay: $essay")) // IO[Review]
+```
+
+A reply that cannot be read, as one that is not JSON or leaves a field out, is answered with every reason
+it could not be, and the model is asked again, three times in all unless `attempts` says otherwise, as in
+`client.ask[Review](chat, attempts = 5)`. JSON is found within a code fence, or within prose around it,
+though the model is asked for JSON alone. A reply that asking again could not help fails at once: one cut
+off at the token limit, one asking for a tool, one the provider stopped, as on a refusal, and one saying
+nothing. The last unreadable reply fails with `LlmError.Unreadable`, which keeps every reply asked for, usage
+included, and what the model was told was wrong with the last, which may repeat what it said; both are kept
+out of its message, so that it may be logged. Each attempt goes through `send`, so a wrapper (see
+[Wrapping a client](#wrapping-a-client)) sees every one too.
+
+Strings, numbers, Booleans, options, lists, vectors, sequences, sets and maps keyed by strings are
+structured already. An optional field may be left out. A sealed trait or enum whose cases have no fields
+is written as the name of one, as `"Pleased"`, and any other as an object holding one case under its name,
+as `{"Circle":{"radius":1.5}}`. A recursive type, such as a tree, refers to itself by name, each type told
+apart by its full name and type arguments. Any other type converts to and from one that is structured, and
+may refuse what it is given, as the model is then told. Say what it keeps to with `described`, so that the
+model knows before it answers; the words stay beside whatever else describes the type, its Scaladoc or the
+`@param` of a field of it:
+
+```scala
+case class Score(value: Int)
+
+given Structured[Score] = Structured[Int]
+  .emap(n => Either.cond(n >= 1 && n <= 10, Score(n), s"$n is not from 1 to 10"))(_.value)
+  .described("A whole number from 1 to 10.")
+```
+
+In JavaScript, numbers in a reply are read as doubles, so a `Long`, `BigInt` or `BigDecimal` beyond 2^53
+loses its precision there.
+
+The schema describes each type to the model as its Scaladoc does: a type, and each case of a sealed trait
+or enum, by its description, and each field by its class's `@param` tag, which replaces the description of
+the field's type. Code examples are left out, and links written as their labels.
+
+```scala
+/**
+  * A review of an essay, for its author.
+  *
+  * @param score
+  *   Out of ten, where five is passable.
+  */
+case class Review(summary: String, mood: Mood, score: Score) derives Structured
+```
+
+A comment is read where its type is compiled, as it always is for `derives Structured`, and not at all
+under `-Xdrop-docs`; a type converted with `imap` or `emap` is described by its own Scaladoc where it has
+one there. Scala keeps no comment written on a parameter itself, so describe a field with `@param`.
+
+`ask[String]` is the reply's text, as `send` gives it, and the model is told nothing of its form.
+
+What goes in is alike everywhere: a `Prompt`, a chat's `user` and `assistant` messages and `Part.of` each
+take any [`Content`](src/main/scala/Content.scala), saying text as it is, a part as itself, and any other
+value as JSON, as its `Structured` type writes it, or else as its circe `Encoder` does:
+
+```scala
+client.ask[Review](Prompt(essay, system = Some("Review the essay you are given.")))
+client.ask[Review](Chat().user(Part.of("Review this draft."), Part.of(draft))) // draft: Draft, Structured
+client.ask[Review](chat.assistant(review).user("Now make it kinder."))
+```
+
+Several values of one kind make one message of several parts, as `chat.user(first, second)` does; values of
+different kinds are made parts first, with `Part.of`.
+
+The schema is asked for in words, at the close of the user's last message, rather than through any
+provider's own structured output, so it works alike everywhere, and a cached prefix is sent as it was.
+
 ### Tuning and metadata
 
 Each request accepts [`ReplyOptions`](src/main/scala/ReplyOptions.scala)
@@ -226,14 +310,16 @@ Each provider keeps a cache per model, and caches nothing shorter than its own m
 A provider's refusal fails the effect with an [`LlmError`](src/main/scala/LlmError.scala):
 `Unsuccessful` for an unsuccessful response, carrying its status and body, `Malformed` for a
 response that could not be understood, and `TimedOut` for a request no answer came to within the
-configured timeout (`LlmConfig.timeout`), such as one whose reply took too long to write. Response
+configured timeout (`LlmConfig.timeout`), such as one whose reply took too long to write.
+`Unreadable` is for an `ask` whose every reply was not the answer asked for. Response
 bodies may contain provider detail you would rather not show to your own users, so consider logging
 them rather than passing them on.
 
 ### Wrapping a client
 
 Iris does no throttling, retrying or logging of its own, so that each host can wrap a client in
-exactly the policy it wants. `mapK` runs every request through one transformation, as a limit on
+exactly the policy it wants. `ask` asks again only for an answer it could not read, and never after a
+request that failed. `mapK` runs every request through one transformation, as a limit on
 requests in flight does:
 
 ```scala
