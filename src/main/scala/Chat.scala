@@ -48,7 +48,7 @@ object Part:
     * @return
     *   A part saying the value.
     */
-  def of[A : Content as content](value: A): Part = content.part(value)
+  def of[A : Content as A](value: A): Part = A.part(value)
 
   /**
     * A picture, document or other media for the model to look at.
@@ -156,8 +156,8 @@ object Message:
     * @return
     *   A message of one part.
     */
-  def apply[A : Content as content](role: Role, value: A): Message =
-    Message(role, List(content.part(value)))
+  def apply[A : Content as A](role: Role, value: A): Message =
+    Message(role, List(A.part(value)))
 
   /** What is sent between two text parts in a row. */
   private[iris] val paragraphBreak: String = "\n\n"
@@ -317,6 +317,5 @@ final case class Chat
 object Chat:
 
   /** A message saying each value as its content says it. */
-  private def said[A : Content as content]
-    (role: Role, values: Seq[A])
-    : Message = Message(role, values.map(content.part).toList)
+  private def said[A : Content as A](role: Role, values: Seq[A]): Message =
+    Message(role, values.map(A.part).toList)

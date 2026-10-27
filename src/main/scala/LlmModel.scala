@@ -99,15 +99,55 @@ object LlmModel:
         "claude-sonnet-4-6",
       )
 
+    case ClaudeHaiku5_5
+      extends Listed(
+        LlmProvider.Anthropic,
+        "claude-haiku-5-5",
+      )
+
     case ClaudeHaiku4_5
       extends Listed(
         LlmProvider.Anthropic,
         "claude-haiku-4-5",
       )
 
+    case Gpt6Astra extends Listed(LlmProvider.OpenAi, "gpt-6-astra")
+
+    case Gpt6_1Sol extends Listed(LlmProvider.OpenAi, "gpt-6.1-sol")
+
+    case Gpt6Sol extends Listed(LlmProvider.OpenAi, "gpt-6-sol")
+
+    case Gpt5_6Sol extends Listed(LlmProvider.OpenAi, "gpt-5.6-sol")
+
+    case Gpt6_1Terra extends Listed(LlmProvider.OpenAi, "gpt-6.1-terra")
+
+    case Gpt5_6Terra extends Listed(LlmProvider.OpenAi, "gpt-5.6-terra")
+
+    case Gpt6Luna extends Listed(LlmProvider.OpenAi, "gpt-6-luna")
+
+    case Gpt5_6Luna extends Listed(LlmProvider.OpenAi, "gpt-5.6-luna")
+
     case Gpt5 extends Listed(LlmProvider.OpenAi, "gpt-5")
 
     case Gpt5Mini extends Listed(LlmProvider.OpenAi, "gpt-5-mini")
+
+    case Gemini4Argon extends Listed(LlmProvider.Gemini, "gemini-4-argon")
+
+    case Gemini3_8Flash extends Listed(LlmProvider.Gemini, "gemini-3.8-flash")
+
+    case Gemini3_6Flash extends Listed(LlmProvider.Gemini, "gemini-3.6-flash")
+
+    case Gemini3_5FlashLite
+      extends Listed(
+        LlmProvider.Gemini,
+        "gemini-3.5-flash-lite",
+      )
+
+    case Gemini3_1FlashLite
+      extends Listed(
+        LlmProvider.Gemini,
+        "gemini-3.1-flash-lite",
+      )
 
     case Gemini2_5Pro extends Listed(LlmProvider.Gemini, "gemini-2.5-pro")
 

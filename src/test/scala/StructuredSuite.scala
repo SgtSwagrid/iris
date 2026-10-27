@@ -54,12 +54,13 @@ class StructuredSuite extends FunSuite:
 
   private def json(text: String): Json = parse(text).toOption.get
 
-  private def read[A : Structured as structured](text: String) = structured
+  private def read[A : Structured as A](text: String) = A
     .decoder
     .decodeJson(json(text))
 
-  private def written[A : Structured as structured](value: A): String =
-    structured.encoder(value).noSpaces
+  private def written[A : Structured as A](value: A): String = A
+    .encoder(value)
+    .noSpaces
 
   test("simple types have simple schemas"):
     assertEquals(

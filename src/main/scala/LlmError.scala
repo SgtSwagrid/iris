@@ -99,21 +99,29 @@ enum LlmError(message: String) extends Exception(message):
     extends LlmError(s"$provider did not answer within $after")
 
   /**
-    * A reply that could not be read as the answer [[LlmClient.ask]] asked for,
-    * after the model was told why as often as allowed.
+    * A reply that could not be read as the answer [[LlmClient.ask]] asked for:
+    * after the model was told why as often as allowed, or at once where asking
+    * again could not help, as for a reply cut off at the token limit.
     *
     * @param attempts
     *   The number of replies asked for.
     *
     * @param detail
-    *   The description of why the last reply could not be read.
+    *   The description of why the last reply could not be read, as the model
+    *   was told it, which may repeat what the reply said, as a host's own
+    *   refusal of a value may or a map's keys do, and so is kept out of the
+    *   message.
     *
-    * @param text
-    *   The text of the last reply, kept out of the message.
+    * @param replies
+    *   The replies asked for, oldest first, with their usage, also kept out of
+    *   the message.
     */
   case Unreadable
     (
       attempts: Int,
       detail: String,
-      text: String,
-    ) extends LlmError(s"The model's last reply could not be read: $detail")
+      replies: List[Reply],
+    )
+    extends LlmError(
+      s"The model's reply could not be read as asked (attempts: $attempts)",
+    )

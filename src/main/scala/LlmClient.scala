@@ -67,8 +67,10 @@ trait LlmClient[F[_]]:
     * Asks the model for an answer of a type, telling it what form the answer
     * must take and reading its reply as one. A reply that cannot be read is
     * followed by why, and the model asked again, until one can be or the
-    * attempts run out. Each attempt goes through [[send]], so a wrapper around
-    * the client sees every one.
+    * attempts run out, but not where asking again could not help: a reply cut
+    * off at the token limit, asking for a tool, stopped for a reason of the
+    * provider's, such as a refusal, or saying nothing. Each attempt goes
+    * through [[send]], so a wrapper around the client sees every one.
     *
     * A `String` is the reply's text as written, as [[send]] gives it. Any
     * [[Structured]] type is JSON conforming to its schema, which closes the
@@ -90,7 +92,8 @@ trait LlmClient[F[_]]:
     *   The per-request options, alike for every attempt.
     *
     * @param attempts
-    *   The most replies to ask for, at least one.
+    *   The most replies to ask for, which must be at least one, as the effect
+    *   otherwise fails with an `IllegalArgumentException`.
     *
     * @return
     *   An effect producing the answer, which fails with [[LlmError.Unreadable]]
@@ -103,7 +106,7 @@ trait LlmClient[F[_]]:
       attempts: Int = Answer.attempts,
     )
     (using Answer[A], MonadThrow[F])
-    : F[A] = Answer.ask(this, chat, options, attempts)
+    : F[A] = Answer.ask(send(_, options), chat, attempts)
 
   /**
     * Asks the model for an answer of a type to a single-turn prompt.

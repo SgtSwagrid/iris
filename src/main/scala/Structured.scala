@@ -5,9 +5,8 @@ import com.alecdorrington.cadmus.Scaladoc
 import io.circe.{Decoder, DecodingFailure, Encoder, HCursor, Json, JsonObject}
 import io.circe.DecodingFailure.Reason
 import io.circe.syntax.*
-import scala.compiletime.{
-  constValue, constValueTuple, erasedValue, summonAll, summonFrom,
-}
+import java.nio.charset.StandardCharsets
+import scala.compiletime.{constValueTuple, erasedValue, summonAll, summonFrom}
 import scala.deriving.Mirror
 
 /**
@@ -29,14 +28,17 @@ import scala.deriving.Mirror
   * left out. A sealed trait or enum whose cases have no fields is the name of
   * one of them, as `"Red"`; any other is an object holding one case under its
   * name, as `{"Circle":{"radius":1.0}}`. A recursive type refers to itself
-  * through definitions in the schema, named for its type, so that a type within
-  * another of the same name, as `Page[Page[A]]`, is taken for it.
+  * through definitions in the schema, each type told apart by its full name and
+  * type arguments, so that `Tree[Int]` and `Tree[String]` are each defined.
   *
   * The schema describes a derived type, each of its cases and each of its
   * fields as its Scaladoc does: a type or case by its description, and a field
   * by its class's `@param` tag. Code examples are left out, and links written
   * as their labels. A comment is read only where its type is compiled, which is
-  * always so for `derives Structured`.
+  * always so for `derives Structured`, and not at all under `-Xdrop-docs`.
+  *
+  * In JavaScript, a reply's numbers are read as doubles, so a `Long`, `BigInt`
+  * or `BigDecimal` beyond 2^53^ is read imprecisely.
   *
   * @tparam A
   *   The type.
@@ -52,9 +54,11 @@ final class Structured[A] private (
   val encoder: Encoder[A],
   val decoder: Decoder[A],
   shaped: => Shape,
-  private[iris] val name: Option[String],
-  private[iris] val optional: Boolean,
+  private[iris] val name: TypeName,
+  private[iris] val optional: Boolean = false,
+  private[iris] val definable: Boolean = false,
   private[iris] val description: Option[String] = None,
+  private[iris] val note: Option[String] = None,
 ):
 
   /** What this type's schema is made of, read when first needed. */
@@ -105,22 +109,52 @@ final class Structured[A] private (
     converted(
       to,
       from,
-      Structured.described[B].flatMap(_.description),
+      TypeName.of[B],
+      Structured.documented[B].flatMap(_.description),
     )
 
+  /**
+    * Describes this type's values in words, as of bounds an [[emap]] keeps them
+    * within, beside whatever else describes them: the type's Scaladoc, or the
+    * `@param` of a field of the type.
+    *
+    * @param text
+    *   The words.
+    *
+    * @return
+    *   This structured type, described.
+    */
+  def described(text: String): Structured[A] = new Structured(
+    encoder,
+    decoder,
+    shape,
+    name,
+    optional,
+    definable,
+    description,
+    Some(note.fold(text)(Shape.joined(_, text))),
+  )
+
+  /**
+    * A type converted from this one, as this one is but for its name and its
+    * own Scaladoc, and still defined where it recurs through this one.
+    */
   private def converted[B]
     (
       to: A => Either[String, B],
       from: B => A,
+      named: TypeName,
       described: Option[String],
     )
     : Structured[B] = new Structured(
     encoder.contramap(from),
     decoder.emap(to),
     shape,
-    name,
+    named,
     optional,
+    definable,
     described.orElse(description),
+    note,
   )
 
 object Structured:
@@ -149,63 +183,61 @@ object Structured:
     * @return
     *   A structured type writing and reading through circe's codec.
     */
-  def of[A : {Encoder, Decoder}](schema: Json): Structured[A] = new Structured(
-    Encoder[A],
-    Decoder[A],
-    Shape.Fixed(schema),
-    None,
-    false,
-  )
+  inline def of[A : {Encoder, Decoder}](schema: Json): Structured[A] =
+    fixed(schema, TypeName.of[A])
 
-  given Structured[String]     = simple("string")
-  given Structured[Boolean]    = simple("boolean")
-  given Structured[Int]        = simple("integer")
-  given Structured[Long]       = simple("integer")
-  given Structured[BigInt]     = simple("integer")
-  given Structured[Double]     = simple("number")
-  given Structured[Float]      = simple("number")
-  given Structured[BigDecimal] = simple("number")
+  given Structured[String]     = simple("string", "String")
+  given Structured[Boolean]    = simple("boolean", "Boolean")
+  given Structured[Int]        = simple("integer", "Int")
+  given Structured[Long]       = simple("integer", "Long")
+  given Structured[BigInt]     = simple("integer", "BigInt")
+  given Structured[Double]     = simple("number", "Double")
+  given Structured[Float]      = simple("number", "Float")
+  given Structured[BigDecimal] = simple("number", "BigDecimal")
 
   /** An optional value, which as a field may also be left out. */
-  given [A : Structured as value]: Structured[Option[A]] = new Structured(
-    Encoder.encodeOption(using value.encoder),
-    Decoder.decodeOption(using value.decoder),
-    Shape.Nullable(value),
-    None,
-    true,
+  given [A : Structured as A]: Structured[Option[A]] = new Structured(
+    Encoder.encodeOption(using A.encoder),
+    Decoder.decodeOption(using A.decoder),
+    Shape.Nullable(A),
+    applied("Option", A),
+    optional = true,
   )
 
-  given [A : Structured as item]: Structured[List[A]] = listed(
-    Encoder.encodeList(using item.encoder),
-    Decoder.decodeList(using item.decoder),
-    item,
+  given [A : Structured as A]: Structured[List[A]] = listed(
+    Encoder.encodeList(using A.encoder),
+    Decoder.decodeList(using A.decoder),
+    "List",
+    A,
   )
 
-  given [A : Structured as item]: Structured[Vector[A]] = listed(
-    Encoder.encodeVector(using item.encoder),
-    Decoder.decodeVector(using item.decoder),
-    item,
+  given [A : Structured as A]: Structured[Vector[A]] = listed(
+    Encoder.encodeVector(using A.encoder),
+    Decoder.decodeVector(using A.decoder),
+    "Vector",
+    A,
   )
 
-  given [A : Structured as item]: Structured[Seq[A]] = listed(
-    Encoder.encodeSeq(using item.encoder),
-    Decoder.decodeSeq(using item.decoder),
-    item,
+  given [A : Structured as A]: Structured[Seq[A]] = listed(
+    Encoder.encodeSeq(using A.encoder),
+    Decoder.decodeSeq(using A.decoder),
+    "Seq",
+    A,
   )
 
-  given [A : Structured as item]: Structured[Set[A]] = listed(
-    Encoder.encodeSet(using item.encoder),
-    Decoder.decodeSet(using item.decoder),
-    item,
+  given [A : Structured as A]: Structured[Set[A]] = listed(
+    Encoder.encodeSet(using A.encoder),
+    Decoder.decodeSet(using A.decoder),
+    "Set",
+    A,
     unique = true,
   )
 
-  given [A : Structured as value]: Structured[Map[String, A]] = new Structured(
-    Encoder.encodeMap[String, A](using summon, value.encoder),
-    Decoder.decodeMap[String, A](using summon, value.decoder),
-    Shape.Keyed(value),
-    None,
-    false,
+  given [A : Structured as A]: Structured[Map[String, A]] = new Structured(
+    Encoder.encodeMap[String, A](using summon, A.encoder),
+    Decoder.decodeMap[String, A](using summon, A.decoder),
+    Shape.Keyed(A),
+    applied("Map", Structured[String], A),
   )
 
   /**
@@ -222,15 +254,15 @@ object Structured:
   inline def derived[A](using mirror: Mirror.Of[A]): Structured[A] =
     inline mirror match
       case sum: Mirror.SumOf[A] => union(
-          constValue[sum.MirroredLabel],
-          described[A].flatMap(_.description),
+          TypeName.of[A],
+          documented[A].flatMap(_.description),
           labels[sum.MirroredElemLabels],
           cases[sum.MirroredElemTypes],
           sum.ordinal,
         )
       case product: Mirror.ProductOf[A] => record(
-          constValue[product.MirroredLabel],
-          described[A],
+          TypeName.of[A],
+          documented[A],
           labels[product.MirroredElemLabels],
           summonAll[Tuple.Map[product.MirroredElemTypes, Structured]]
             .toList
@@ -238,10 +270,12 @@ object Structured:
           product.fromProduct,
         )
 
-  /** A type's Scaladoc in plain words, where it is compiled alongside. */
-  private inline def described[A]: Option[Scaladoc] = Scaladoc
-    .of[A]
-    .map(_.plain)
+  /**
+    * A type's Scaladoc in plain words, read by Cadmus where the type is
+    * compiled alongside, and never under `-Xdrop-docs`.
+    */
+  private inline def documented[A]: Option[Scaladoc] =
+    Scaladoc.of[A].map(_.plain)
 
   private inline def labels[Labels <: Tuple]: List[String] =
     constValueTuple[Labels].toList.asInstanceOf[List[String]]
@@ -255,13 +289,68 @@ object Structured:
     case structured: Structured[A] => structured
     case mirror: Mirror.Of[A]      => derived[A](using mirror)
 
-  private def simple[A : {Encoder, Decoder}](kind: String): Structured[A] =
-    of(Json.obj("type" -> kind.asJson))
+  private def fixed[A : {Encoder, Decoder}]
+    (schema: Json, name: TypeName)
+    : Structured[A] = new Structured(
+    Encoder[A],
+    Decoder[A],
+    Shape.Fixed(schema),
+    name,
+  )
+
+  private def simple[A : {Encoder, Decoder}]
+    (kind: String, name: String)
+    : Structured[A] = new Structured(
+    Encoder[A],
+    expecting(kind, name, Decoder[A]),
+    Shape.Fixed(Json.obj("type" -> kind.asJson)),
+    TypeName.standard(name),
+  )
+
+  /** A decoder saying what it expected, where circe's names only the type. */
+  private def expecting[A]
+    (
+      kind: String,
+      name: String,
+      decoder: Decoder[A],
+    )
+    : Decoder[A] = Decoder.instance(cursor =>
+    decoder(cursor).leftMap(_ => mismatched(kind, name, cursor)),
+  )
+
+  /**
+    * Why a simple type could not be read: a number out of its range or not
+    * whole, or a value of another kind, as circe names only the type.
+    */
+  private def mismatched
+    (
+      kind: String,
+      name: String,
+      cursor: HCursor,
+    )
+    : DecodingFailure = cursor.value.asNumber match
+    case Some(number) if kind == "integer" && number.toBigInt.isEmpty =>
+      DecodingFailure(
+        Reason.CustomReason("Expected a whole number"),
+        cursor,
+      )
+    case Some(_) if kind == "integer" || kind == "number" =>
+      val noun = if kind == "integer" then "an integer" else "a number"
+      DecodingFailure(
+        Reason.CustomReason(s"Expected $noun that fits in $name"),
+        cursor,
+      )
+    case _ => expected(kind, cursor)
+
+  /** The name of a standard type constructor applied to structured types. */
+  private def applied(name: String, arguments: Structured[?]*): TypeName =
+    TypeName.standard(name).applied(arguments.map(_.name).toList)
 
   private def listed[C]
     (
       encoder: Encoder[C],
       decoder: Decoder[C],
+      name: String,
       item: Structured[?],
       unique: Boolean = false,
     )
@@ -269,18 +358,17 @@ object Structured:
     encoder,
     decoder,
     Shape.Listed(item, unique),
-    None,
-    false,
+    applied(name, item),
   )
 
   /**
     * The structured type of a case class, its fields summoned only when first
     * needed, so that a recursive type can be made before the fields that refer
-    * back to it. Each field is described by its class's `@param` tag.
+    * back to it.
     */
   private def record[A]
     (
-      name: String,
+      name: TypeName,
       doc: Option[Scaladoc],
       labels: List[String],
       fields: => List[Structured[?]],
@@ -314,9 +402,9 @@ object Structured:
             .map(values => build(Tuple.fromArray(values.toArray))),
       ),
       Shape.Record(named),
-      Some(name),
-      false,
-      doc.flatMap(_.description),
+      name,
+      definable = true,
+      description = doc.flatMap(_.description),
     )
 
   /** A field as written, left out where it is optional and unset. */
@@ -331,7 +419,7 @@ object Structured:
     */
   private def union[A]
     (
-      name: String,
+      name: TypeName,
       description: Option[String],
       labels: List[String],
       cases: => List[Structured[?]],
@@ -348,9 +436,9 @@ object Structured:
         else tagged(named, cursor),
       ),
       if bare then Shape.Enumerated(named) else Shape.Tagged(named),
-      Some(name),
-      false,
-      description,
+      name,
+      definable = true,
+      description = description,
     )
 
   /** A case as written, by its name alone where no case has fields. */
@@ -473,10 +561,15 @@ private[iris] enum Shape:
       )
     case Record(fields) => Shape.closed(
         fields.map(field =>
-          field.label -> Shape.describedAs(
-            describe(field.structured),
-            field.description,
-          ),
+          field.label ->
+            field
+              .description
+              .fold(describe(field.structured))(own =>
+                Shape.describedAs(
+                  describe(field.structured),
+                  Some(field.structured.note.fold(own)(Shape.joined(own, _))),
+                ),
+              ),
         ),
         fields.filterNot(_.structured.optional).map(_.label),
       )
@@ -531,20 +624,21 @@ private[iris] object Shape:
 
   /**
     * The schema of a structured type. Each type that recurs is described once
-    * in `$defs`, and referred to by name wherever it appears.
+    * in `$defs`, and referred to by name wherever it appears. A type is told
+    * apart by its full name, its type arguments applied, and shown by its short
+    * name where no other recurring type shares it.
     */
   def render(structured: Structured[?]): Json =
-    val defined = recurring(structured, Set.empty)
-    val names   = defined.keySet
-    val root    = described(structured, names)
+    val defined = recurring(structured, Set.empty).values.toList
+    val shown   = showing(defined.map(_.name))
+    val root    = described(structured, shown)
     if defined.isEmpty then root
     else
       root.deepMerge(Json.obj(
         "$defs" -> Json.obj(
           defined
-            .toList
-            .sortBy(_._1)
-            .map((name, recurs) => name -> body(recurs, names))*,
+            .map(recurs => shown(recurs.name.full) -> body(recurs, shown))
+            .sortBy(_._1)*,
         ),
       ))
 
@@ -558,43 +652,83 @@ private[iris] object Shape:
     schema.mapObject(("description" -> text.asJson) +: _.remove("description")),
   )
 
-  /** The types, by name, met again within themselves. */
+  /** The full name a derived type would be defined by, if it recurs. */
+  private def definition(structured: Structured[?]): Option[String] = Option
+    .when(structured.definable)(structured.name.full)
+
+  /** The types, by full name, met again within themselves. */
   private def recurring
     (
       structured: Structured[?],
       within: Set[String],
     )
-    : Map[String, Structured[?]] = structured.name.filter(within) match
-    case Some(name) => Map(name -> structured)
+    : Map[String, Structured[?]] = definition(structured).filter(within) match
+    case Some(full) => Map(full -> structured)
     case None       => structured
         .shape
         .parts
-        .map(recurring(_, within ++ structured.name))
+        .map(recurring(_, within ++ definition(structured)))
         .foldLeft(Map.empty)(_ ++ _)
+
+  /**
+    * The names recurring types are defined by, by full name: each short, but in
+    * full where two would otherwise share one.
+    */
+  private def showing(names: List[TypeName]): Map[String, String] = names
+    .groupBy(_.short)
+    .values
+    .flatMap(alike =>
+      alike.map(name =>
+        name.full -> (if alike.size == 1 then name.short else name.full),
+      ),
+    )
+    .toMap
 
   private def described
     (
       structured: Structured[?],
-      defined: Set[String],
+      shown: Map[String, String],
     )
-    : Json = structured
-    .name
-    .filter(defined)
-    .fold(body(structured, defined))(reference)
+    : Json = definition(structured)
+    .flatMap(shown.get)
+    .fold(body(structured, shown))(reference)
 
   /** A type's own schema, its parts described within it. */
   private def body
     (
       structured: Structured[?],
-      defined: Set[String],
+      shown: Map[String, String],
     )
     : Json = describedAs(
-    structured.shape.schema(described(_, defined)),
-    structured.description,
+    structured.shape.schema(described(_, shown)),
+    (structured.description ++ structured.note).reduceOption(joined),
   )
 
+  /** Two descriptions, as paragraphs of one. */
+  def joined(first: String, second: String): String = s"$first\n\n$second"
+
   private def reference(name: String): Json =
-    Json.obj("$ref" -> s"#/$$defs/$name".asJson)
+    Json.obj("$ref" -> s"#/$$defs/${ pointed(name) }".asJson)
+
+  /**
+    * A definition's name as a JSON Pointer token in a URI fragment: `~` and `/`
+    * escaped as the pointer does, and anything else a fragment cannot hold
+    * percent-encoded.
+    */
+  private def pointed(name: String): String = name
+    .replace("~", "~0")
+    .replace("/", "~1")
+    .getBytes(StandardCharsets.UTF_8)
+    .map(byte =>
+      val char = (byte & 0xFF).toChar
+      if byte >= 0 && fragment.contains(char) then char.toString
+      else f"%%${ byte & 0xFF }%02X",
+    )
+    .mkString
+
+  private val fragment: Set[Char] =
+    (('A' to 'Z') ++ ('a' to 'z') ++ ('0' to '9') ++ "-._~!$&'()*+,;=:@/?")
+      .toSet
 
   /** An object of exactly the given properties. */
   private def closed

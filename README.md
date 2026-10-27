@@ -105,22 +105,34 @@ client.ask[Review](Prompt(s"Review this essay: $essay")) // IO[Review]
 ```
 
 A reply that cannot be read, as one that is not JSON or leaves a field out, is answered with every reason
-it could not be, and the model is asked again, three times in all unless `attempts` says otherwise. The
-last unreadable reply fails with `LlmError.Unreadable`, which keeps its text. Each attempt goes through
-`send`, so a wrapper (see [Wrapping a client](#wrapping-a-client)) sees every one, and its usage.
+it could not be, and the model is asked again, three times in all unless `attempts` says otherwise, as in
+`client.ask[Review](chat, attempts = 5)`. JSON is found within a code fence, or within prose around it,
+though the model is asked for JSON alone. A reply that asking again could not help fails at once: one cut
+off at the token limit, one asking for a tool, one the provider stopped, as on a refusal, and one saying
+nothing. The last unreadable reply fails with `LlmError.Unreadable`, which keeps every reply asked for, usage
+included, and what the model was told was wrong with the last, which may repeat what it said; both are kept
+out of its message, so that it may be logged. Each attempt goes through `send`, so a wrapper (see
+[Wrapping a client](#wrapping-a-client)) sees every one too.
 
 Strings, numbers, Booleans, options, lists, vectors, sequences, sets and maps keyed by strings are
 structured already. An optional field may be left out. A sealed trait or enum whose cases have no fields
 is written as the name of one, as `"Pleased"`, and any other as an object holding one case under its name,
-as `{"Circle":{"radius":1.5}}`. A recursive type, such as a tree, refers to itself by name. Any other type
-converts to and from one that is structured, and may refuse what it is given, as the model is then told:
+as `{"Circle":{"radius":1.5}}`. A recursive type, such as a tree, refers to itself by name, each type told
+apart by its full name and type arguments. Any other type converts to and from one that is structured, and
+may refuse what it is given, as the model is then told. Say what it keeps to with `described`, so that the
+model knows before it answers; the words stay beside whatever else describes the type, its Scaladoc or the
+`@param` of a field of it:
 
 ```scala
 case class Score(value: Int)
 
-given Structured[Score] = Structured[Int].emap(n =>
-  Either.cond(n >= 1 && n <= 10, Score(n), s"$n is not from 1 to 10"))(_.value)
+given Structured[Score] = Structured[Int]
+  .emap(n => Either.cond(n >= 1 && n <= 10, Score(n), s"$n is not from 1 to 10"))(_.value)
+  .described("A whole number from 1 to 10.")
 ```
+
+In JavaScript, numbers in a reply are read as doubles, so a `Long`, `BigInt` or `BigDecimal` beyond 2^53
+loses its precision there.
 
 The schema describes each type to the model as its Scaladoc does: a type, and each case of a sealed trait
 or enum, by its description, and each field by its class's `@param` tag, which replaces the description of
@@ -137,9 +149,9 @@ case class Review(summary: String, mood: Mood, score: Score) derives Structured
 ```
 
 A comment is read by [Cadmus](https://github.com/SgtSwagrid/cadmus) where its type is compiled, as it always
-is for `derives Structured`; a type converted with `imap` or `emap` is described by its own Scaladoc where it has
-one there, or anywhere if you compile with `-Xread-docs`. Scala keeps no comment written on a parameter itself, so
-describe a field with `@param`.
+is for `derives Structured`, and not at all under `-Xdrop-docs`; a type converted with `imap` or `emap` is
+described by its own Scaladoc where it has one there, or anywhere if you compile with `-Xread-docs`. Scala keeps
+no comment written on a parameter itself, so describe a field with `@param`.
 
 `ask[String]` is the reply's text, as `send` gives it, and the model is told nothing of its form.
 
@@ -149,7 +161,7 @@ value as JSON, as its `Structured` type writes it, or else as its circe `Encoder
 
 ```scala
 client.ask[Review](Prompt(essay, system = Some("Review the essay you are given.")))
-client.ask[Review](Chat().user(Part.of("Review this essay."), Part.of(essay)))
+client.ask[Review](Chat().user(Part.of("Review this draft."), Part.of(draft))) // draft: Draft, Structured
 client.ask[Review](chat.assistant(review).user("Now make it kinder."))
 ```
 

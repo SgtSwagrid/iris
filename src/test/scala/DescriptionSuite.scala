@@ -70,6 +70,23 @@ object Rating:
 
   given Structured[Rating] = Structured[Int].imap(Rating(_))(_.stars)
 
+/** A grade. */
+final case class Grade(value: Int)
+
+object Grade:
+
+  given Structured[Grade] = Structured[Int]
+    .imap(Grade(_))(_.value)
+    .described("A whole number from 1 to 10.")
+
+/**
+  * A marked essay.
+  *
+  * @param grade
+  *   Out of ten, where five is passable.
+  */
+final case class Marked(grade: Grade) derives Structured
+
 class DescriptionSuite extends FunSuite:
 
   private def json(text: String): Json = parse(text).toOption.get
@@ -164,4 +181,21 @@ class DescriptionSuite extends FunSuite:
         .encoder(Review("Clear.", Mood.Pleased, Verdict.Accept))
         .noSpaces,
       """{"summary":"Clear.","mood":"Pleased","verdict":{"Accept":{}}}""",
+    )
+
+  test("words a type is described in stay beside its scaladoc and a field's"):
+    assertEquals(
+      Structured[Grade].schema.hcursor.get[String]("description"),
+      Right("A grade.\n\nA whole number from 1 to 10."),
+    )
+    assertEquals(
+      Structured[Marked]
+        .schema
+        .hcursor
+        .downField("properties")
+        .downField("grade")
+        .get[String]("description"),
+      Right(
+        "Out of ten, where five is passable.\n\nA whole number from 1 to 10.",
+      ),
     )
