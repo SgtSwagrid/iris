@@ -12,7 +12,7 @@
 </div>
 
 > [!WARNING]
-> Iris is in beta. It is young, it has one user, and anything may change between minor versions.
+> Iris is in beta. It is young, it has few users, and anything may change between minor versions.
 
 One small interface for sending prompts and conversations to a large language model,
 with adapters for [Anthropic](https://docs.anthropic.com/en/api/messages),
@@ -299,9 +299,7 @@ from a browser only with a key of the user's own, as a browser extension may, ne
 
 ## 🤝 Contributing
 
-Iris is developed as part of a larger private project, of which this repository is an automatically synchronised
-mirror (by [GitHub Graph](https://github.com/SgtSwagrid/github-graph)), so changes made here directly would be overwritten.
-Issues are very welcome; for anything more, please open an issue first.
+Issues and pull requests are very welcome; for anything large, please open an issue first.
 
 ## 👁️ See also
 
