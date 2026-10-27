@@ -135,13 +135,22 @@ class AskSuite extends FunSuite:
         s"```json $adaJson```",
         s"```$adaJson```",
         s"Here it is:\n```json\n$adaJson\n```\nI hope it helps.",
-        s"Here it is: $adaJson. I hope it helps.",
       )
     do
       assertEquals(
         asked[Person](client(_ => said(written))),
         Right(Some(ada)),
       )
+
+  test("JSON amid prose, with no fence, is not read, but asked for again"):
+    asked[Person](
+      client(_ => said(s"Here it is: $adaJson. I hope it helps.")),
+    ) match
+      case Left(LlmError.Unreadable(attempts, detail, _)) => assertEquals(
+          (attempts, detail),
+          (3, "It is not JSON."),
+        )
+      case other => fail(s"Expected the ask to be unreadable, not $other.")
 
   test("an unreadable reply is followed by why, and the model asked again"):
     val corrected = client: sent =>
@@ -163,8 +172,7 @@ class AskSuite extends FunSuite:
   test("the model is told of every field that could not be read"):
     val corrected = client: sent =>
       val told = sent.lastOption.map(_.text).getOrElse("")
-      if told.contains("At .name: ") && told.contains("At .age: ") then
-        said(adaJson)
+      if told.contains(".name") && told.contains(".age") then said(adaJson)
       else said("""{"name":1}""")
     assertEquals(
       asked[Person](corrected),
@@ -175,22 +183,18 @@ class AskSuite extends FunSuite:
     asked[Person](client(_ => said("Ada, 36."))) match
       case Left(LlmError.Unreadable(attempts, detail, replies)) =>
         assertEquals(attempts, 3)
-        // JavaScript's parser says nowhere where it failed.
-        assert(detail.startsWith("It is not JSON"))
+        assertEquals(detail, "It is not JSON.")
         assertEquals(
           replies.map(_.text),
           List.fill(3)("Ada, 36."),
         )
       case other => fail(s"Expected the ask to be unreadable, not $other.")
 
-  test("why a reply could not be read repeats none of it"):
+  test("why a reply could not be read is circe's, kept out of the message"):
     val wrong = client(_ => said("""{"name":"Ada","age":"thirty-six"}"""))
     asked[Person](wrong, attempts = 1) match
       case Left(failure @ LlmError.Unreadable(_, detail, _)) =>
-        assertEquals(
-          detail,
-          "At .age: Expected an integer, not a string",
-        )
+        assert(detail.contains(".age"), detail)
         assert(!failure.getMessage.contains("thirty-six"))
       case other => fail(s"Expected the ask to be unreadable, not $other.")
 
@@ -272,21 +276,19 @@ class AskSuite extends FunSuite:
       1,
     ) match
       case Left(failure @ LlmError.Unreadable(_, detail, _)) =>
-        assertEquals(
-          detail,
-          "At .secret: Expected an integer, not a string",
-        )
+        assert(detail.contains(".secret"), detail)
         assert(!failure.getMessage.contains("secret"))
       case other => fail(s"Expected the ask to be unreadable, not $other.")
 
   test("a number out of range or not whole is told so"):
     for (written, detail) <- List(
-        "3000000000" -> "At the top: Expected an integer that fits in Int",
-        "3.5"        -> "At the top: Expected a whole number",
+        "3000000000" -> "Expected an integer that fits in Int",
+        "3.5"        -> "Expected a whole number",
       )
     do
       asked[Int](client(_ => said(written)), 1) match
-        case Left(LlmError.Unreadable(_, said, _)) => assertEquals(said, detail)
+        case Left(LlmError.Unreadable(_, said, _)) =>
+          assert(said.contains(detail), said)
         case other => fail(s"Expected the ask to be unreadable, not $other.")
 
   test("an ask of no attempts is refused before any request"):

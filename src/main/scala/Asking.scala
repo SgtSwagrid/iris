@@ -2,8 +2,7 @@ package com.alecdorrington.iris
 
 import cats.MonadThrow
 import cats.syntax.all.*
-import io.circe.{DecodingFailure, Json, ParsingFailure}
-import io.circe.DecodingFailure.Reason
+import io.circe.Json
 import io.circe.parser.parse
 import scala.util.matching.Regex
 
@@ -173,27 +172,14 @@ private[iris] object Asking:
 
   /**
     * The JSON of a reply: the whole reply, else what its last code fence holds,
-    * as of a draft followed by an answer, else its outermost object or array,
-    * as prose may surround it. A fence within a JSON string is part of it.
+    * as of a draft followed by an answer. A fence within a JSON string is part
+    * of it.
     */
   private def parsed(text: String): Either[String, Json] =
-    val fence = fenced(text)
-    (text.trim :: fence.toList ++ outermost(text))
+    (text.trim :: fenced(text).toList)
       .map(parse)
       .collectFirst { case Right(json) => json }
-      .toRight(s"It is not JSON${ where(parse(fence.getOrElse(text.trim))) }.")
-
-  /**
-    * Where a parse failed, as its message says, without what it read there. A
-    * parser in JavaScript says nowhere.
-    */
-  private def where(read: Either[ParsingFailure, Json]): String = read
-    .left
-    .toOption
-    .flatMap(failure => position.findFirstIn(failure.message))
-    .fold("")(" " + _)
-
-  private val position: Regex = """\(line \d+, column \d+\)""".r
+      .toRight("It is not JSON.")
 
   /** What the last code fence holds, its language named or not. */
   private def fenced(text: String): Option[String] = fence
@@ -204,47 +190,11 @@ private[iris] object Asking:
 
   private val fence: Regex = """(?s)```(?:[\w-]+\s)?\s*(.*?)\s*```""".r
 
-  /** The text from the first opening brace or bracket to the last closing one. */
-  private def outermost(text: String): Option[String] =
-    val start = text.indexWhere(c => c == '{' || c == '[')
-    val end   = text.lastIndexWhere(c => c == '}' || c == ']')
-    Option.when(start >= 0 && end > start)(text.substring(start, end + 1))
-
+  /** Every failure to decode the JSON, as circe says it. */
   private def decoded[A]
     (structured: Structured[A], json: Json)
     : Either[String, A] = structured
     .decoder
     .decodeAccumulating(json.hcursor)
     .toEither
-    .leftMap(_.map(described).toList.mkString("\n"))
-
-  /** A decoding failure, by where and why, without the values it met. */
-  private def described(failure: DecodingFailure): String =
-    s"At ${ place(failure) }: ${ reason(failure) }"
-
-  /** Where a failure was met, which circe gives as empty at the top. */
-  private def place(failure: DecodingFailure): String = failure
-    .pathToRootString
-    .filter(_.nonEmpty)
-    .getOrElse("the top")
-
-  private def reason(failure: DecodingFailure): String = failure.reason match
-    case Reason.WrongTypeExpectation(expected, json) =>
-      s"Expected ${ article(expected) }, not ${ kind(json) }"
-    case Reason.MissingField          => "Missing required field"
-    case Reason.CustomReason(message) => message
-
-  /** A JSON type's name with its article, as `an integer`. */
-  private def article(kind: String): String = kind match
-    case "boolean"                           => "a Boolean"
-    case vowel if "aeiou".contains(vowel(0)) => s"an $vowel"
-    case other                               => s"a $other"
-
-  private def kind(json: Json): String = json.fold(
-    "null",
-    _ => "a Boolean",
-    _ => "a number",
-    _ => "a string",
-    _ => "an array",
-    _ => "an object",
-  )
+    .leftMap(_.map(_.getMessage).toList.mkString("\n"))

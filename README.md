@@ -112,9 +112,9 @@ client.ask[Review](Chat.of(s"Review this essay: $essay")) // IO[Reply[Review]]
 
 A reply that cannot be read, as one that is not JSON or leaves a field out, is answered with every reason
 it could not be, and the model is asked again, three times in all unless `attempts` says otherwise, as in
-`client.ask[Review](chat, attempts = 5)`. JSON is found within a code fence, and an object or array within
-prose around it, though the model is asked for JSON alone; a string, number or Boolean amid prose is asked for
-again. A reply asking for a tool is given at once, with no `answer`. A reply that asking again could not help
+`client.ask[Review](chat, attempts = 5)`. JSON is read from the whole reply, or else from its last code
+fence, though the model is asked for JSON alone; JSON amid prose with no fence is asked for again. The model
+is told what was wrong as circe says it. A reply asking for a tool is given at once, with no `answer`. A reply that asking again could not help
 fails at once: one cut off at the token limit, which is never read, as what parses may be cut short, one the
 provider stopped, as on a refusal, and one saying nothing. A chat in which the user says nothing fails with
 `LlmError.Unsendable` before any request. The last unreadable reply fails with `LlmError.Unreadable`, which keeps every reply asked for, usage

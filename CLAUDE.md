@@ -84,9 +84,9 @@ longer.
   uninstructed, so `JsonHttp.answerable` refuses it with the provider's name before any request; a chat ending
   with the assistant's message gets the instructions in a user message after it, so the model answers afresh
   (the user chose this over continuing a prefill). Usage is summed only when every attempt reports it. `Unreadable`'s message carries neither the replies nor `detail`, which is what
-  the model was told and may repeat the reply (a host's `emap` message, a `Map`'s keys), so hosts may log it.
-  Iris's own wording names no values (`Asking.reason` rewrites circe's, which quote them). JSON is read from the
-  whole reply, then its last fence, then its outermost value, so a fence inside a JSON string is never taken.
+  the model was told, circe's own failures, which quote the reply's values, so hosts may log it. JSON is read
+  from the whole reply, then its last fence, and nowhere else (the user chose this over finding JSON amid prose),
+  so a fence inside a JSON string is never taken.
 - What goes in is a `Content[A]` everywhere (`Chat.of`, `Chat.user`/`assistant`, `Message.apply`, `Part.of`):
   `String` as text, a `Part` as itself, a `Structured` value as its JSON, else an `Encoder`'s JSON. `NotGiven`s keep
   the givens apart, `Structured` winning, so a value is said as the schema the model is told describes it.
