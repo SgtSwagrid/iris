@@ -192,10 +192,11 @@ object Message:
   * yield second.answer
   * }}}
   *
-  * A chat should end with the user's message: one ending with the assistant's
-  * asks the model to continue its own reply. An empty chat, a message of
-  * breakpoints alone, or a reply that a newer Anthropic model would have to
-  * continue fails with [[LlmError.Unsendable]] before any request is made.
+  * Asked of a chat ending with the assistant's message, the model is told what
+  * to answer in a message of the user's after it, and so answers afresh rather
+  * than continuing its own reply. A chat with no messages, a message of
+  * breakpoints alone, or no message of the user's fails with
+  * [[LlmError.Unsendable]] before any request is made.
   *
   * @param messages
   *   The messages exchanged so far, oldest first.
@@ -278,6 +279,15 @@ final case class Chat
     *   A copy of this chat with the system message.
     */
   def withSystem(system: String): Chat = copy(system = Some(system))
+
+  /** Why no provider would answer this chat, where none would. */
+  private[iris] def unanswerable: Option[String] =
+    if messages.isEmpty then Some("it has no messages")
+    else if messages.exists(_.silent) then
+      Some("one of its messages says nothing")
+    else if !messages.exists(_.role == Role.User) then
+      Some("the user says nothing in it")
+    else None
 
   /**
     * The prefix of this chat to cache: everything up to and including its last

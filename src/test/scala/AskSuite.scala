@@ -373,3 +373,197 @@ class AskSuite extends FunSuite:
         total <- sent.get
       yield (reply.answer, total)
     assertEquals(counted.unsafeRunSync(), (Some(ada), 2))
+
+  /** A client failing the test if it is ever asked to send. */
+  private def never: LlmClient[SyncIO] =
+    client(_ => throw AssertionError("A request was made."))
+
+  test("a chat in which the user says nothing is refused before any request"):
+    for (chat, why) <- List(
+        Chat()                                 -> "it has no messages",
+        Chat().withSystem("Answer in French.") -> "it has no messages",
+        Chat().user(Part.CacheBreakpoint) -> "one of its messages says nothing",
+        Chat().assistant("Bonjour.")      -> "the user says nothing in it",
+      )
+    do
+      assertEquals(
+        never.ask[String](chat).attempt.unsafeRunSync(),
+        Left(LlmError.Unsendable("Anthropic", why)),
+      )
+
+  test("text unquoted is not JSON, so is asked for again, then unreadable"):
+    asked[String](client(_ => said("Paris"))) match
+      case Left(LlmError.Unreadable(attempts, detail, replies)) =>
+        assertEquals(
+          (attempts, replies.map(_.text)),
+          (3, List.fill(3)("Paris")),
+        )
+        assert(
+          detail.startsWith("It is not JSON"),
+          detail,
+        )
+      case other => fail(s"Expected the ask to be unreadable, not $other.")
+
+  test("text cut off at the token limit fails at once"):
+    failsAtOnceAs[String](
+      said(
+        "\"Paris is the capital of",
+        "max_tokens",
+      ),
+      "It was cut off at the token limit before it was complete.",
+    )
+
+  test("a reply cut off at the token limit is never read, though it parses"):
+    failsAtOnceAs[Int](
+      said("4", "max_tokens"),
+      "It was cut off at the token limit before it was complete.",
+    )
+
+  /** Whether a reply fails an ask of a type at once. */
+  private def failsAtOnceAs[A : Structured]
+    (answer: String, detail: String)
+    : Unit = asked[A](client(_ => answer)) match
+    case Left(LlmError.Unreadable(attempts, said, replies)) => assertEquals(
+        (attempts, said, replies.size),
+        (1, detail, 1),
+      )
+    case other => fail(s"Expected the ask to fail at once, not $other.")
+
+  test(
+    "a reply calling a tool, whatever it says of why it stopped, has no answer",
+  ):
+    val forced = """{"content":[{"type":"tool_use","id":"call_1",
+      "name":"weather","input":{}}],"stop_reason":"end_turn"}"""
+    client(_ => forced).ask[Person](prompt).attempt.unsafeRunSync() match
+      case Right(reply) =>
+        assertEquals(reply.answer, None)
+        assertEquals(
+          reply.toolCalls.map(_.tool),
+          List("weather"),
+        )
+      case other => fail(s"Expected the call, not $other.")
+
+  test(
+    "a tool asked for on a later attempt is given with every attempt's usage",
+  ):
+    val withUsage = """{"content":[{"type":"tool_use","id":"call_1",
+      "name":"weather","input":{}}],"stop_reason":"tool_use",
+      "usage":{"input_tokens":20,"output_tokens":5}}"""
+    val later     = client(sent =>
+      if sent.size > 1 then withUsage
+      else said("Ada, 36.", cost = Some((10, 2))),
+    )
+    later.ask[Person](prompt).attempt.unsafeRunSync() match
+      case Right(reply) => assertEquals(
+          (reply.answer, reply.attempts, reply.usage),
+          (None, 2, Some(Usage(30, 7))),
+        )
+      case other => fail(s"Expected the call, not $other.")
+
+  test("usage is none where an attempt reports none, as no sum would be whole"):
+    val partly = client(sent =>
+      if sent.size > 1 then said(adaJson, cost = Some((20, 5)))
+      else said("Ada, 36."),
+    )
+    assertEquals(
+      partly.ask[Person](prompt).map(_.usage).attempt.unsafeRunSync(),
+      Right(None),
+    )
+
+  test("usages add up, cached tokens with the rest"):
+    assertEquals(
+      Usage(10, 2, 4) + Usage(20, 5, 6),
+      Usage(30, 7, 10),
+    )
+
+  test("the request after a tool's result carries it, then the instructions"):
+    val calling  = Part.ToolCall("call_1", "weather", Json.obj())
+    val answered = Chat()
+      .user("What is the weather?")
+      .assistant(Reply(
+        "",
+        StopReason.ToolCall,
+        None,
+        List(calling),
+      ))
+      .user(Part.ToolResult("call_1", "weather", "Snowing."))
+    val checked = LlmClient[SyncIO](
+      config,
+      BackendStub(CatsMonadError[SyncIO]())
+        .whenAnyRequest
+        .thenRespondF(request =>
+          request.body match
+            case StringBody(sent, _, _) =>
+              val last  = json(sent).hcursor.downField("messages").downN(2)
+              val kinds = last
+                .downField("content")
+                .as[List[Json]]
+                .map(_.flatMap(_.hcursor.get[String]("type").toOption))
+              val told = last
+                .downField("content")
+                .downN(1)
+                .get[String]("text")
+                .exists(_.contains("Reply with JSON alone"))
+              SyncIO(ResponseStub.adjust(
+                if kinds == Right(List("tool_result", "text")) && told then
+                  said("\"Snowing in Zug.\"")
+                else said("Not told."),
+              ))
+            case _ => SyncIO.raiseError(Exception("No JSON was sent.")),
+        ),
+    )
+    assertEquals(
+      checked
+        .ask[String](answered, attempts = 1)
+        .map(_.answer)
+        .attempt
+        .unsafeRunSync(),
+      Right(Some("Snowing in Zug.")),
+    )
+
+  /** A client of a provider answering every request with the body. */
+  private def answering(model: LlmModel, body: String): LlmClient[SyncIO] =
+    LlmClient[SyncIO](
+      config.copy(model = model),
+      BackendStub(CatsMonadError[SyncIO]())
+        .whenAnyRequest
+        .thenRespond(ResponseStub.adjust(body)),
+    )
+
+  test("every provider's reply is asked for and read alike"):
+    val written = adaJson.asJson.noSpaces
+    val openAi = s"""{"choices":[{"message":{"content":$written},
+      "finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}"""
+    val gemini = s"""{"candidates":[{"content":{"parts":[{"text":$written}]},
+      "finishReason":"STOP"}],
+      "usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3}}"""
+    for (model, body) <- List(
+        LlmModel.Gpt5           -> openAi,
+        LlmModel.Gemini2_5Flash -> gemini,
+      )
+    do
+      assertEquals(
+        answering(model, body).ask[Person](prompt).attempt.unsafeRunSync(),
+        Right(Reply(
+          adaJson,
+          StopReason.Completed,
+          Some(Usage(5, 3)),
+          answer = Some(ada),
+        )),
+      )
+
+  test(
+    "openai's call it was made to make, though it says it stopped, is a call",
+  ):
+    val forced = """{"choices":[{"message":{"content":null,"tool_calls":[
+      {"id":"call_1","type":"function",
+       "function":{"name":"weather","arguments":"{}"}}]},
+      "finish_reason":"stop"}]}"""
+    assertEquals(
+      answering(LlmModel.Gpt5, forced)
+        .ask[Person](prompt)
+        .map(reply => (reply.answer, reply.toolCalls.map(_.tool)))
+        .attempt
+        .unsafeRunSync(),
+      Right((None, List("weather"))),
+    )

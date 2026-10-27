@@ -20,7 +20,8 @@ private[iris] object Asking:
   /**
     * Asks the model through a client's `send` until its reply can be read or
     * asks for a tool, telling it what was wrong with each that could not, so
-    * long as asking again could help.
+    * long as asking again could help. A chat no provider would answer is sent
+    * uninstructed, so that the provider refuses it before any request.
     */
   def ask[F[_] : MonadThrow, A : Structured as A]
     (
@@ -35,7 +36,7 @@ private[iris] object Asking:
       ))
     else
       Attempts(send, A, attempts).attempt(
-        instructed(chat, instructions(A)),
+        chat.unanswerable.fold(instructed(chat, instructions(A)))(_ => chat),
         Vector.empty,
       )
 
@@ -52,6 +53,7 @@ private[iris] object Asking:
       attempts: Int,
     ):
 
+    /** Sends the chat, after the replies so far, and reads what comes back. */
     def attempt
       (
         chat: Chat,
@@ -60,7 +62,10 @@ private[iris] object Asking:
       : F[Reply[A]] =
       send(chat).flatMap(reply => answered(chat, replies :+ reply))
 
-    /** The answer, none where the model asked for tools, or another attempt. */
+    /**
+      * The answer, none where the model asked for tools, a failure where asking
+      * again could not help, or another attempt.
+      */
     private def answered
       (
         chat: Chat,
@@ -68,16 +73,15 @@ private[iris] object Asking:
       )
       : F[Reply[A]] =
       val reply = replies.last
-      if reply.stopReason == StopReason.ToolCall then
-        summed(replies, None).pure[F]
+      if calledTools(reply) then summed(replies, None).pure[F]
       else
-        read(structured, reply).leftMap(stopped(reply, _)) match
-          case Right(value) => summed(replies, Some(value)).pure[F]
-          case Left(why)    => hopeless(reply) match
-              case Some(fatal)                     => unreadable(replies, fatal)
-              case None if replies.size < attempts =>
+        hopeless(reply) match
+          case Some(fatal) => unreadable(replies, fatal)
+          case None => read(structured, reply).leftMap(stopped(reply, _)) match
+              case Right(value) => summed(replies, Some(value)).pure[F]
+              case Left(why) if replies.size < attempts =>
                 attempt(corrected(chat, reply, why), replies)
-              case None => unreadable(replies, why)
+              case Left(why) => unreadable(replies, why)
 
     private def unreadable
       (
@@ -88,7 +92,17 @@ private[iris] object Asking:
       .Unreadable(replies.size, detail, replies.toList)
       .raiseError
 
-  /** The last reply with the answer read from it, counting every attempt. */
+  /**
+    * Whether a reply asks for tools, by its calls or why it stopped, as OpenAI
+    * says it stopped as usual for a call it was made to make.
+    */
+  private def calledTools(reply: Reply[Nothing]): Boolean =
+    reply.stopReason == StopReason.ToolCall || reply.toolCalls.nonEmpty
+
+  /**
+    * The last reply with the answer read from it, counting every attempt: its
+    * usage is theirs together, or none where one of them reports none.
+    */
   private def summed[A]
     (
       replies: Vector[Reply[Nothing]],
@@ -97,7 +111,7 @@ private[iris] object Asking:
     : Reply[A] = replies
     .last
     .copy(
-      usage = replies.flatMap(_.usage).reduceOption(_ + _),
+      usage = replies.toList.traverse(_.usage).flatMap(_.reduceOption(_ + _)),
       answer = answer,
       attempts = replies.size,
     )
@@ -111,10 +125,11 @@ private[iris] object Asking:
     : Either[String, A] = parsed(reply.text).flatMap(decoded(structured, _))
 
   /**
-    * Why asking again could not help a reply that could not be read, where it
-    * could not: it was cut short, stopped for a reason of the provider's, such
-    * as a refusal, or said nothing. A reply ended by a stop sequence is asked
-    * for again, told so, as only Anthropic reports one.
+    * Why no reading of a reply could be trusted, nor asking again help, where
+    * none could: it was cut short, so that even what parses may be cut, as `4`
+    * of `42`, stopped for a reason of the provider's, such as a refusal, or
+    * said nothing. A reply ended by a stop sequence is read, and if it cannot
+    * be, asked for again, told so, as only Anthropic reports one.
     */
   private def hopeless(reply: Reply[Nothing]): Option[String] =
     reply.stopReason match
@@ -131,8 +146,9 @@ private[iris] object Asking:
     else why
 
   /**
-    * Closes the user's last message with the instructions, or else adds them in
-    * a message of their own, so that a cached prefix is sent as it was.
+    * Closes the user's last message with the instructions, or else, after the
+    * assistant's, adds them in a message of their own, so that the model
+    * answers afresh. A cached prefix is sent as it was.
     */
   private def instructed(chat: Chat, instructions: String): Chat =
     chat.messages.lastOption.filter(_.role == Role.User) match

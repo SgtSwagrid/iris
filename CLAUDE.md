@@ -75,11 +75,15 @@ longer.
   provider-agnostic, and passes `Asking.ask` the client's `send` as a function, as `send` is protected: the schema is asked for in words closing the
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
   native structured output. An unreadable reply is answered with every decoding failure (decoders accumulate)
-  and asked again, `attempts` requests in all, then `LlmError.Unreadable`, carrying every reply. A `ToolCall`
-  reply is given at once with no answer. Asking again only helps a complete reply that said something, so one
-  stopped at `MaxTokens` or an `Other` reason, or one that is blank, fails at once: an identical chat is never
-  resent. A stop sequence is asked again, the model told so, as only Anthropic reports one and others would read
-  it as complete. `Unreadable`'s message carries neither the replies nor `detail`, which is what
+  and asked again, `attempts` requests in all, then `LlmError.Unreadable`, carrying every reply. A reply asking
+  for a tool, by its stop reason or its calls (OpenAI says `stop` for a forced call), is given at once with no
+  answer. One stopped at `MaxTokens` or an `Other` reason, or blank, fails at once, before any reading, as what
+  parses of a cut reply may be cut (`4` of `42`): an identical chat is never resent. A stop sequence is read, and
+  asked again if it can't be, the model told so, as only Anthropic reports one and others would read it as
+  complete. A chat `Chat.unanswerable` refuses (no messages, a silent one, or none of the user's) is sent
+  uninstructed, so `JsonHttp.answerable` refuses it with the provider's name before any request; a chat ending
+  with the assistant's message gets the instructions in a user message after it, so the model answers afresh
+  (the user chose this over continuing a prefill). Usage is summed only when every attempt reports it. `Unreadable`'s message carries neither the replies nor `detail`, which is what
   the model was told and may repeat the reply (a host's `emap` message, a `Map`'s keys), so hosts may log it.
   Iris's own wording names no values (`Asking.reason` rewrites circe's, which quote them). JSON is read from the
   whole reply, then its last fence, then its outermost value, so a fence inside a JSON string is never taken.
@@ -157,7 +161,9 @@ it only through a release (below).
    changed too, as README's *Upgrading* section says. For 0.3.0, as found in review: Themis passes requests on
    with `super.send` in `Throttle`, `Allowances` and `Recall` (whose replies are `Reply[Nothing]`), asks where it
    sent in `ComparisonService`, `EvaluationService`, `TaskImportService` and `TranscriptionService`, reading
-   `answer`, and its test fakes override the protected `send`; Codeswitch's `Translator` asks where it sent.
+   `answer`, its `MaxTokens` branches (`TranscriptionService`, `EvaluationService`) become `Unreadable` cases,
+   and its test fakes override the protected `send`. Codeswitch's `Translator` asks `ask[List[String]]` and drops
+   its own array parsing and JSON-format prompt, and its `explain` takes `Unreadable`.
 
 ## Instructions
 

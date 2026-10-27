@@ -94,7 +94,7 @@ yield second.answer
 
 ### Typed answers
 
-`ask` asks for an answer of a type of your own rather than text. Derive a
+`ask` asks for an answer of a type of your own, as it does for `String`. Derive a
 [`Structured`](src/main/scala/Structured.scala) type for your case classes, sealed traits and enums, and
 the model is told the [JSON Schema](https://json-schema.org) its reply must conform to, which is read back
 as that type:
@@ -112,10 +112,12 @@ client.ask[Review](Chat.of(s"Review this essay: $essay")) // IO[Reply[Review]]
 
 A reply that cannot be read, as one that is not JSON or leaves a field out, is answered with every reason
 it could not be, and the model is asked again, three times in all unless `attempts` says otherwise, as in
-`client.ask[Review](chat, attempts = 5)`. JSON is found within a code fence, or within prose around it,
-though the model is asked for JSON alone. A reply asking for a tool is given at once, with no `answer`. A
-reply that asking again could not help fails at once: one cut off at the token limit, one the provider
-stopped, as on a refusal, and one saying nothing. The last unreadable reply fails with `LlmError.Unreadable`, which keeps every reply asked for, usage
+`client.ask[Review](chat, attempts = 5)`. JSON is found within a code fence, and an object or array within
+prose around it, though the model is asked for JSON alone; a string, number or Boolean amid prose is asked for
+again. A reply asking for a tool is given at once, with no `answer`. A reply that asking again could not help
+fails at once: one cut off at the token limit, which is never read, as what parses may be cut short, one the
+provider stopped, as on a refusal, and one saying nothing. A chat in which the user says nothing fails with
+`LlmError.Unsendable` before any request. The last unreadable reply fails with `LlmError.Unreadable`, which keeps every reply asked for, usage
 included, and what the model was told was wrong with the last, which may repeat what it said; both are kept
 out of its message, so that it may be logged. Each attempt is a request of its own, so a wrapper (see
 [Wrapping a client](#wrapping-a-client)) sees every one too.
@@ -183,11 +185,15 @@ provider's own structured output, so it works alike everywhere, and a cached pre
 Each request accepts [`ReplyOptions`](src/main/scala/ReplyOptions.scala)
 (token limit, temperature, top-p, stop sequences, effort), and each
 [`Reply`](src/main/scala/Reply.scala) carries the reply text along with a
-normalised `StopReason` and token usage counts.
+normalised `StopReason` and token usage counts, which add up with `+`.
 
 ```scala
-client.ask[String](chat, ReplyOptions(maxTokens = Some(1024), stopSequences = List("\n\n")))
+client.ask[String](chat, ReplyOptions(maxTokens = Some(1024), temperature = Some(0.2)))
 ```
+
+A stop sequence stops the model in the text it writes, which for `ask` is JSON: one inside a JSON string,
+as a newline, which is written escaped, never matches, and one that does leaves JSON cut short, which is
+asked for again.
 
 > [!NOTE]
 > Anthropic's newer models, the default `ClaudeSonnet5_5` among them, no longer accept sampling
@@ -299,7 +305,7 @@ val asking = (question: String) =>
 for
   _       <- client.warm(asking(""))
   answers <- questions.parTraverse(question => client.ask[String](asking(question)))
-yield answers
+yield answers.flatMap(_.answer)
 ```
 
 Requests sent at once cannot read what none of them has written yet, so `warm` writes the prefix
@@ -356,9 +362,21 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
 
 - `client.send(chat, options)` is `client.ask[String](chat, options)`, whose `Reply` holds the text as its
   `answer`, beside the stop reason, usage and tool calls the old `Reply` had. The model is now told to reply
-  with a JSON string, as for any type.
+  with a JSON string, as for any type, which changes what a reply is:
+  - `.text` is the JSON the model wrote, quoted and escaped; read `.answer` for the text itself.
+  - A reply cut off at the token limit, stopped by the provider, as on a refusal, or blank now fails with
+    `LlmError.Unreadable`, where `send` gave it. Code that looked at a returned `StopReason.MaxTokens` matches
+    `Unreadable(_, _, replies)` and looks at `replies.last.stopReason`.
+  - A reply of prose, or text unquoted (`Paris`), is not JSON, so is asked for again, three requests in all
+    unless `attempts` says otherwise, each seen by a wrapper.
+  - A prompt asking for JSON of its own asks for that type instead, rather than for `String`, whose schema
+    would contradict the prompt.
+  - Stop sequences match the JSON the model writes, as *Tuning and metadata* says.
+- `Reply` is generic: name it as `Reply[?]`, or `Reply[Nothing]` for a reply as the provider gave it, and match
+  it by its six fields, `answer` and `attempts` the last.
 - `Prompt(text)` is `Chat.of(text)`, and `Prompt(text, Some(system))` is `Chat.of(text).withSystem(system)`.
-  `ask`, `count` and `stream` take that chat where they took a prompt.
+  `ask`, `count` and `stream` take that chat where they took a prompt. A chat in which the user says nothing
+  is refused.
 - A wrapper extends `LlmClient.Forwarding` and passes a request on with `super.send`, where it called the
   wrapped client's `send`, whose replies are now `Reply[Nothing]`; one holding another client asks it.
 - A reply asking for a tool is a `Reply` with no `answer` and its `toolCalls`.

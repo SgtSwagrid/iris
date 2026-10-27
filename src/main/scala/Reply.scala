@@ -2,31 +2,34 @@ package com.alecdorrington.iris
 
 /**
   * The model's reply to a [[Chat]], with the answer read from it: everything
-  * [[LlmClient.ask]] gives, alike for every type of answer. A reply as the
-  * provider gave it, before any answer is read, is a `Reply[Nothing]`.
+  * [[LlmClient.ask]] gives, alike for every type of answer. Its text, stop
+  * reason and tool calls are those of the last reply asked for. A reply as the
+  * provider gave it, before any answer is read, as `send` and `warm` give it
+  * and [[LlmError.Unreadable]] keeps it, is a `Reply[Nothing]`, whose usage is
+  * its own, with no answer and one attempt.
   *
   * @tparam A
   *   The type of the answer.
   *
   * @param text
-  *   The text of the reply, as the model wrote it.
+  *   The text of the last reply, as the model wrote it.
   *
   * @param stopReason
-  *   The reason the model stopped.
+  *   The reason the model stopped the last reply.
   *
   * @param usage
-  *   The token counts, summed over every attempt, where the provider reports
-  *   them.
+  *   The token counts of every reply asked for, together, or `None` where the
+  *   provider did not report those of one.
   *
   * @param toolCalls
   *   The tools the model asks to have run before it goes on, if any.
   *
   * @param answer
-  *   The answer read from the reply, or `None` where the model asked for tools
-  *   instead, or none was read.
+  *   The answer read from the last reply, or `None` where the model asked for
+  *   tools instead. A reply from which no answer can be read fails the ask.
   *
   * @param attempts
-  *   The number of replies asked for before this one could be read.
+  *   The number of replies asked for, this one included.
   */
 final case class Reply[+A]
   (

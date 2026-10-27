@@ -27,10 +27,11 @@ trait LlmClient[F[_]]:
     * user message, and its reply read as JSON conforming to it. A reply that
     * cannot be read is followed by why, and the model asked again, until one
     * can be or the attempts run out, but not where asking again could not help:
-    * a reply cut off at the token limit, stopped for a reason of the
-    * provider's, such as a refusal, or saying nothing. A reply asking for a
-    * tool is given with no answer. Every attempt goes through [[send]], so a
-    * wrapper overriding it sees each.
+    * a reply cut off at the token limit, which is never read, stopped for a
+    * reason of the provider's, such as a refusal, or saying nothing. A reply
+    * asking for a tool is given with no answer. A chat in which the user says
+    * nothing fails with [[LlmError.Unsendable]] before any request. Every
+    * attempt goes through [[send]], so a wrapper overriding it sees each.
     *
     * {{{
     * case class Person(name: String, age: Int) derives Structured
@@ -49,8 +50,8 @@ trait LlmClient[F[_]]:
     *   to the configuration or the provider's defaults.
     *
     * @param attempts
-    *   The most replies to ask for, which must be at least one, as the effect
-    *   otherwise fails with an `IllegalArgumentException`.
+    *   The most replies to ask for, three unless given, which must be at least
+    *   one, as the effect otherwise fails with an `IllegalArgumentException`.
     *
     * @return
     *   An effect producing the last reply with its answer, alike for every
