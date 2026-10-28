@@ -12,7 +12,7 @@ Keep it concise and actionable.
 ## Project overview
 
 This is Iris, a Scala 3 library giving one provider-agnostic interface to the APIs of large language models, with
-adapters for Anthropic, OpenAI and Google Gemini, built on Cats Effect, sttp and Circe. It is in beta.
+adapters for Anthropic, OpenAI and Google Gemini, built on Cats Effect, sttp and Circe. It is still a prototype.
 
 It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js. `LlmClient` is the public interface: callers `ask` a `Chat`
 for an answer of any type with a `Schema`, `String` included, as a uniform `Answer[A]`, and `send` is the protected request every
@@ -177,9 +177,10 @@ it only through a release (below).
 
 ### Releases
 
-1. Land the changes on `main` by pull request, the last of them setting the README's installation line to the new
-   version. Iris is in beta, versioned by early semver (`versionScheme`): while it is `0.x`, the minor version goes up
-   for any change that can break a user's build or behaviour, and the patch version for anything else.
+1. Land the changes on `main` by pull request. The README's installation line names no version (it reads
+   `{version}`, pointing to the latest release), so a release leaves it as it is. Iris is still a prototype,
+   versioned by early semver (`versionScheme`): while it is `0.x`, the minor version goes up for any change that can
+   break a user's build or behaviour, and the patch version for anything else.
 2. Publish a GitHub release of `main` tagged `v<version>`, with notes written for a user, as the earlier releases' are
    (the installation line, then what is Changed, Added and Fixed). `publish.yml` then publishes `iris_3` and
    `iris_sjs1_3` to Maven Central through `sbt-ci-release`, which takes the version from the tag, and `docs.yml`
