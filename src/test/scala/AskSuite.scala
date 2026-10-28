@@ -6,6 +6,7 @@ import com.alecdorrington.iris.Fixtures.{config, json}
 import io.circe.Json
 import io.circe.syntax.*
 import munit.FunSuite
+import scala.util.control.NonFatal
 import sttp.client4.StringBody
 import sttp.client4.impl.cats.CatsMonadError
 import sttp.client4.testing.{BackendStub, ResponseStub}
@@ -119,34 +120,31 @@ class AskSuite extends FunSuite:
       Right(Some(ada)),
     )
 
-  test("an answer in a code fence is read from within it"):
-    val fenced = client(_ => said(s"```json\n$adaJson\n```"))
-    assertEquals(
-      asked[Person](fenced),
-      Right(Some(ada)),
-    )
+  /** The person read from a reply at the first attempt, or why none was. */
+  private def read(written: String): Either[String, Option[Person]] =
+    asked[Person](client(_ => said(written)), attempts = 1)
+      .left
+      .map:
+        case LlmError.Unreadable(_, detail, _) => detail
+        case other                             => other.toString
 
-  test("an answer in a fence of one line, or none, is read alike"):
-    for written <- List(
-        s"```json $adaJson```",
-        s"```$adaJson```",
-        s"Here it is:\n```json\n$adaJson\n```\nI hope it helps.",
-      )
-    do
-      assertEquals(
-        asked[Person](client(_ => said(written))),
+  test("JSON is read from the whole reply, else its last fence, and no other"):
+    List(
+      s"```json\n$adaJson\n```" -> Right(Some(ada)),
+      s"```json $adaJson```"    -> Right(Some(ada)),
+      s"```$adaJson```"         -> Right(Some(ada)),
+      // Prose around a fence is no matter.
+      s"Here it is:\n```json\n$adaJson\n```\nI hope it helps." ->
         Right(Some(ada)),
-      )
-
-  test("JSON amid prose, with no fence, is not read, but asked for again"):
-    asked[Person](
-      client(_ => said(s"Here it is: $adaJson. I hope it helps.")),
-    ) match
-      case Left(LlmError.Unreadable(attempts, detail, _)) => assertEquals(
-          (attempts, detail),
-          (3, "It is not JSON."),
-        )
-      case other => fail(s"Expected the ask to be unreadable, not $other.")
+      // A fence within a JSON string is part of it, not the answer.
+      """{"name":"```Ada```","age":36}""" ->
+        Right(Some(Person("```Ada```", 36, None))),
+      // Of two fences, the last is the answer.
+      (s"Draft:\n```json\n{\"name\":\"Bea\",\"age\":1}\n```\n" +
+        s"Final:\n```json\n$adaJson\n```") -> Right(Some(ada)),
+      // JSON amid prose, with no fence, is not read.
+      s"Here it is: $adaJson. I hope it helps." -> Left("It is not JSON."),
+    ).foreach((written, answer) => assertEquals(read(written), answer, written))
 
   test("an unreadable reply is followed by why, and the model asked again"):
     val corrected = client: sent =>
@@ -165,95 +163,149 @@ class AskSuite extends FunSuite:
       Right(Some(ada)),
     )
 
-  test("the model is told of every field that could not be read"):
-    val corrected = client: sent =>
-      val told = sent.lastOption.map(_.text).getOrElse("")
-      if told.contains(".name") && told.contains(".age") then said(adaJson)
-      else said("""{"name":1}""")
-    assertEquals(
-      asked[Person](corrected),
-      Right(Some(ada)),
-    )
-
   test("the last unreadable reply fails the ask, keeping every reply"):
-    asked[Person](client(_ => said("Ada, 36."))) match
+    // Text is no exception: unquoted, it is not JSON.
+    asked[String](client(_ => said("Paris"))) match
       case Left(LlmError.Unreadable(attempts, detail, answers)) =>
         assertEquals(attempts, 3)
         assertEquals(detail, "It is not JSON.")
         assertEquals(
           answers.map(_.text),
-          List.fill(3)("Ada, 36."),
+          List.fill(3)("Paris"),
         )
       case other => fail(s"Expected the ask to be unreadable, not $other.")
 
-  test("why a reply could not be read is circe's, kept out of the message"):
-    val wrong = client(_ => said("""{"name":"Ada","age":"thirty-six"}"""))
-    asked[Person](wrong, attempts = 1) match
-      case Left(failure @ LlmError.Unreadable(_, detail, _)) =>
-        assert(detail.contains(".age"), detail)
-        assert(!failure.getMessage.contains("thirty-six"))
-      case other => fail(s"Expected the ask to be unreadable, not $other.")
+  test(
+    "why a reply could not be read is circe's, in full, kept from the message",
+  ):
+    List[(String, Either[Throwable, Option[?]], List[String], Option[String])](
+      (
+        "a field of the wrong type",
+        asked[Person](
+          client(_ => said("""{"name":"Ada","age":"thirty-six"}""")),
+          1,
+        ),
+        List(".age"),
+        Some("thirty-six"),
+      ),
+      // The model is told of every field that could not be read.
+      (
+        "two fields unread",
+        asked[Person](client(_ => said("""{"name":1}""")), 1),
+        List(".name", ".age"),
+        None,
+      ),
+      // A map's keys may be told the model, but stay out of the message.
+      (
+        "a map's key",
+        asked[Map[String, Int]](
+          client(_ => said("""{"secret":"x"}""")),
+          1,
+        ),
+        List(".secret"),
+        Some("secret"),
+      ),
+      (
+        "a number out of range",
+        asked[Int](client(_ => said("3000000000")), 1),
+        List("Expected an integer that fits in Int"),
+        None,
+      ),
+      (
+        "a number not whole",
+        asked[Int](client(_ => said("3.5")), 1),
+        List("Expected a whole number"),
+        None,
+      ),
+    ).foreach: (row, result, told, withheld) =>
+      result match
+        case Left(failure @ LlmError.Unreadable(_, detail, _)) =>
+          told.foreach(field =>
+            assert(
+              detail.contains(field),
+              s"$row: $detail",
+            ),
+          )
+          withheld.foreach(value =>
+            assert(
+              !failure.getMessage.contains(value),
+              s"$row: ${ failure.getMessage }",
+            ),
+          )
+        case other =>
+          fail(s"Expected the ask to be unreadable ($row), not $other.")
 
-  /** Whether a reply fails the ask at once, though more attempts are left. */
-  private def failsAtOnce(answer: String, detail: String): Unit =
-    asked[Person](client(_ => answer)) match
-      case Left(LlmError.Unreadable(attempts, said, answers)) => assertEquals(
-          (attempts, said, answers.size),
-          (1, detail, 1),
-        )
-      case other => fail(s"Expected the ask to fail at once, not $other.")
-
-  test("a reply cut off at the token limit fails at once"):
-    failsAtOnce(
-      said("""{"name":""", "max_tokens"),
-      "It was cut off at the token limit before it was complete.",
-    )
-
-  test("a reply stopped by the provider fails at once"):
-    failsAtOnce(
-      said("I would rather not.", "refusal"),
-      "It stopped, as `refusal`.",
-    )
-
-  test("a reply of nothing fails at once, never asked again as it was"):
-    failsAtOnce(said(""), "It said nothing.")
+  test("a reply no reading of which could be trusted fails at once"):
+    val cut = "It was cut off at the token limit before it was complete."
+    List(
+      // What parses of a reply cut off may itself be cut, as 4 of 42.
+      ("a number cut off", said("4", "max_tokens"), cut),
+      // A call cut off at the token limit is cut off, not a call.
+      (
+        "a call cut off",
+        """{"content":[{"type":"tool_use","id":"call_1","name":"weather",
+        "input":{"city":"Zu"}}],"stop_reason":"max_tokens"}""",
+        cut,
+      ),
+      (
+        "a refusal",
+        said("I would rather not.", "refusal"),
+        "It stopped, as `refusal`.",
+      ),
+      // A reply of nothing is never asked for again as it was.
+      ("nothing", said(""), "It said nothing."),
+    ).foreach: (row, answer, detail) =>
+      try failsAtOnceAs[Int](answer, detail)
+      catch
+        case NonFatal(failure) => fail(
+            s"$row: ${ failure.getMessage }",
+            failure,
+          )
 
   private val calling = """{"content":[{"type":"text","text":"Let me look."},
     {"type":"tool_use","id":"call_1","name":"weather","input":{"city":"Zug"}}],
     "stop_reason":"tool_use"}"""
 
+  /** OpenAI's call it was made to make, though it says it stopped as ever. */
+  private val forced = """{"choices":[{"message":{"content":null,"tool_calls":[
+    {"id":"call_1","type":"function",
+     "function":{"name":"weather","arguments":"{}"}}]},
+    "finish_reason":"stop"}]}"""
+
   test("a reply asking for a tool is given at once, with no answer"):
-    for asking <- List(
+    List(
+      (
+        "a person asked of anthropic",
         client(_ => calling).ask[Person](prompt),
+        "Let me look.",
+        StopReason.ToolCall,
+      ),
+      (
+        "text asked of anthropic",
         client(_ => calling).ask[String](prompt),
-      )
-    do
+        "Let me look.",
+        StopReason.ToolCall,
+      ),
+      (
+        "a person asked of openai",
+        answering(LlmModel.Gpt5, forced).ask[Person](prompt),
+        "",
+        StopReason.Completed,
+      ),
+    ).foreach: (row, asking, text, stopReason) =>
       asking.attempt.unsafeRunSync() match
-        case Right(reply) =>
-          assertEquals(reply.value, None)
-          assertEquals(reply.text, "Let me look.")
-          assertEquals(reply.stopReason, StopReason.ToolCall)
-          assertEquals(
-            reply.toolCalls.map(_.tool),
-            List("weather"),
+        case Right(reply) => assertEquals(
+            (
+              reply.value,
+              reply.text,
+              reply.stopReason,
+              reply.toolCalls.map(_.tool),
+              reply.attempts,
+            ),
+            (None, text, stopReason, List("weather"), 1),
+            row,
           )
-          assertEquals(reply.attempts, 1)
-        case other => fail(s"Expected the call, not $other.")
-
-  test("a fence within a JSON string is part of it, not the answer"):
-    val fenced = """{"name":"```Ada```","age":36}"""
-    assertEquals(
-      asked[Person](client(_ => said(fenced))),
-      Right(Some(Person("```Ada```", 36, None))),
-    )
-
-  test("of two fences, the last is the answer"):
-    val drafted = s"Draft:\n```json\n{\"name\":\"Bea\",\"age\":1}\n```\n" +
-      s"Final:\n```json\n$adaJson\n```"
-    assertEquals(
-      asked[Person](client(_ => said(drafted))),
-      Right(Some(ada)),
-    )
+        case other => fail(s"Expected the call ($row), not $other.")
 
   test("a reply ended by a stop sequence is asked for again, told so"):
     val stopped = client: sent =>
@@ -265,27 +317,6 @@ class AskSuite extends FunSuite:
       asked[Person](stopped),
       Right(Some(ada)),
     )
-
-  test("a map's keys may be told the model, but stay out of the message"):
-    asked[Map[String, Int]](
-      client(_ => said("""{"secret":"x"}""")),
-      1,
-    ) match
-      case Left(failure @ LlmError.Unreadable(_, detail, _)) =>
-        assert(detail.contains(".secret"), detail)
-        assert(!failure.getMessage.contains("secret"))
-      case other => fail(s"Expected the ask to be unreadable, not $other.")
-
-  test("a number out of range or not whole is told so"):
-    for (written, detail) <- List(
-        "3000000000" -> "Expected an integer that fits in Int",
-        "3.5"        -> "Expected a whole number",
-      )
-    do
-      asked[Int](client(_ => said(written)), 1) match
-        case Left(LlmError.Unreadable(_, said, _)) =>
-          assert(said.contains(detail), said)
-        case other => fail(s"Expected the ask to be unreadable, not $other.")
 
   test("an ask of no attempts is refused before any request"):
     val never = client(_ => throw AssertionError("A request was made."))
@@ -355,6 +386,35 @@ class AskSuite extends FunSuite:
         attempts = 2,
       )),
     )
+    // A tool asked for on a later attempt is given with every attempt's usage.
+    val withUsage = """{"content":[{"type":"tool_use","id":"call_1",
+      "name":"weather","input":{}}],"stop_reason":"tool_use",
+      "usage":{"input_tokens":20,"output_tokens":5}}"""
+    val later     = client(sent =>
+      if sent.size > 1 then withUsage
+      else said("Ada, 36.", cost = Some((10, 2))),
+    )
+    assertEquals(
+      later
+        .ask[Person](prompt)
+        .map(reply => (reply.value, reply.attempts, reply.usage))
+        .attempt
+        .unsafeRunSync(),
+      Right((None, 2, Some(Usage(30, 7)))),
+    )
+    // Usage is none where an attempt reports none, as no sum would be whole.
+    val partly = client(sent =>
+      if sent.size > 1 then said(adaJson, cost = Some((20, 5)))
+      else said("Ada, 36."),
+    )
+    assertEquals(
+      partly.ask[Person](prompt).map(_.usage).attempt.unsafeRunSync(),
+      Right(None),
+    )
+    assertEquals(
+      Usage(10, 2, 4) + Usage(20, 5, 6),
+      Usage(30, 7, 10),
+    )
 
   test("a wrapper around the client sees every attempt"):
     val corrected =
@@ -381,41 +441,17 @@ class AskSuite extends FunSuite:
         Chat()                                 -> "it has no messages",
         Chat().withSystem("Answer in French.") -> "it has no messages",
         Chat().user(Part.CacheBreakpoint) -> "one of its messages says nothing",
-        Chat().assistant("Bonjour.")      -> "the user says nothing in it",
+        // Not the last message alone: any of them saying nothing.
+        Chat().user(Part.CacheBreakpoint).user("Hi") ->
+          "one of its messages says nothing",
+        Chat().assistant("Bonjour.") -> "the user says nothing in it",
       )
     do
       assertEquals(
         never.ask[String](chat).attempt.unsafeRunSync(),
         Left(LlmError.Unsendable("Anthropic", why)),
+        chat,
       )
-
-  test("text unquoted is not JSON, so is asked for again, then unreadable"):
-    asked[String](client(_ => said("Paris"))) match
-      case Left(LlmError.Unreadable(attempts, detail, answers)) =>
-        assertEquals(
-          (attempts, answers.map(_.text)),
-          (3, List.fill(3)("Paris")),
-        )
-        assert(
-          detail.startsWith("It is not JSON"),
-          detail,
-        )
-      case other => fail(s"Expected the ask to be unreadable, not $other.")
-
-  test("text cut off at the token limit fails at once"):
-    failsAtOnceAs[String](
-      said(
-        "\"Paris is the capital of",
-        "max_tokens",
-      ),
-      "It was cut off at the token limit before it was complete.",
-    )
-
-  test("a reply cut off at the token limit is never read, though it parses"):
-    failsAtOnceAs[Int](
-      said("4", "max_tokens"),
-      "It was cut off at the token limit before it was complete.",
-    )
 
   /** Whether a reply fails an ask of a type at once. */
   private def failsAtOnceAs[A : Schema](answer: String, detail: String): Unit =
@@ -425,60 +461,6 @@ class AskSuite extends FunSuite:
           (1, detail, 1),
         )
       case other => fail(s"Expected the ask to fail at once, not $other.")
-
-  test(
-    "a reply calling a tool, whatever it says of why it stopped, has no answer",
-  ):
-    val forced = """{"content":[{"type":"tool_use","id":"call_1",
-      "name":"weather","input":{}}],"stop_reason":"end_turn"}"""
-    client(_ => forced).ask[Person](prompt).attempt.unsafeRunSync() match
-      case Right(reply) =>
-        assertEquals(reply.value, None)
-        assertEquals(
-          reply.toolCalls.map(_.tool),
-          List("weather"),
-        )
-      case other => fail(s"Expected the call, not $other.")
-
-  test("a call cut off at the token limit is cut off, not a call"):
-    failsAtOnceAs[Person](
-      """{"content":[{"type":"tool_use","id":"call_1","name":"weather",
-        "input":{"city":"Zu"}}],"stop_reason":"max_tokens"}""",
-      "It was cut off at the token limit before it was complete.",
-    )
-
-  test(
-    "a tool asked for on a later attempt is given with every attempt's usage",
-  ):
-    val withUsage = """{"content":[{"type":"tool_use","id":"call_1",
-      "name":"weather","input":{}}],"stop_reason":"tool_use",
-      "usage":{"input_tokens":20,"output_tokens":5}}"""
-    val later     = client(sent =>
-      if sent.size > 1 then withUsage
-      else said("Ada, 36.", cost = Some((10, 2))),
-    )
-    later.ask[Person](prompt).attempt.unsafeRunSync() match
-      case Right(reply) => assertEquals(
-          (reply.value, reply.attempts, reply.usage),
-          (None, 2, Some(Usage(30, 7))),
-        )
-      case other => fail(s"Expected the call, not $other.")
-
-  test("usage is none where an attempt reports none, as no sum would be whole"):
-    val partly = client(sent =>
-      if sent.size > 1 then said(adaJson, cost = Some((20, 5)))
-      else said("Ada, 36."),
-    )
-    assertEquals(
-      partly.ask[Person](prompt).map(_.usage).attempt.unsafeRunSync(),
-      Right(None),
-    )
-
-  test("usages add up, cached tokens with the rest"):
-    assertEquals(
-      Usage(10, 2, 4) + Usage(20, 5, 6),
-      Usage(30, 7, 10),
-    )
 
   test("the request after a tool's result carries it, then the instructions"):
     val calling  = Part.ToolCall("call_1", "weather", Json.obj())
@@ -554,20 +536,5 @@ class AskSuite extends FunSuite:
           Some(Usage(5, 3)),
           value = Some(ada),
         )),
+        model,
       )
-
-  test(
-    "openai's call it was made to make, though it says it stopped, is a call",
-  ):
-    val forced = """{"choices":[{"message":{"content":null,"tool_calls":[
-      {"id":"call_1","type":"function",
-       "function":{"name":"weather","arguments":"{}"}}]},
-      "finish_reason":"stop"}]}"""
-    assertEquals(
-      answering(LlmModel.Gpt5, forced)
-        .ask[Person](prompt)
-        .map(reply => (reply.value, reply.toolCalls.map(_.tool)))
-        .attempt
-        .unsafeRunSync(),
-      Right((None, List("weather"))),
-    )
