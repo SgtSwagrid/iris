@@ -177,10 +177,9 @@ it only through a release (below).
 - `irisRoot` shares the matrix's directory, so clears its source and resource directories alike: IntelliJ would
   otherwise count it among the owners of the shared sources and highlight them by its classpath, which has none of
   the library's dependencies (`Not found: fs2`).
-- IntelliJ's sbt import never gives the shared sources' module (`iris-sources`, holding `src/main/scala` and
-  `src/test/scala`) the `packagePrefix`, and no sbt setting reaches it, so every `package` line there is flagged until
-  the prefix is set by hand on those folders (Project Structure, Modules, `iris-sources.main` and `.test`, Sources).
-  A reload keeps it; a fresh import loses it.
+- Sources sit in their packages' directories (`src/main/scala/com/alecdorrington/iris/`), with no `packagePrefix`,
+  unlike the user's single-platform projects: IntelliJ's sbt import never gives a prefix to the module holding the
+  sources the JVM and JS share (`iris-sources`), so every `package` line there was flagged on each fresh import.
 
 ### Releases
 
