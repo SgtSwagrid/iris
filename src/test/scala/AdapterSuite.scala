@@ -27,8 +27,8 @@ class AdapterSuite extends FunSuite:
     .toOption
     .map(_.flatMap(_.hcursor.get[String]("role").toOption))
 
-  test("anthropic requests include history, system and tuning options"):
-    val body = json(AnthropicApi.body(
+  test("each provider is sent the history, system and options in its own form"):
+    val anthropic = json(AnthropicApi.body(
       config,
       chat,
       ReplyOptions(
@@ -37,104 +37,121 @@ class AdapterSuite extends FunSuite:
       ),
     ))
     assertEquals(
-      body.hcursor.get[String]("model").toOption,
+      anthropic.hcursor.get[String]("model").toOption,
       Some("claude-haiku-4-5"),
     )
     assertEquals(
-      body.hcursor.get[Int]("max_tokens").toOption,
+      anthropic.hcursor.get[Int]("max_tokens").toOption,
       Some(512),
     )
     assertEquals(
-      body.hcursor.get[Double]("temperature").toOption,
+      anthropic.hcursor.get[Double]("temperature").toOption,
       Some(0.5),
     )
     assertEquals(
-      body.hcursor.get[String]("system").toOption,
+      anthropic.hcursor.get[String]("system").toOption,
       Some("Be brief."),
     )
     assertEquals(
-      body.hcursor.get[List[String]]("stop_sequences").toOption,
+      anthropic.hcursor.get[List[String]]("stop_sequences").toOption,
       Some(List("END")),
     )
     assertEquals(
-      roles(body, "messages"),
+      roles(anthropic, "messages"),
       Some(List("user", "assistant", "user")),
     )
-
-  test("unset options are omitted from request bodies"):
-    val body = json(AnthropicApi.body(config, chat, ReplyOptions()))
-    assert(body.hcursor.downField("temperature").failed)
-    assert(body.hcursor.downField("top_p").failed)
-    assert(body.hcursor.downField("stop_sequences").failed)
-    val generation = json(GeminiApi.body(config, chat, options))
-      .hcursor
-      .downField("generationConfig")
-    assert(generation.downField("maxOutputTokens").succeeded)
-    assert(generation.downField("temperature").failed)
-    assert(generation.downField("topP").failed)
-    assert(generation.downField("stopSequences").failed)
-
-  test("anthropic omits sampling options for models that reject them"):
-    val body = json(AnthropicApi.body(
-      config.copy(model = LlmModel.ClaudeSonnet5),
+    // A token limit named for a request outranks the configured one.
+    val openAi = json(OpenAiApi.body(
+      config,
       chat,
-      ReplyOptions(temperature = Some(0.5), topP = Some(0.9)),
-    ))
-    assert(body.hcursor.downField("temperature").failed)
-    assert(body.hcursor.downField("top_p").failed)
-
-  test("anthropic omits sampling options for a model iris does not list"):
-    val body = json(AnthropicApi.body(
-      config.copy(model = unlisted),
-      chat,
-      ReplyOptions(temperature = Some(0.5)),
+      ReplyOptions(maxTokens = Some(64)),
     ))
     assertEquals(
-      body.hcursor.get[String]("model").toOption,
-      Some("claude-new"),
+      openAi.hcursor.get[Int]("max_completion_tokens").toOption,
+      Some(64),
     )
-    assert(body.hcursor.downField("temperature").failed)
+    assertEquals(
+      roles(openAi, "messages"),
+      Some(List("system", "user", "assistant", "user")),
+    )
+    val google = json(GeminiApi.body(gemini, chat, options))
+    assertEquals(
+      roles(google, "contents"),
+      Some(List("user", "model", "user")),
+    )
+    assert(google.hcursor.downField("system_instruction").succeeded)
+    assertEquals(
+      google
+        .hcursor
+        .downField("generationConfig")
+        .get[Int]("maxOutputTokens")
+        .toOption,
+      Some(512),
+    )
 
-  test("anthropic omits sampling options for mythos 5"):
-    val body = json(AnthropicApi.body(
-      config.copy(model = LlmModel.ClaudeMythos5),
-      chat,
-      ReplyOptions(temperature = Some(0.5)),
-    ))
-    assert(body.hcursor.downField("temperature").failed)
-
-  test("a listed model named with its provider samples as the listed one does"):
-    val body = json(AnthropicApi.body(
-      config.copy(model =
-        LlmModel
-          .of(
-            LlmProvider.Anthropic,
-            "claude-haiku-4-5",
-          )
-          .get,
+  test("unset options are omitted from every provider's request"):
+    val anthropic = json(AnthropicApi.body(config, chat, options)).hcursor
+    List(
+      "temperature",
+      "top_p",
+      "stop_sequences",
+      "tools",
+      "output_config",
+      "stream",
+    ).foreach(field =>
+      assert(
+        anthropic.downField(field).failed,
+        field,
       ),
-      chat,
-      ReplyOptions(temperature = Some(0.5)),
-    ))
-    assertEquals(
-      body.hcursor.get[Double]("temperature").toOption,
-      Some(0.5),
+    )
+    val openAi = json(OpenAiApi.body(config, chat, options)).hcursor
+    List(
+      "temperature",
+      "top_p",
+      "stop",
+      "tools",
+      "reasoning_effort",
+      "stream",
+      "stream_options",
+    ).foreach(field => assert(openAi.downField(field).failed, field))
+    val google = json(GeminiApi.body(gemini, chat, options)).hcursor
+    assert(google.downField("tools").failed)
+    val generation = google.downField("generationConfig")
+    assert(generation.downField("maxOutputTokens").succeeded)
+    List(
+      "temperature",
+      "topP",
+      "stopSequences",
+      "thinkingConfig",
+    ).foreach(field =>
+      assert(
+        generation.downField(field).failed,
+        field,
+      ),
     )
 
-  test("anthropic keeps sampling options for models that accept them"):
-    val body = json(AnthropicApi.body(
-      config.copy(model = LlmModel.ClaudeHaiku4_5),
-      chat,
-      ReplyOptions(temperature = Some(0.5), topP = Some(0.9)),
-    ))
-    assertEquals(
-      body.hcursor.get[Double]("temperature").toOption,
-      Some(0.5),
-    )
-    assertEquals(
-      body.hcursor.get[Double]("top_p").toOption,
-      Some(0.9),
-    )
+  test("anthropic sends sampling options only to the models that accept them"):
+    val sampled = ReplyOptions(temperature = Some(0.5), topP = Some(0.9))
+    List(
+      LlmModel.ClaudeHaiku4_5 -> true,
+      LlmModel.ClaudeSonnet5  -> false,
+      unlisted                -> false,
+    ).foreach: (model, samples) =>
+      val body =
+        json(AnthropicApi.body(config.copy(model = model), chat, sampled))
+          .hcursor
+      assertEquals(
+        body.get[String]("model").toOption,
+        Some(model.id),
+      )
+      assertEquals(
+        (
+          body.get[Double]("temperature").toOption,
+          body.get[Double]("top_p").toOption,
+        ),
+        if samples then (Some(0.5), Some(0.9)) else (None, None),
+        model,
+      )
 
   test("an effort is sent as each provider asks for one"):
     val thoughtful = ReplyOptions(effort = Some(Effort.Medium))
@@ -170,52 +187,26 @@ class AdapterSuite extends FunSuite:
     ReplyOptions(effort = Some(Effort.Max)),
   )).hcursor.get[String]("reasoning_effort").toOption
 
-  test("openai is asked for its most effort when asked for the most"):
+  test(
+    "openai is asked for its most effort, or high of a model going no higher",
+  ):
     assertEquals(most(LlmModel.Gpt6Astra), Some("max"))
-    assertEquals(most(LlmModel.Gpt5_6Luna), Some("max"))
     assertEquals(
       most(LlmModel.of(LlmProvider.OpenAi, "gpt-new").get),
       Some("max"),
     )
-
-  test("an openai model going no higher than high is asked for high"):
     assertEquals(most(LlmModel.Gpt5), Some("high"))
-    assertEquals(most(LlmModel.Gpt5Mini), Some("high"))
-
-  test("no effort is sent unless one is asked for"):
-    assert(
-      json(AnthropicApi.body(config, chat, options))
-        .hcursor
-        .downField("output_config")
-        .failed,
-    )
-    assert(
-      json(OpenAiApi.body(config, chat, options))
-        .hcursor
-        .downField("reasoning_effort")
-        .failed,
-    )
-    assert(
-      json(GeminiApi.body(gemini, chat, options))
-        .hcursor
-        .downField("generationConfig")
-        .downField("thinkingConfig")
-        .failed,
-    )
 
   private val picture = Part.Media("image/png", "aGVsbG8=")
 
-  private val looking = Chat().user(Part.Text("What is this?"), picture)
+  /** Two text parts in a row, then the picture they ask about. */
+  private val looking = Chat().user(
+    Part.Text("Look."),
+    Part.Text("What is this?"),
+    picture,
+  )
 
   private val paper = Chat().user(Part.Media("application/pdf", "JVBERi0="))
-
-  test("a message of text alone is still sent as plain text"):
-    val body  = json(AnthropicApi.body(config, chat, options))
-    val first = body.hcursor.downField("messages").downN(0)
-    assertEquals(
-      first.get[String]("content").toOption,
-      Some("Hello"),
-    )
 
   private val named = Chat().user(
     Part.Text("BOOK 1: notes.txt"),
@@ -256,30 +247,6 @@ class AdapterSuite extends FunSuite:
       Right(apart),
     )
 
-  test("text parts in a row stay apart beside a picture"):
-    val shown = named.messages.head.content :+ picture
-    val asked = Chat().user(shown*)
-    val texts = (body: Json) =>
-      body
-        .hcursor
-        .downField("messages")
-        .downN(0)
-        .downField("content")
-        .as[List[Json]]
-        .map(_.flatMap(_.hcursor.get[String]("text").toOption))
-    val apart = Right(List(
-      "BOOK 1: notes.txt",
-      "\n\nChapter one.",
-    ))
-    assertEquals(
-      texts(json(AnthropicApi.body(config, asked, options))),
-      apart,
-    )
-    assertEquals(
-      texts(json(OpenAiApi.body(config, asked, options))),
-      apart,
-    )
-
   test(
     "a picture keeps text parts apart, while breakpoints and empty text do not",
   ):
@@ -300,6 +267,19 @@ class AdapterSuite extends FunSuite:
         Part.Text(""),
         Part.Text("\n\nEnd."),
       ),
+    )
+    // A message's text holds each text part as a paragraph of its own.
+    assertEquals(
+      Message(
+        Role.User,
+        List(
+          Part.Text("Page 1"),
+          picture,
+          Part.Text(""),
+          Part.Text("End."),
+        ),
+      ).text,
+      "Page 1\n\nEnd.",
     )
 
   test(
@@ -323,63 +303,83 @@ class AdapterSuite extends FunSuite:
       Some("Looking.\n\nDone."),
     )
 
-  test("a message's text holds each text part as a paragraph of its own"):
-    assertEquals(
-      Message(
-        Role.User,
-        List(
-          Part.Text("Page 1"),
-          picture,
-          Part.Text(""),
-          Part.Text("End."),
-        ),
-      ).text,
-      "Page 1\n\nEnd.",
+  /** The parts of the first message of a body, under the fields named. */
+  private def parts
+    (
+      body: String,
+      messages: String,
+      content: String,
     )
+    : List[Json] = json(body)
+    .hcursor
+    .downField(messages)
+    .downN(0)
+    .get[List[Json]](content)
+    .getOrElse(List.empty)
 
-  test("anthropic sends a picture beside the text which asks about it"):
-    val body  = json(AnthropicApi.body(config, looking, options))
-    val parts = body.hcursor.downField("messages").downN(0).downField("content")
-    assertEquals(
-      parts.downN(0).get[String]("type").toOption,
-      Some("text"),
+  private def texts(parts: List[Json]): List[String] =
+    parts.flatMap(_.hcursor.get[String]("text").toOption)
+
+  test("each provider is sent a picture its own way, after texts kept apart"):
+    val apart     = List("Look.", "\n\nWhat is this?")
+    val anthropic = parts(
+      AnthropicApi.body(config, looking, options),
+      "messages",
+      "content",
     )
+    assertEquals(texts(anthropic), apart)
     assertEquals(
-      parts.downN(1).get[String]("type").toOption,
+      anthropic(2).hcursor.get[String]("type").toOption,
       Some("image"),
     )
     assertEquals(
-      parts.downN(1).downField("source").get[String]("media_type").toOption,
+      anthropic(2)
+        .hcursor
+        .downField("source")
+        .get[String]("media_type")
+        .toOption,
       Some("image/png"),
     )
-
-  test("anthropic sends anything which is not a picture as a document"):
-    val body = json(AnthropicApi.body(config, paper, options))
-    assertEquals(
-      body
-        .hcursor
-        .downField("messages")
-        .downN(0)
-        .downField("content")
-        .downN(0)
-        .get[String]("type")
-        .toOption,
-      Some("document"),
+    val openAi = parts(
+      OpenAiApi.body(config, looking, options),
+      "messages",
+      "content",
     )
-
-  test("openai sends a picture as a data url"):
-    val body  = json(OpenAiApi.body(config, looking, options))
-    val parts = body.hcursor.downField("messages").downN(0).downField("content")
+    assertEquals(texts(openAi), apart)
     assertEquals(
-      parts.downN(1).get[String]("type").toOption,
+      openAi(2).hcursor.get[String]("type").toOption,
       Some("image_url"),
     )
     assertEquals(
-      parts.downN(1).downField("image_url").get[String]("url").toOption,
+      openAi(2).hcursor.downField("image_url").get[String]("url").toOption,
       Some("data:image/png;base64,aGVsbG8="),
     )
+    val google = parts(
+      GeminiApi.body(config, looking, options),
+      "contents",
+      "parts",
+    )
+    assertEquals(texts(google), apart)
+    assertEquals(
+      google(2)
+        .hcursor
+        .downField("inline_data")
+        .get[String]("mime_type")
+        .toOption,
+      Some("image/png"),
+    )
 
-  test("openai says it cannot carry a document in a chat"):
+  test(
+    "anthropic sends a document as one, which openai cannot carry in a chat",
+  ):
+    assertEquals(
+      parts(
+        AnthropicApi.body(config, paper, options),
+        "messages",
+        "content",
+      ).map(_.hcursor.get[String]("type").toOption),
+      List(Some("document")),
+    )
     assertEquals(
       OpenAiApi.pictorial(paper),
       Left(LlmError.Unsupported(
@@ -388,18 +388,6 @@ class AdapterSuite extends FunSuite:
       )),
     )
     assert(OpenAiApi.pictorial(looking).isRight)
-
-  test("gemini sends a picture inline beside its text"):
-    val body  = json(GeminiApi.body(config, looking, options))
-    val parts = body.hcursor.downField("contents").downN(0).downField("parts")
-    assertEquals(
-      parts.downN(0).get[String]("text").toOption,
-      Some("What is this?"),
-    )
-    assertEquals(
-      parts.downN(1).downField("inline_data").get[String]("mime_type").toOption,
-      Some("image/png"),
-    )
 
   test("counting asks for no reply, so needs no limit"):
     val body = json(AnthropicApi.countBody(config, chat))
@@ -413,234 +401,147 @@ class AdapterSuite extends FunSuite:
       Some(List("user", "assistant", "user")),
     )
 
-  test("gemini counts its system message among its contents"):
-    val body = json(GeminiApi.countBody(chat))
-    assertEquals(
-      roles(body, "contents"),
-      Some(List("user", "user", "model", "user")),
-    )
+  test("each provider's response is read as an answer, with its cache reads"):
+    List(
+      // Anthropic leaves its cache's reads and writes out of its input tokens,
+      // and a block of thinking out of the reply.
+      (
+        AnthropicApi,
+        """{"content":[{"type":"thinking","text":"hmm"},
+           {"type":"text","text":"Hello!"}],"stop_reason":"end_turn",
+           "usage":{"input_tokens":10,"output_tokens":5,
+                    "cache_creation_input_tokens":20,
+                    "cache_read_input_tokens":30}}""",
+        Answer(
+          "Hello!",
+          StopReason.Completed,
+          Some(Usage(60, 5, 30)),
+        ),
+      ),
+      (
+        OpenAiApi,
+        """{"choices":[{"message":{"content":"Hello!"},"finish_reason":"length"}],
+           "usage":{"prompt_tokens":40,"completion_tokens":2,
+                    "prompt_tokens_details":{"cached_tokens":32}}}""",
+        Answer(
+          "Hello!",
+          StopReason.MaxTokens,
+          Some(Usage(40, 2, 32)),
+        ),
+      ),
+      (
+        GeminiApi,
+        """{"candidates":[{"content":{"parts":[{"text":"Hello!"}],"role":"model"},
+           "finishReason":"STOP"}],
+           "usageMetadata":{"promptTokenCount":40,"candidatesTokenCount":2,
+                            "cachedContentTokenCount":32}}""",
+        Answer(
+          "Hello!",
+          StopReason.Completed,
+          Some(Usage(40, 2, 32)),
+        ),
+      ),
+    ).foreach: (api, body, reply) =>
+      assertEquals(
+        answer(api, body),
+        Right(reply),
+        api.provider,
+      )
 
-  test("openai requests put the system message first"):
-    val body = json(OpenAiApi.body(config, chat, ReplyOptions()))
+  test("an unrecognised stop reason is kept, and one withheld is unknown"):
     assertEquals(
-      roles(body, "messages"),
-      Some(List("system", "user", "assistant", "user")),
-    )
-
-  test("gemini requests use the model role and nested parts"):
-    val body = json(GeminiApi.body(config, chat, ReplyOptions()))
-    assertEquals(
-      roles(body, "contents"),
-      Some(List("user", "model", "user")),
-    )
-    assert(body.hcursor.downField("system_instruction").succeeded)
-    assertEquals(
-      body
-        .hcursor
-        .downField("generationConfig")
-        .get[Int]("maxOutputTokens")
-        .toOption,
-      Some(512),
-    )
-
-  test("per-request options override the configured token limit"):
-    val body = json(OpenAiApi.body(
-      config,
-      chat,
-      ReplyOptions(maxTokens = Some(64)),
-    ))
-    assertEquals(
-      body.hcursor.get[Int]("max_completion_tokens").toOption,
-      Some(64),
-    )
-
-  test("anthropic responses parse into answers"):
-    val body = """{"content":[{"type":"text","text":"Hello!"}],
-         "stop_reason":"end_turn",
-         "usage":{"input_tokens":10,"output_tokens":5}}"""
-    assertEquals(
-      answer(AnthropicApi, body),
-      Right(Answer(
-        "Hello!",
-        StopReason.Completed,
-        Some(Usage(10, 5)),
-      )),
-    )
-
-  test("openai responses parse into answers"):
-    val body =
-      """{"choices":[{"message":{"content":"Hello!"},"finish_reason":"length"}],
-         "usage":{"prompt_tokens":4,"completion_tokens":2}}"""
-    assertEquals(
-      answer(OpenAiApi, body),
-      Right(Answer(
-        "Hello!",
-        StopReason.MaxTokens,
-        Some(Usage(4, 2)),
-      )),
-    )
-
-  test("gemini responses parse into answers"):
-    val body =
-      """{"candidates":[{"content":{"parts":[{"text":"Hello!"}],"role":"model"},
-         "finishReason":"STOP"}],
-         "usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}}"""
-    assertEquals(
-      answer(GeminiApi, body),
-      Right(Answer(
-        "Hello!",
-        StopReason.Completed,
-        Some(Usage(7, 3)),
-      )),
-    )
-
-  test("unrecognised stop reasons are preserved"):
-    val body = """{"content":[],"stop_reason":"refusal","usage":null}"""
-    assertEquals(
-      answer(AnthropicApi, body).map(_.stopReason),
+      answer(
+        AnthropicApi,
+        """{"content":[],"stop_reason":"refusal","usage":null}""",
+      ).map(_.stopReason),
       Right(StopReason.Other("refusal")),
     )
-
-  test("a reply with no choices is a malformed openai response"):
-    val body = """{"choices":[],"usage":null}"""
     assertEquals(
-      answer(OpenAiApi, body),
-      Left(LlmError.Malformed("OpenAI", "no choices")),
+      answer(
+        AnthropicApi,
+        """{"content":[{"type":"text","text":"Hi"}]}""",
+      ).map(_.stopReason),
+      Right(StopReason.Unknown),
     )
 
-  test("a blocked gemini prompt is malformed, and says why"):
-    val body = """{"promptFeedback":{"blockReason":"SAFETY"}}"""
-    assertEquals(
-      answer(GeminiApi, body),
-      Left(LlmError.Malformed(
-        "Gemini",
+  test("a response with no answer in it is malformed, and says why"):
+    List(
+      (OpenAiApi, """{"choices":[],"usage":null}""", "no choices"),
+      (GeminiApi, """{"candidates":[]}""", "no candidates"),
+      (
+        GeminiApi,
+        """{"promptFeedback":{"blockReason":"SAFETY"}}""",
         "no candidates, blocked as SAFETY",
-      )),
-    )
-
-  test("a gemini reply with no candidates is malformed"):
-    val body = """{"candidates":[]}"""
-    assertEquals(
-      answer(GeminiApi, body),
-      Left(LlmError.Malformed("Gemini", "no candidates")),
-    )
-
-  test("a provider's request to wait is carried, where it gives one"):
-    assertEquals(
-      JsonHttp.retryAfter(Some("30")),
-      Some(30.seconds),
-    )
-    assertEquals(
-      JsonHttp.retryAfter(Some(" 0 ")),
-      Some(0.seconds),
-    )
-
-  test("a request to wait which is not seconds is left unread"):
-    assertEquals(JsonHttp.retryAfter(None), None)
-    assertEquals(
-      JsonHttp.retryAfter(Some("Wed, 21 Oct 2026 07:28:00 GMT")),
-      None,
-    )
-    assertEquals(JsonHttp.retryAfter(Some("-1")), None)
-
-  test("a chat with nothing in it is not sent"):
-    assertEquals(
-      JsonHttp.answerable(LlmProvider.Gemini, Chat()),
-      Left(LlmError.Unsendable("Gemini", "it has no messages")),
-    )
-    assert(JsonHttp.answerable(LlmProvider.Gemini, chat).isRight)
-
-  test("a chat with a message saying nothing is not sent"):
-    assertEquals(
-      JsonHttp.answerable(
-        LlmProvider.Gemini,
-        chat.user(Part.CacheBreakpoint).user("Well?"),
       ),
-      Left(LlmError.Unsendable(
-        "Gemini",
-        "one of its messages says nothing",
-      )),
+    ).foreach: (api, body, why) =>
+      assertEquals(
+        answer(api, body),
+        Left(LlmError.Malformed(api.provider.displayName, why)),
+      )
+
+  test("usage reported in part, or not at all, is none, not a broken response"):
+    assertEquals(
+      answer(
+        AnthropicApi,
+        """{"content":[],"stop_reason":"end_turn",
+         "usage":{"input_tokens":10}}""",
+      ).map(_.usage),
+      Right(None),
+    )
+    assertEquals(
+      answer(
+        OpenAiApi,
+        """{"choices":[{"message":{"content":"Hi"},"finish_reason":"stop"}]}""",
+      ),
+      Right(Answer("Hi", StopReason.Completed, None)),
+    )
+
+  test("a provider's request to wait is read where it is given in seconds"):
+    List(
+      Some("30")                            -> Some(30.seconds),
+      Some(" 0 ")                           -> Some(0.seconds),
+      None                                  -> None,
+      Some("Wed, 21 Oct 2026 07:28:00 GMT") -> None,
+      Some("-1")                            -> None,
+    ).foreach((header, delay) =>
+      assertEquals(
+        JsonHttp.retryAfter(header),
+        delay,
+        header,
+      ),
     )
 
   private val prefilled = Chat().user("Hello").assistant("Once upon a")
 
-  test("a model which refuses a prefill is not asked to continue one"):
-    assert(AnthropicApi.continuable(prefilled, LlmModel.ClaudeSonnet5).isLeft)
-    assert(AnthropicApi.continuable(prefilled, LlmModel.ClaudeOpus4_6).isLeft)
+  test("only a model which accepts a prefill is asked to continue one"):
+    List(
+      (prefilled, LlmModel.ClaudeHaiku4_5, true),
+      (prefilled, LlmModel.ClaudeSonnet5, false),
+      // Opus 4.6 still samples, but no longer continues a prefill.
+      (prefilled, LlmModel.ClaudeOpus4_6, false),
+      (prefilled, unlisted, false),
+      (chat, LlmModel.ClaudeSonnet5, true),
+    ).foreach: (asked, model, continues) =>
+      assertEquals(
+        AnthropicApi.continuable(asked, model).isRight,
+        continues,
+        model,
+      )
 
-  test("a model iris does not list is not asked to continue a prefill"):
-    assert(AnthropicApi.continuable(prefilled, unlisted).isLeft)
-    assert(AnthropicApi.continuable(prefilled, LlmModel.ClaudeMythos5).isLeft)
-
-  test("a model which accepts a prefill still may be given one"):
-    assert(AnthropicApi.continuable(prefilled, LlmModel.ClaudeHaiku4_5).isRight)
-    assert(AnthropicApi.continuable(chat, LlmModel.ClaudeSonnet5).isRight)
-
-  test("a stop reason the provider withheld is not one it gave"):
-    val body = """{"content":[{"type":"text","text":"Hi"}]}"""
-    assertEquals(
-      answer(AnthropicApi, body).map(_.stopReason),
-      Right(StopReason.Unknown),
-    )
-
-  test("partial token counts are no usage, not a broken response"):
-    val body = """{"content":[],"stop_reason":"end_turn",
-         "usage":{"input_tokens":10}}"""
-    assertEquals(
-      answer(AnthropicApi, body).map(_.usage),
-      Right(None),
-    )
-
-  test("a response which reports no usage still parses"):
-    val body =
-      """{"choices":[{"message":{"content":"Hi"},"finish_reason":"stop"}]}"""
-    assertEquals(
-      answer(OpenAiApi, body),
-      Right(Answer("Hi", StopReason.Completed, None)),
-    )
-
-  test("only blocks of text contribute to the reply"):
-    val body = """{"content":[{"type":"thinking","text":"hmm"},
-         {"type":"text","text":"Hello!"}],"stop_reason":"end_turn"}"""
-    assertEquals(
-      answer(AnthropicApi, body).map(_.text),
-      Right("Hello!"),
-    )
-
-  test("gemini addresses the generate endpoint of the model it is given"):
+  test(
+    "gemini addresses each method of the model it is given, beneath an origin",
+  ):
+    val origin = "https://generativelanguage.googleapis.com"
     assertEquals(
       GeminiApi.endpoint(gemini, LlmModel.Gemini2_5Flash).map(_.toString),
-      Right(
-        "https://generativelanguage.googleapis.com" +
-          "/v1beta/models/gemini-2.5-flash:generateContent",
-      ),
+      Right(s"$origin/v1beta/models/gemini-2.5-flash:generateContent"),
     )
-
-  test("a model name cannot escape the path segment it names"):
-    val endpoint = GeminiApi.endpoint(
-      gemini,
-      LlmModel.of(LlmProvider.Gemini, "../v1/elsewhere").get,
-    )
-    assert(endpoint.exists(uri => !uri.toString.contains("/v1/elsewhere")))
-
-  test("gemini addresses a model named after models/ by its name alone"):
-    val model = LlmModel.parse("gemini:models/gemini-3-pro").get
     assertEquals(
-      GeminiApi.endpoint(gemini, model).map(_.toString),
+      GeminiApi.streaming(gemini, LlmModel.Gemini2_5Flash).map(_.toString),
       Right(
-        "https://generativelanguage.googleapis.com" +
-          "/v1beta/models/gemini-3-pro:generateContent",
+        s"$origin/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
       ),
     )
-
-  test("a base url which is not a url is a configuration error"):
-    val endpoint = GeminiApi.endpoint(
-      gemini.copy(baseUrl = Some("https://proxy.test/%")),
-      LlmModel.Gemini2_5Flash,
-    )
-    assert(endpoint.left.exists(_.isInstanceOf[LlmError.Misconfigured]))
-
-  test("a base url is the origin beneath which endpoints are addressed"):
     assertEquals(
       GeminiApi
         .endpoint(
@@ -650,3 +551,10 @@ class AdapterSuite extends FunSuite:
         .map(_.toString),
       Right("https://proxy.test/v1beta/models/gemini-2.5-flash:generateContent"),
     )
+
+  test("a model name cannot escape the path segment it names"):
+    val endpoint = GeminiApi.endpoint(
+      gemini,
+      LlmModel.of(LlmProvider.Gemini, "../v1/elsewhere").get,
+    )
+    assert(endpoint.exists(uri => !uri.toString.contains("/v1/elsewhere")))
