@@ -12,7 +12,7 @@
 </div>
 
 > [!WARNING]
-> Iris is in beta. It is young, it has few users, and anything may change between minor versions.
+> Iris is still a prototype. Anything could be broken or change between minor versions.
 
 One small interface for sending prompts and conversations to a large language model,
 with adapters for [Anthropic](https://docs.anthropic.com/en/api/messages),
@@ -25,15 +25,12 @@ who carried their words to mortals along the rainbow.
 
 ## ⬇️ Installation
 
-Add the following to your `build.sbt`:
+The following applies for [Scala 3](https://www.scala-lang.org/) projects built with [sbt 2](https://www.scala-sbt.org/).
+Add the library to your `build.sbt` file, with the desired version number (e.g. [latest](../../releases/latest)):
 
 ```scala
-libraryDependencies += "com.alecdorrington" %% "iris" % "0.3.0"
+libraryDependencies += "com.alecdorrington" %% "iris" % "{version}"
 ```
-
-Compiled with Scala `3.9.0`, with no intention to explicitly support older versions.
-For the JVM and, through [Scala.js](https://www.scala-js.org/), for JavaScript, where sbt 2 resolves `%%` to the
-right artefact (sbt 1 needs `%%%`).
 
 ## 🚀 Usage
 
