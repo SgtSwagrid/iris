@@ -13,8 +13,11 @@ import sttp.client4.wrappers.DelegateBackend
   * A backend giving each exchange at most its request's read timeout, from
   * sending it to reading its body whole. The JDK's client times a request out
   * only until its reply begins, and then waits for the rest forever. An
-  * exchange given up on is left to end by itself, as a blocked read cannot be
-  * interrupted.
+  * exchange given up on is left running, as a blocked read cannot be
+  * interrupted: it holds a blocking thread until its connection delivers the
+  * rest or fails, which one the server has closed may never do, so that each
+  * stall may hold a thread for as long as the backend lives. A reply that comes
+  * after its request was given up on is read and dropped.
   */
 private[iris] final class Deadlined[F[_] : Temporal]
   (delegate: Backend[F])

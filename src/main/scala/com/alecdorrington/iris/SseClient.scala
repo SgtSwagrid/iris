@@ -65,7 +65,8 @@ private[iris] final class SseClient[F[_] : Async]
     * longer than the configured timeout to arrive, as the JDK's client waits
     * only until a reply begins. A fiber of its own reads the body, and is given
     * up on rather than waited for, as a read waiting for the next part cannot
-    * be interrupted.
+    * be interrupted: that fiber, and the one cancelling it, may then wait for
+    * as long as the backend lives.
     */
   private def bounded(body: Stream[F, Byte]): Stream[F, Byte] = Stream
     .eval(Queue.synchronous[
