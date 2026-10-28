@@ -331,7 +331,10 @@ Each provider keeps a cache per model, and caches nothing shorter than its own m
 A provider's refusal fails the effect with an [`LlmError`](src/main/scala/com/alecdorrington/iris/LlmError.scala):
 `Unsuccessful` for an unsuccessful response, carrying its status and body, `Malformed` for a
 response that could not be understood, and `TimedOut` for a request no answer came to within the
-configured timeout (`LlmConfig.timeout`), such as one whose reply took too long to write.
+configured timeout (`LlmConfig.timeout`), such as one whose reply took too long to write or stalled
+partway. A client made by `resource` or `fromEnv` gives each reply that long whole, from sending the
+request to reading the reply; a stream gives each next part of its reply that long. A client over a
+backend of your own times requests out as that backend does.
 `Unreadable` is for an `ask` whose every reply was not the answer asked for. Response
 bodies may contain provider detail you would rather not show to your own users, so consider logging
 them rather than passing them on.
