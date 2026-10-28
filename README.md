@@ -34,12 +34,12 @@ libraryDependencies += "com.alecdorrington" %% "iris" % "{version}"
 
 ## 🚀 Usage
 
-The public interface is [`LlmClient`](src/main/scala/LlmClient.scala).
-Build one for an explicit [`LlmConfig`](src/main/scala/LlmConfig.scala) with `LlmClient.resource`,
+The public interface is [`LlmClient`](src/main/scala/com/alecdorrington/iris/LlmClient.scala).
+Build one for an explicit [`LlmConfig`](src/main/scala/com/alecdorrington/iris/LlmConfig.scala) with `LlmClient.resource`,
 over an sttp backend of your own with `LlmClient(config, backend)`,
 or from the environment (see [Configuration](#%EF%B8%8F-configuration)) with `LlmClient.fromEnv`.
 
-Models are named by [`LlmModel`](src/main/scala/LlmModel.scala), each served by one provider,
+Models are named by [`LlmModel`](src/main/scala/com/alecdorrington/iris/LlmModel.scala), each served by one provider,
 which is the one a configuration speaks to:
 
 ```scala
@@ -60,7 +60,7 @@ listed constant for a name Iris lists. A model's `name` is its provider's and it
 
 Every reply is asked for with `ask`, whose type says what the answer is: `String`, or any type of your
 own as [below](#typed-answers). Every type is asked for alike, and every ask gives the same: an
-[`Answer`](src/main/scala/Answer.scala) holding its `value`, with the reply's `text`, why the model stopped
+[`Answer`](src/main/scala/com/alecdorrington/iris/Answer.scala) holding its `value`, with the reply's `text`, why the model stopped
 (`stopReason`), the token `usage` of every attempt, the `toolCalls` it made, and how many `attempts` it
 took. A single-turn prompt is a chat of one message, `Chat.of`:
 
@@ -76,7 +76,7 @@ LlmClient.fromEnv[IO].use {
 ### Conversations
 
 Conversations are stateless: nothing is remembered between calls, and the full history
-travels with every request as a [`Chat`](src/main/scala/Chat.scala).
+travels with every request as a [`Chat`](src/main/scala/com/alecdorrington/iris/Chat.scala).
 To continue a conversation, append the model's reply and the next user message, then send the chat again:
 
 ```scala
@@ -92,7 +92,7 @@ yield second.value
 ### Typed answers
 
 `ask` asks for an answer of a type of your own, as it does for `String`. Every case class, sealed trait
-and enum whose fields have one has a [`Schema`](src/main/scala/Schema.scala), derived wherever it is needed,
+and enum whose fields have one has a [`Schema`](src/main/scala/com/alecdorrington/iris/Schema.scala), derived wherever it is needed,
 and the model is told the [JSON Schema](https://json-schema.org) its reply must conform to, which is read back
 as that type:
 
@@ -172,7 +172,7 @@ no comment written on a parameter itself, so describe a field with `@param`.
 JSON string, which is read back as any other answer.
 
 What goes in is alike everywhere: `Chat.of`, a chat's `user` and `assistant` messages and `Part.of` each
-take any [`Content`](src/main/scala/Content.scala), saying text as it is, a part as itself, and any other
+take any [`Content`](src/main/scala/com/alecdorrington/iris/Content.scala), saying text as it is, a part as itself, and any other
 value as JSON, as its `Schema` writes it, or else, where it has none, as its circe `Encoder` does:
 
 ```scala
@@ -189,9 +189,9 @@ provider's own structured output, so it works alike everywhere, and a cached pre
 
 ### Tuning and metadata
 
-Each request accepts [`ReplyOptions`](src/main/scala/ReplyOptions.scala)
+Each request accepts [`ReplyOptions`](src/main/scala/com/alecdorrington/iris/ReplyOptions.scala)
 (token limit, temperature, top-p, stop sequences, effort), and each
-[`Answer`](src/main/scala/Answer.scala) carries the reply text along with a
+[`Answer`](src/main/scala/com/alecdorrington/iris/Answer.scala) carries the reply text along with a
 normalised `StopReason` and token usage counts, which add up with `+`.
 
 ```scala
@@ -209,7 +209,7 @@ asked for again.
 > still apply to every other provider, and to Anthropic's older models.
 
 A model that thinks before it answers can be told how much to think with an
-[`Effort`](src/main/scala/Effort.scala), from `Low` to `Max`. Less thought is quicker and
+[`Effort`](src/main/scala/com/alecdorrington/iris/Effort.scala), from `Low` to `Max`. Less thought is quicker and
 cheaper, and leaves more of the token limit for the answer, where a hard request can
 otherwise be thought about until none is left. It is sent as Anthropic's `effort`,
 OpenAI's `reasoning_effort` and a Gemini thinking budget; a model that cannot be told
@@ -221,7 +221,7 @@ client.ask[String](chat, ReplyOptions(effort = Some(Effort.Medium)))
 
 ### Pictures and documents
 
-A message is a list of [`Part`](src/main/scala/Chat.scala)s, so text may travel beside
+A message is a list of [`Part`](src/main/scala/com/alecdorrington/iris/Chat.scala)s, so text may travel beside
 the media it refers to. A message of text alone is still sent as plain text, so nothing
 changes for a conversation which carries none.
 
@@ -243,7 +243,7 @@ dropped or sent as something it is not.
 
 ### Streaming
 
-Where a reader is waiting, [`LlmStreamer`](src/main/scala/LlmStreamer.scala) delivers the reply
+Where a reader is waiting, [`LlmStreamer`](src/main/scala/com/alecdorrington/iris/LlmStreamer.scala) delivers the reply
 as it is written. It is a capability apart from `LlmClient`, because it needs a backend which
 can stream.
 
@@ -328,7 +328,7 @@ Each provider keeps a cache per model, and caches nothing shorter than its own m
 
 ### Errors
 
-A provider's refusal fails the effect with an [`LlmError`](src/main/scala/LlmError.scala):
+A provider's refusal fails the effect with an [`LlmError`](src/main/scala/com/alecdorrington/iris/LlmError.scala):
 `Unsuccessful` for an unsuccessful response, carrying its status and body, `Malformed` for a
 response that could not be understood, and `TimedOut` for a request no answer came to within the
 configured timeout (`LlmConfig.timeout`), such as one whose reply took too long to write.
