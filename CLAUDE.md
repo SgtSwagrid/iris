@@ -174,6 +174,13 @@ it only through a release (below).
   `iris_sjs1_3`, which `irisRoot` aggregates (publishing nothing itself, and documenting the JVM side only).
 - The matrix pins `sourceDirectory` to this build's base, as sbt otherwise resolves a matrix's sources against the
   working directory, which is not this build's when another includes it.
+- `irisRoot` shares the matrix's directory, so clears its source and resource directories alike: IntelliJ would
+  otherwise count it among the owners of the shared sources and highlight them by its classpath, which has none of
+  the library's dependencies (`Not found: fs2`).
+- IntelliJ's sbt import never gives the shared sources' module (`iris-sources`, holding `src/main/scala` and
+  `src/test/scala`) the `packagePrefix`, and no sbt setting reaches it, so every `package` line there is flagged until
+  the prefix is set by hand on those folders (Project Structure, Modules, `iris-sources.main` and `.test`, Sources).
+  A reload keeps it; a fresh import loses it.
 
 ### Releases
 

@@ -48,8 +48,10 @@ lazy val irisRoot = project
     publish / skip := true,
 
     // The root shares the matrix's directory, so must not build its sources.
-    Compile / unmanagedSourceDirectories := Nil,
-    Test / unmanagedSourceDirectories    := Nil,
+    Compile / unmanagedSourceDirectories   := Nil,
+    Test / unmanagedSourceDirectories      := Nil,
+    Compile / unmanagedResourceDirectories := Nil,
+    Test / unmanagedResourceDirectories    := Nil,
 
     // The JS side would only document the same sources again.
     ScalaUnidoc / unidoc / unidocProjectFilter := inProjects(iris.jvm(scala3)),
