@@ -1,15 +1,20 @@
 // Outside Iris's package, so that content resolves as it would for a user.
 package com.alecdorrington.example
 
-import com.alecdorrington.iris.{Chat, Message, Part, Role, Structured}
-import io.circe.Encoder
+import com.alecdorrington.iris.{Chat, Message, Part, Role, Schema}
+import io.circe.{Encoder, Json}
 import munit.FunSuite
 
-/** A type with an encoder, but no structured type. */
-final case class Note(text: String) derives Encoder.AsObject
+/** A type with an encoder, but no schema, as it has no mirror to derive one. */
+final class Note(val text: String)
+
+object Note:
+
+  given Encoder[Note] =
+    Encoder.instance(note => Json.obj("text" -> Json.fromString(note.text)))
 
 /** A type with both, which write it differently. */
-enum Shade derives Structured, Encoder.AsObject:
+enum Shade derives Schema, Encoder.AsObject:
   case Light, Dark
 
 class ContentSuite extends FunSuite:
@@ -25,7 +30,7 @@ class ContentSuite extends FunSuite:
     assertEquals(Chat.of("Hi"), user(Part.Text("Hi")))
     assertEquals(Part.of("Hi"), Part.Text("Hi"))
 
-  test("a structured value is said as its json, in a chat or a message"):
+  test("a value with a schema is said as its json, in a chat or a message"):
     assertEquals(Chat.of(ada), user(adaJson))
     assertEquals(Chat().user(ada), user(adaJson))
     assertEquals(
@@ -51,7 +56,7 @@ class ContentSuite extends FunSuite:
       Part.Text("""{"text":"Hi"}"""),
     )
 
-  test("a structured type is said as its schema describes it"):
+  test("a value is said as its schema describes it"):
     assertEquals(
       Part.of(Shade.Light),
       Part.Text("\"Light\""),
@@ -73,7 +78,16 @@ class ContentSuite extends FunSuite:
     )
 
   test("values of different kinds together are told to be made parts"):
-    assert(compileErrors("Chat().user(\"Look:\", 1.5)").contains("Part.of"))
+    val errors = compileErrors("Chat().user(\"Look:\", 1.5)")
+    assert(errors.contains("Part.of"), errors)
+
+  test("a value of a union is said as json, unless text may be one"):
+    assertEquals(
+      Part.of[Int | Boolean](true),
+      Part.Text("true"),
+    )
+    val errors = compileErrors("Part.of[String | Int](1)")
+    assert(errors.contains("Part.of"), errors)
 
   test("values of different kinds are said as parts of one message"):
     assertEquals(

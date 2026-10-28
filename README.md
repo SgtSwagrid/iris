@@ -94,21 +94,22 @@ yield second.value
 
 ### Typed answers
 
-`ask` asks for an answer of a type of your own, as it does for `String`. Derive a
-[`Structured`](src/main/scala/Structured.scala) type for your case classes, sealed traits and enums, and
-the model is told the [JSON Schema](https://json-schema.org) its reply must conform to, which is read back
+`ask` asks for an answer of a type of your own, as it does for `String`. Every case class, sealed trait
+and enum whose fields have one has a [`Schema`](src/main/scala/Schema.scala), derived wherever it is needed,
+and the model is told the [JSON Schema](https://json-schema.org) its reply must conform to, which is read back
 as that type:
 
 ```scala
-import com.alecdorrington.iris.Structured
-
-enum Mood derives Structured:
+enum Mood:
   case Pleased, Indifferent, Annoyed
 
-case class Review(summary: String, mood: Mood, score: Int, quotes: List[String]) derives Structured
+case class Review(summary: String, mood: Mood, score: Int, quotes: List[String] = Nil)
 
 client.ask[Review](Chat.of(s"Review this essay: $essay")) // IO[Answer[Review]]
 ```
+
+`derives Schema` derives a type's schema once, beside it, rather than wherever it is needed, and where a
+field's type has none, says which.
 
 A reply that cannot be read, as one that is not JSON or leaves a field out, is answered with every reason
 it could not be, and the model is asked again, three times in all unless `attempts` says otherwise, as in
@@ -123,11 +124,14 @@ wrong with the last, which may repeat what it said; both are kept out of its mes
 logged. Each attempt is a request of its own, so a wrapper (see [Wrapping a client](#wrapping-a-client)) sees
 every one too.
 
-Strings, numbers, Booleans, options, lists, vectors, sequences, sets and maps keyed by strings are
-structured already. An optional field may be left out. A sealed trait or enum whose cases have no fields
-is written as the name of one, as `"Pleased"`, and any other as an object holding one case under its name,
-as `{"Circle":{"radius":1.5}}`. A recursive type, such as a tree, refers to itself by name, each type told
-apart by its full name and type arguments. Any other type converts to and from one that is structured, and
+Strings, numbers, Booleans, options, lists, vectors, sequences, sets and maps keyed by strings have schemas
+already. A field that is optional or has a default may be left out, and is read as `None` or its default. A
+sealed trait or enum whose cases have no fields is written as the name of one, as `"Pleased"`, and any other
+as an object holding one case under its name, as `{"Circle":{"radius":1.5}}`, as an `Either` holds its value
+under `Left` or `Right`. A tuple is an array of its elements. A union, as `Int | String`, is any one of its
+alternatives, told apart by their classes, so `List[Int] | List[String]` has none; a literal type, as
+`"low" | "high"`, is its value. A recursive type, such as a tree, refers to itself by name, each type told
+apart by its full name and type arguments. Any other type converts to and from one that has a schema, and
 may refuse what it is given, as the model is then told. Say what it keeps to with `described`, so that the
 model knows before it answers; the words stay beside whatever else describes the type, its Scaladoc or the
 `@param` of a field of it:
@@ -135,7 +139,7 @@ model knows before it answers; the words stay beside whatever else describes the
 ```scala
 case class Score(value: Int)
 
-given Structured[Score] = Structured[Int]
+given Schema[Score] = Schema[Int]
   .emap(n => Either.cond(n >= 1 && n <= 10, Score(n), s"$n is not from 1 to 10"))(_.value)
   .described("A whole number from 1 to 10.")
 ```
@@ -144,8 +148,8 @@ In JavaScript, numbers in a reply are read as doubles, so a `Long`, `BigInt` or 
 loses its precision there.
 
 The schema describes each type to the model as its Scaladoc does: a type, and each case of a sealed trait
-or enum, by its description, and each field by its class's `@param` tag, which replaces the description of
-the field's type. Code examples are left out, and links written as their labels.
+or enum, by its description, and each field by its class's `@param` tag, followed by the description of the
+field's type, so that the model reads both. Code examples are left out, and links written as their labels.
 
 ```scala
 /**
@@ -154,12 +158,13 @@ the field's type. Code examples are left out, and links written as their labels.
   * @param score
   *   Out of ten, where five is passable.
   */
-case class Review(summary: String, mood: Mood, score: Score) derives Structured
+case class Review(summary: String, mood: Mood, score: Score) derives Schema
 ```
 
-A comment is read by [Cadmus](https://github.com/SgtSwagrid/cadmus) where its type is compiled, as it always
-is for `derives Structured`, and not at all under `-Xdrop-docs`; a type converted with `imap` or `emap` is
-described by its own Scaladoc where it has one there, or anywhere if you compile with `-Xread-docs`. Scala keeps
+A comment is read by [Cadmus](https://github.com/SgtSwagrid/cadmus) where its type is compiled alongside, as
+it always is for `derives Schema`, and not at all under `-Xdrop-docs`; a type derived where it is needed, or
+converted with `imap` or `emap`, is described by its own Scaladoc where it is compiled alongside, or anywhere
+if you compile with `-Xread-docs`. Scala keeps
 no comment written on a parameter itself, so describe a field with `@param`.
 
 `String` is asked for as every type is: the model is told the schema `{"type":"string"}` and replies with a
@@ -167,11 +172,11 @@ JSON string, which is read back as any other answer.
 
 What goes in is alike everywhere: `Chat.of`, a chat's `user` and `assistant` messages and `Part.of` each
 take any [`Content`](src/main/scala/Content.scala), saying text as it is, a part as itself, and any other
-value as JSON, as its `Structured` type writes it, or else as its circe `Encoder` does:
+value as JSON, as its `Schema` writes it, or else, where it has none, as its circe `Encoder` does:
 
 ```scala
 client.ask[Review](Chat.of(essay).withSystem("Review the essay you are given."))
-client.ask[Review](Chat().user(Part.of("Review this draft."), Part.of(draft))) // draft: Draft, Structured
+client.ask[Review](Chat().user(Part.of("Review this draft."), Part.of(draft))) // draft: Draft
 client.ask[Review](chat.assistant(review).user("Now make it kinder."))
 ```
 
@@ -358,6 +363,14 @@ def logged(client: LlmClient[IO]): LlmClient[IO] = new LlmClient.Forwarding(clie
 
 Both pass `warm` on to the client they wrap, as a wrapper must: the default `warm` sends through
 `send`, which would lose however the provider itself warms.
+
+### Upgrading from 0.3
+
+- `Structured` is now `Schema`: `derives Schema`, `Schema[A]` and `Schema.of`, and a schema's JSON is
+  `Schema[A].json`, where it was `.schema`. A `derives` clause is no longer needed.
+- A field with a default may now be left out of a reply, which reads it as its default, and its schema says so.
+- A case class with a circe `Encoder` and fields that all have schemas now has a schema derived for it, so is said
+  to the model as that writes it, rather than as its `Encoder` does.
 
 ### Upgrading from 0.2
 

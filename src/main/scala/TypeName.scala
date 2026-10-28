@@ -30,8 +30,8 @@ private[iris] object TypeName:
 
   /**
     * The name of a type, as it is compiled, its arguments named as their
-    * structured types name them, so that a generic type derived once for every
-    * argument is still named for each.
+    * schemas name them, so that a generic type derived once for every argument
+    * is still named for each.
     */
   inline def of[A]: TypeName = ${ naming[A] }
 
@@ -45,21 +45,21 @@ private[iris] object TypeName:
       case other => symbolic(other)
 
   /**
-    * A type argument's name, as its structured type has it, where it has one,
-    * or else as it is written, as a type constructor's is.
+    * A type argument's name, as its schema has it, where it has one, or else as
+    * it is written, as a type constructor's is.
     */
   private def argument
     (using Quotes)
     (argument: quotes.reflect.TypeRepr)
     : Expr[TypeName] = argument.asType match
-    case '[a] => Expr.summon[Structured[a]] match
-        case Some(structured) => '{ $structured.name }
-        case None             => naming[a]
+    case '[a] => Expr.summon[Schema[a]] match
+        case Some(schema) => '{ $schema.name }
+        case None         => naming[a]
     case _ => shown(argument)
 
   /**
     * The name of a type's symbol: a singleton's term, else its class, or else,
-    * as for a union, the type as it is written.
+    * as for a union or a literal, the type as it is written.
     */
   private def symbolic
     (using Quotes)
@@ -68,6 +68,7 @@ private[iris] object TypeName:
     import quotes.reflect.*
     repr match
       case singleton: TermRef                   => named(singleton.termSymbol)
+      case literal: ConstantType                => shown(literal)
       case union: OrType                        => shown(union)
       case both: AndType                        => shown(both)
       case other if other.typeSymbol.isNoSymbol => shown(other)

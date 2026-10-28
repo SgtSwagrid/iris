@@ -36,8 +36,8 @@ object Part:
 
   /**
     * Creates a part saying a value, as its [[Content]] says it: text as text,
-    * and a structured or encodable value as JSON. Parts in a row make a message
-    * of several, as of an instruction and the value it is about.
+    * and a value with a schema or an encoder as JSON. Parts in a row make a
+    * message of several, as of an instruction and the value it is about.
     *
     * @tparam A
     *   The type of the value.

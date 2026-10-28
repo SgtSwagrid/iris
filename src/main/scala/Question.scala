@@ -22,7 +22,7 @@ private[iris] object Question:
     * long as asking again could help. A chat no provider would answer is sent
     * uninstructed, so that the provider refuses it before any request.
     */
-  def ask[F[_] : MonadThrow, A : Structured as A]
+  def ask[F[_] : MonadThrow, A : Schema as A]
     (
       send: Chat => F[Answer[Nothing]],
       chat: Chat,
@@ -40,15 +40,15 @@ private[iris] object Question:
       )
 
   /** What the model is told of the form its reply must take. */
-  def instructions(structured: Structured[?]): String =
+  def instructions(schema: Schema[?]): String =
     "Reply with JSON alone, with no other text and no code fence, " +
-      s"conforming to this JSON Schema:\n${ structured.schema.noSpaces }"
+      s"conforming to this JSON Schema:\n${ schema.json.noSpaces }"
 
   /** The attempts at one answer. */
   private final class Attempts[F[_] : MonadThrow, A]
     (
       send: Chat => F[Answer[Nothing]],
-      structured: Structured[A],
+      schema: Schema[A],
       attempts: Int,
     ):
 
@@ -76,7 +76,7 @@ private[iris] object Question:
       else
         hopeless(reply) match
           case Some(fatal) => unreadable(answers, fatal)
-          case None => read(structured, reply).leftMap(stopped(reply, _)) match
+          case None => read(schema, reply).leftMap(stopped(reply, _)) match
               case Right(value) => summed(answers, Some(value)).pure[F]
               case Left(why) if answers.size < attempts =>
                 attempt(corrected(chat, reply, why), answers)
@@ -120,10 +120,10 @@ private[iris] object Question:
   /** The answer a reply holds, or why it holds none. */
   private def read[A]
     (
-      structured: Structured[A],
+      schema: Schema[A],
       reply: Answer[Nothing],
     )
-    : Either[String, A] = parsed(reply.text).flatMap(decoded(structured, _))
+    : Either[String, A] = parsed(reply.text).flatMap(decoded(schema, _))
 
   /**
     * Why no reading of a reply could be trusted, nor asking again help, where
@@ -191,10 +191,9 @@ private[iris] object Question:
   private val fence: Regex = """(?s)```(?:[\w-]+\s)?\s*(.*?)\s*```""".r
 
   /** Every failure to decode the JSON, as circe says it. */
-  private def decoded[A]
-    (structured: Structured[A], json: Json)
-    : Either[String, A] = structured
-    .decoder
-    .decodeAccumulating(json.hcursor)
-    .toEither
-    .leftMap(_.map(_.getMessage).toList.mkString("\n"))
+  private def decoded[A](schema: Schema[A], json: Json): Either[String, A] =
+    schema
+      .decoder
+      .decodeAccumulating(json.hcursor)
+      .toEither
+      .leftMap(_.map(_.getMessage).toList.mkString("\n"))
