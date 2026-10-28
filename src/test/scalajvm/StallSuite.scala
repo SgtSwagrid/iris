@@ -27,14 +27,13 @@ class StallSuite extends FunSuite:
     val server  = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
     server.createContext(
       "/",
-      exchange => {
+      exchange =>
         exchange.getRequestBody.readAllBytes()
         exchange.sendResponseHeaders(200, 0)
         exchange.getResponseBody.write(reply.getBytes(UTF_8))
         exchange.getResponseBody.flush()
         if stalls then over.await()
-        exchange.close()
-      },
+        exchange.close(),
     )
     server.setExecutor(threads)
     server.start()
@@ -69,8 +68,14 @@ class StallSuite extends FunSuite:
     )
 
   test("a reply that stalls once begun times out as configured"):
-    serving("""{"id":"msg_1","content":[""", stalls = true)(configured =>
-      assertEquals(asked(configured), Some(Left(timedOut))),
+    serving(
+      """{"id":"msg_1","content":[""",
+      stalls = true,
+    )(configured =>
+      assertEquals(
+        asked(configured),
+        Some(Left(timedOut)),
+      ),
     )
 
   test("a stream that stalls between its parts times out as configured"):
@@ -84,6 +89,9 @@ class StallSuite extends FunSuite:
           .resource[IO](configured)
           .use(_.stream(Chat.of("Hello")).attempt.compile.toList)
           .unsafeRunTimed(30.seconds),
-        Some(List(Right(Delta.Text("Hel")), Left(timedOut))),
+        Some(List(
+          Right(Delta.Text("Hel")),
+          Left(timedOut),
+        )),
       ),
     )
