@@ -242,23 +242,30 @@ class CacheSuite extends FunSuite:
       // Anthropic writes its cache without replying when allowed no tokens.
       (
         config,
-        """{"content":[],"stop_reason":"max_tokens"}""",
+        """{"content":[],"stop_reason":"max_tokens",
+           "usage":{"input_tokens":0,"output_tokens":0,
+                    "cache_creation_input_tokens":900}}""",
         "max_tokens",
         0,
+        Usage(900, 0),
       ),
       (
         config.copy(model = LlmModel.Gpt5),
-        """{"choices":[{"message":{"content":""},"finish_reason":"length"}]}""",
+        """{"choices":[{"message":{"content":""},"finish_reason":"length"}],
+           "usage":{"prompt_tokens":900,"completion_tokens":1}}""",
         "max_completion_tokens",
         1,
+        Usage(900, 1),
       ),
-    ).foreach: (configured, reply, limit, least) =>
+    ).foreach: (configured, reply, limit, least, usage) =>
       val warming = expecting(configured, reply)(body =>
         body.hcursor.get[Int](limit).toOption.contains(least) &&
         prefixOnly(body),
       )
-      assert(
-        warming.warm(chat).attempt.unsafeRunSync().isRight,
+      // The reply is passed back, with what writing the cache cost.
+      assertEquals(
+        warming.warm(chat).attempt.unsafeRunSync().map(_.usage),
+        Right(Some(usage)),
         configured.provider,
       )
 

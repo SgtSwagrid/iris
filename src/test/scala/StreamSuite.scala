@@ -87,6 +87,14 @@ data: {"candidates":[{"content":{"parts":[{"text":"lo"}]},"finishReason":"STOP"}
         ),
         api.provider,
       )
+    // A reply cut off says so where it ended.
+    assertEquals(
+      reply(
+        """data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}
+""",
+      )(AnthropicApi.reply),
+      List(Delta.End(StopReason.MaxTokens, None)),
+    )
 
   test("gemini stops for a tool it asked for, however late it says it stopped"):
     val late = """data: {"candidates":[{"content":{"parts":[{"text":"Let me look."}]}}]}

@@ -52,20 +52,24 @@ class ClientSuite extends FunSuite:
     )
 
   test("an unsuccessful response is an error carrying its status and delay"):
-    val failure = result(client(
-      "slow down",
-      StatusCode.TooManyRequests,
-      Seq(Header("Retry-After", "30")),
-    ))
-    assertEquals(
-      failure,
-      Left(LlmError.Unsuccessful(
-        "Anthropic",
-        StatusCode.TooManyRequests,
-        Some(30.seconds),
-        "slow down",
-      )),
-    )
+    List(
+      Seq(Header("Retry-After", "30")) -> Some(30.seconds),
+      Seq.empty                        -> None,
+    ).foreach: (headers, delay) =>
+      assertEquals(
+        result(client(
+          "slow down",
+          StatusCode.TooManyRequests,
+          headers,
+        )),
+        Left(LlmError.Unsuccessful(
+          "Anthropic",
+          StatusCode.TooManyRequests,
+          delay,
+          "slow down",
+        )),
+        headers,
+      )
 
   test("a response which is not json at all is malformed"):
     assert(
@@ -107,6 +111,14 @@ class ClientSuite extends FunSuite:
       )
 
   test("each provider serves its default model, and is sent its key"):
+    LlmProvider
+      .values
+      .foreach(provider =>
+        assertEquals(
+          provider.defaultModel.provider,
+          provider,
+        ),
+      )
     List(
       (
         LlmProvider.Anthropic,
@@ -127,10 +139,6 @@ class ClientSuite extends FunSuite:
         """{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}""",
       ),
     ).foreach: (provider, name, key, body) =>
-      assertEquals(
-        provider.defaultModel.provider,
-        provider,
-      )
       val keyed = LlmClient[SyncIO](
         config.copy(model = provider.defaultModel),
         BackendStub(CatsMonadError[SyncIO]())

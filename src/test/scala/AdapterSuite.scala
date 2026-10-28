@@ -329,8 +329,12 @@ class AdapterSuite extends FunSuite:
     )
     assertEquals(texts(anthropic), apart)
     assertEquals(
-      anthropic(2).hcursor.get[String]("type").toOption,
-      Some("image"),
+      anthropic.map(_.hcursor.get[String]("type").toOption),
+      List(
+        Some("text"),
+        Some("text"),
+        Some("image"),
+      ),
     )
     assertEquals(
       anthropic(2)
@@ -477,6 +481,7 @@ class AdapterSuite extends FunSuite:
       assertEquals(
         answer(api, body),
         Left(LlmError.Malformed(api.provider.displayName, why)),
+        why,
       )
 
   test("usage reported in part, or not at all, is none, not a broken response"):
@@ -515,17 +520,17 @@ class AdapterSuite extends FunSuite:
 
   test("only a model which accepts a prefill is asked to continue one"):
     List(
-      (prefilled, LlmModel.ClaudeHaiku4_5, true),
-      (prefilled, LlmModel.ClaudeSonnet5, false),
+      ("haiku 4.5, prefilled", prefilled, LlmModel.ClaudeHaiku4_5, true),
+      ("sonnet 5, prefilled", prefilled, LlmModel.ClaudeSonnet5, false),
       // Opus 4.6 still samples, but no longer continues a prefill.
-      (prefilled, LlmModel.ClaudeOpus4_6, false),
-      (prefilled, unlisted, false),
-      (chat, LlmModel.ClaudeSonnet5, true),
-    ).foreach: (asked, model, continues) =>
+      ("opus 4.6, prefilled", prefilled, LlmModel.ClaudeOpus4_6, false),
+      ("an unlisted model, prefilled", prefilled, unlisted, false),
+      ("sonnet 5, asked by the user", chat, LlmModel.ClaudeSonnet5, true),
+    ).foreach: (row, asked, model, continues) =>
       assertEquals(
         AnthropicApi.continuable(asked, model).isRight,
         continues,
-        model,
+        row,
       )
 
   test(

@@ -6,6 +6,7 @@ import com.alecdorrington.iris.Fixtures.{config, json}
 import io.circe.Json
 import io.circe.syntax.*
 import munit.FunSuite
+import scala.util.control.NonFatal
 import sttp.client4.StringBody
 import sttp.client4.impl.cats.CatsMonadError
 import sttp.client4.testing.{BackendStub, ResponseStub}
@@ -132,6 +133,9 @@ class AskSuite extends FunSuite:
       s"```json\n$adaJson\n```" -> Right(Some(ada)),
       s"```json $adaJson```"    -> Right(Some(ada)),
       s"```$adaJson```"         -> Right(Some(ada)),
+      // Prose around a fence is no matter.
+      s"Here it is:\n```json\n$adaJson\n```\nI hope it helps." ->
+        Right(Some(ada)),
       // A fence within a JSON string is part of it, not the answer.
       """{"name":"```Ada```","age":36}""" ->
         Right(Some(Person("```Ada```", 36, None))),
@@ -174,8 +178,9 @@ class AskSuite extends FunSuite:
   test(
     "why a reply could not be read is circe's, in full, kept from the message",
   ):
-    List[(Either[Throwable, Option[?]], List[String], Option[String])](
+    List[(String, Either[Throwable, Option[?]], List[String], Option[String])](
       (
+        "a field of the wrong type",
         asked[Person](
           client(_ => said("""{"name":"Ada","age":"thirty-six"}""")),
           1,
@@ -185,12 +190,14 @@ class AskSuite extends FunSuite:
       ),
       // The model is told of every field that could not be read.
       (
+        "two fields unread",
         asked[Person](client(_ => said("""{"name":1}""")), 1),
         List(".name", ".age"),
         None,
       ),
       // A map's keys may be told the model, but stay out of the message.
       (
+        "a map's key",
         asked[Map[String, Int]](
           client(_ => said("""{"secret":"x"}""")),
           1,
@@ -199,39 +206,61 @@ class AskSuite extends FunSuite:
         Some("secret"),
       ),
       (
+        "a number out of range",
         asked[Int](client(_ => said("3000000000")), 1),
         List("Expected an integer that fits in Int"),
         None,
       ),
       (
+        "a number not whole",
         asked[Int](client(_ => said("3.5")), 1),
         List("Expected a whole number"),
         None,
       ),
-    ).foreach: (result, told, withheld) =>
+    ).foreach: (row, result, told, withheld) =>
       result match
         case Left(failure @ LlmError.Unreadable(_, detail, _)) =>
-          told.foreach(field => assert(detail.contains(field), detail))
+          told.foreach(field =>
+            assert(
+              detail.contains(field),
+              s"$row: $detail",
+            ),
+          )
           withheld.foreach(value =>
             assert(
               !failure.getMessage.contains(value),
-              failure.getMessage,
+              s"$row: ${ failure.getMessage }",
             ),
           )
-        case other => fail(s"Expected the ask to be unreadable, not $other.")
+        case other =>
+          fail(s"Expected the ask to be unreadable ($row), not $other.")
 
   test("a reply no reading of which could be trusted fails at once"):
     val cut = "It was cut off at the token limit before it was complete."
     List(
       // What parses of a reply cut off may itself be cut, as 4 of 42.
-      said("4", "max_tokens") -> cut,
+      ("a number cut off", said("4", "max_tokens"), cut),
       // A call cut off at the token limit is cut off, not a call.
-      """{"content":[{"type":"tool_use","id":"call_1","name":"weather",
-        "input":{"city":"Zu"}}],"stop_reason":"max_tokens"}""" -> cut,
-      said("I would rather not.", "refusal") -> "It stopped, as `refusal`.",
+      (
+        "a call cut off",
+        """{"content":[{"type":"tool_use","id":"call_1","name":"weather",
+        "input":{"city":"Zu"}}],"stop_reason":"max_tokens"}""",
+        cut,
+      ),
+      (
+        "a refusal",
+        said("I would rather not.", "refusal"),
+        "It stopped, as `refusal`.",
+      ),
       // A reply of nothing is never asked for again as it was.
-      said("") -> "It said nothing.",
-    ).foreach((answer, detail) => failsAtOnceAs[Int](answer, detail))
+      ("nothing", said(""), "It said nothing."),
+    ).foreach: (row, answer, detail) =>
+      try failsAtOnceAs[Int](answer, detail)
+      catch
+        case NonFatal(failure) => fail(
+            s"$row: ${ failure.getMessage }",
+            failure,
+          )
 
   private val calling = """{"content":[{"type":"text","text":"Let me look."},
     {"type":"tool_use","id":"call_1","name":"weather","input":{"city":"Zug"}}],
@@ -246,21 +275,24 @@ class AskSuite extends FunSuite:
   test("a reply asking for a tool is given at once, with no answer"):
     List(
       (
+        "a person asked of anthropic",
         client(_ => calling).ask[Person](prompt),
         "Let me look.",
         StopReason.ToolCall,
       ),
       (
+        "text asked of anthropic",
         client(_ => calling).ask[String](prompt),
         "Let me look.",
         StopReason.ToolCall,
       ),
       (
+        "a person asked of openai",
         answering(LlmModel.Gpt5, forced).ask[Person](prompt),
         "",
         StopReason.Completed,
       ),
-    ).foreach: (asking, text, stopReason) =>
+    ).foreach: (row, asking, text, stopReason) =>
       asking.attempt.unsafeRunSync() match
         case Right(reply) => assertEquals(
             (
@@ -271,8 +303,9 @@ class AskSuite extends FunSuite:
               reply.attempts,
             ),
             (None, text, stopReason, List("weather"), 1),
+            row,
           )
-        case other => fail(s"Expected the call, not $other.")
+        case other => fail(s"Expected the call ($row), not $other.")
 
   test("a reply ended by a stop sequence is asked for again, told so"):
     val stopped = client: sent =>
@@ -408,12 +441,16 @@ class AskSuite extends FunSuite:
         Chat()                                 -> "it has no messages",
         Chat().withSystem("Answer in French.") -> "it has no messages",
         Chat().user(Part.CacheBreakpoint) -> "one of its messages says nothing",
-        Chat().assistant("Bonjour.")      -> "the user says nothing in it",
+        // Not the last message alone: any of them saying nothing.
+        Chat().user(Part.CacheBreakpoint).user("Hi") ->
+          "one of its messages says nothing",
+        Chat().assistant("Bonjour.") -> "the user says nothing in it",
       )
     do
       assertEquals(
         never.ask[String](chat).attempt.unsafeRunSync(),
         Left(LlmError.Unsendable("Anthropic", why)),
+        chat,
       )
 
   /** Whether a reply fails an ask of a type at once. */
@@ -499,4 +536,5 @@ class AskSuite extends FunSuite:
           Some(Usage(5, 3)),
           value = Some(ada),
         )),
+        model,
       )

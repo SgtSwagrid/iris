@@ -10,6 +10,7 @@ class ConfigSuite extends FunSuite:
       " 8192 " -> Some(8192),
       "1"      -> Some(1),
       "0"      -> None,
+      "-1"     -> None,
       "8k"     -> None,
       "8192.0" -> None,
       ""       -> None,
@@ -35,6 +36,7 @@ class ConfigSuite extends FunSuite:
       " 600 " -> Some(10.minutes),
       "30s"   -> None,
       "0"     -> None,
+      "-5"    -> None,
     ).foreach((written, timeout) =>
       assertEquals(
         LlmConfig.seconds(written),
