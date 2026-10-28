@@ -86,7 +86,13 @@ longer.
   (`Answer` is covariant), which `send`, `warm` and `Unreadable` give. `ask` is built on `send` alone,
   provider-agnostic, and passes `Question.ask` the client's `send` as a function, as `send` is protected: the schema is asked for in words closing the
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
-  native structured output. An unreadable reply is answered with every decoding failure (decoders accumulate)
+  native structured output. It stays after any breakpoint, so is never cached, by the user's choice on the
+  evidence of a live measurement (2026-10-28, Claude Haiku, Sonnet and Opus 5.5, 144 asks over pieces of 100 to
+  2,800 tokens). Moved before the varying content, at the last breakpoint, it was followed as reliably (every
+  ask read at the first attempt either way) and saved about 600 input tokens a request, some 3–5% of a long
+  review's cost, but it would lose a continuing conversation's cached prefix (the schema is not kept in its
+  history), make `warm` take the type, and shifted Haiku's reviews somewhat. Revisit only on new evidence.
+  An unreadable reply is answered with every decoding failure (decoders accumulate)
   and asked again, `attempts` requests in all, then `LlmError.Unreadable`, carrying every reply. A reply asking
   for a tool, by its stop reason or its calls (OpenAI says `stop` for a forced call), is given at once with no
   answer. One stopped at `MaxTokens` or an `Other` reason, or blank, fails at once, before any reading, as what
