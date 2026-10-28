@@ -109,7 +109,10 @@ client.ask[Review](Chat.of(s"Review this essay: $essay")) // IO[Answer[Review]]
 ```
 
 `derives Schema` derives a type's schema once, beside it, rather than wherever it is needed, and where a
-field's type has none, says which.
+field's type has none, says which. A type with a circe `Encoder` of its own has no schema derived for it,
+as its `Encoder` already says how it is written, and is said to the model as that writes it; `derives Schema`
+derives one anyway. Circe's `Json` has none, as it would tell the model nothing; nor does a type nested so
+deeply that deriving it goes beyond the compiler's limit of inlines, which `-Xmax-inlines` raises.
 
 A reply that cannot be read, as one that is not JSON or leaves a field out, is answered with every reason
 it could not be, and the model is asked again, three times in all unless `attempts` says otherwise, as in
@@ -125,12 +128,13 @@ logged. Each attempt is a request of its own, so a wrapper (see [Wrapping a clie
 every one too.
 
 Strings, numbers, Booleans, options, lists, vectors, sequences, sets and maps keyed by strings have schemas
-already. A field that is optional or has a default may be left out, and is read as `None` or its default. A
-sealed trait or enum whose cases have no fields is written as the name of one, as `"Pleased"`, and any other
-as an object holding one case under its name, as `{"Circle":{"radius":1.5}}`, as an `Either` holds its value
-under `Left` or `Right`. A tuple is an array of its elements. A union, as `Int | String`, is any one of its
-alternatives, told apart by their classes, so `List[Int] | List[String]` has none; a literal type, as
-`"low" | "high"`, is its value. A recursive type, such as a tree, refers to itself by name, each type told
+already. A case class, or a named tuple, is an object of its fields, of which one that is optional or has a
+default may be left out, and is read as `None` or its default. A sealed trait or enum whose cases have no
+fields is written as the name of one, as `"Pleased"`, and any other as an object holding one case under its
+name, as `{"Circle":{"radius":1.5}}`, as an `Either` holds its value under `Left` or `Right`, and a union, as
+`Int | String`, holds its value under the name of its alternative, as `{"Int":1}`. A value is written as the
+alternative its class tells, so `List[Int] | List[String]` has none. A literal type is its value, and a union
+of literal types alone, as `"low" | "high"`, one of them. A tuple is an array of its elements. A recursive type, such as a tree, refers to itself by name, each type told
 apart by its full name and type arguments. Any other type converts to and from one that has a schema, and
 may refuse what it is given, as the model is then told. Say what it keeps to with `described`, so that the
 model knows before it answers; the words stay beside whatever else describes the type, its Scaladoc or the
@@ -368,9 +372,8 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
 
 - `Structured` is now `Schema`: `derives Schema`, `Schema[A]` and `Schema.of`, and a schema's JSON is
   `Schema[A].json`, where it was `.schema`. A `derives` clause is no longer needed.
-- A field with a default may now be left out of a reply, which reads it as its default, and its schema says so.
-- A case class with a circe `Encoder` and fields that all have schemas now has a schema derived for it, so is said
-  to the model as that writes it, rather than as its `Encoder` does.
+- A field with a default is no longer required: a reply may leave it out, and it is read as its default.
+- A field's `@param` no longer replaces its type's description, but comes before it.
 
 ### Upgrading from 0.2
 

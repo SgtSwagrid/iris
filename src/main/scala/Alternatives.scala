@@ -6,9 +6,10 @@ import scala.quoted.*
 private[iris] object Alternatives:
 
   /**
-    * The schema of a union, any one of its alternatives, or of a literal type,
-    * its value alone. Transparent, so that a type which is neither, or an
-    * alternative with no schema, makes it not given, rather than not compile.
+    * The schema of a union, one of its alternatives, held under its name unless
+    * every alternative is a literal type, or of a literal type, its value
+    * alone. Transparent, so that a type which is neither, or an alternative
+    * with no schema, makes it not given, rather than not compile.
     */
   transparent inline def of[A]: Schema[A] = ${ alternatives[A] }
 
@@ -18,15 +19,22 @@ private[iris] object Alternatives:
       case union: OrType =>
         val choices = flattened(union)
         distinguished(choices)
-        val schemas = choices.map(choice => summoned(choice))
-        val tests   = choices.map(choice => test(choice))
-        '{
-          Schema.anyOf[A](
-            TypeName.of[A],
-            ${ Expr.ofList(schemas) },
-            ${ Expr.ofList(tests) },
-          )
-        }
+        val schemas  = Expr.ofList(choices.map(choice => summoned(choice)))
+        val tests    = Expr.ofList(choices.map(choice => test(choice)))
+        val literals = choices.map:
+          case ConstantType(constant) => Some(constant.value.toString)
+          case _                      => None
+        if literals.forall(_.isDefined) then
+          '{ Schema.anyOf[A](TypeName.of[A], $schemas, $tests) }
+        else
+          '{
+            Schema.tagged[A](
+              TypeName.of[A],
+              $schemas,
+              ${ Expr(literals) },
+              $tests,
+            )
+          }
       case literal @ ConstantType(constant) => literal.widen.asType match
           case '[w] =>
             val widened = summoned(literal.widen).asExprOf[Schema[w]]

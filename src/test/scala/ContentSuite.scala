@@ -17,6 +17,29 @@ object Note:
 enum Shade derives Schema, Encoder.AsObject:
   case Light, Dark
 
+/** A type with an encoder of its own, written as an array. */
+final case class Point(x: Int, y: Int)
+
+object Point:
+
+  given Encoder[Point] = Encoder.instance(point =>
+    Json.arr(
+      Json.fromInt(point.x),
+      Json.fromInt(point.y),
+    ),
+  )
+
+/** A type with an encoder of its own, whose default is private. */
+final case class Secret private (value: Int = 1)
+
+object Secret:
+
+  def of(value: Int): Secret = new Secret(value)
+
+  val unset: Secret = new Secret()
+
+  given Encoder[Secret] = Encoder.instance(secret => Json.fromInt(secret.value))
+
 class ContentSuite extends FunSuite:
 
   private val ada = Person("Ada", 36, None)
@@ -56,6 +79,19 @@ class ContentSuite extends FunSuite:
       Part.Text("""{"text":"Hi"}"""),
     )
 
+  test("a type with an encoder of its own is said as that writes it"):
+    assertEquals(
+      Part.of(Point(1, 2)),
+      Part.Text("[1,2]"),
+    )
+    assertEquals(Part.of(Secret.of(3)), Part.Text("3"))
+    assertEquals(Part.of(Secret.unset), Part.Text("1"))
+    val errors = compileErrors("Schema[Point]")
+    assert(
+      errors.contains("has no Schema"),
+      errors,
+    )
+
   test("a value is said as its schema describes it"):
     assertEquals(
       Part.of(Shade.Light),
@@ -84,7 +120,7 @@ class ContentSuite extends FunSuite:
   test("a value of a union is said as json, unless text may be one"):
     assertEquals(
       Part.of[Int | Boolean](true),
-      Part.Text("true"),
+      Part.Text("""{"Boolean":true}"""),
     )
     val errors = compileErrors("Part.of[String | Int](1)")
     assert(errors.contains("Part.of"), errors)

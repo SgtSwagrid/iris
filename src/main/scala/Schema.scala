@@ -7,8 +7,9 @@ import io.circe.DecodingFailure.Reason
 import io.circe.syntax.*
 import java.nio.charset.StandardCharsets
 import scala.annotation.{implicitNotFound, unused}
-import scala.compiletime.{constValueTuple, erasedValue, summonInline}
+import scala.compiletime.{constValueTuple, summonAll}
 import scala.deriving.Mirror
+import scala.util.NotGiven
 
 /**
   * How a type's values travel to and from the model as JSON: how a value is
@@ -19,7 +20,8 @@ import scala.deriving.Mirror
   * Strings, numbers, Booleans, options, lists, vectors, sequences, sets, maps
   * keyed by strings, tuples, eithers, unions and literal types have one, and so
   * does every case class, sealed trait and enum whose fields have one, derived
-  * wherever it is needed:
+  * wherever it is needed, but for one with a circe `Encoder` of its own, which
+  * is said as that writes it:
   *
   * {{{
   * case class Person(name: String, age: Int, nickname: Option[String] = None)
@@ -28,15 +30,19 @@ import scala.deriving.Mirror
   * }}}
   *
   * `derives Schema` derives one once, beside its type, rather than wherever it
-  * is needed, and names any field whose type has none.
+  * is needed, even for a type with an `Encoder` of its own, and names any field
+  * whose type has none. Circe's `Json` has none, as it would tell the model
+  * nothing.
   *
-  * A case class is an object of its fields, of which one that is optional or
-  * has a default may be left out. A sealed trait or enum whose cases have no
-  * fields is the name of one of them, as `"Red"`; any other is an object
-  * holding one case under its name, as `{"Circle":{"radius":1.0}}`, as an
-  * `Either` holds its value under `Left` or `Right`. A tuple is an array of its
-  * elements, and a union any one of its alternatives, which their classes must
-  * tell apart. A recursive type refers to itself through definitions in the
+  * A case class, or a named tuple, is an object of its fields, of which one
+  * that is optional or has a default may be left out, and is read as `None` or
+  * its default. A sealed trait or enum whose cases have no fields is the name
+  * of one of them, as `"Red"`; any other is an object holding one case under
+  * its name, as `{"Circle":{"radius":1.0}}`, as an `Either` holds its value
+  * under `Left` or `Right`, and a union under the name of its alternative, as
+  * `{"Int":1}`, which a value's class must tell, but for a union of literal
+  * types alone, which is one of their values. A tuple is an array of its
+  * elements. A recursive type refers to itself through definitions in the
   * schema, each type told apart by its full name and type arguments, so that
   * `Tree[Int]` and `Tree[String]` are each defined.
   *
@@ -62,7 +68,7 @@ import scala.deriving.Mirror
   *   where accumulating.
   */
 @implicitNotFound(
-  "${A} has no Schema, so cannot be asked for or said as JSON: a case class, sealed trait or enum has one where each of its fields does, and another type has one made by Schema.of or converted from one by imap or emap. Write `derives Schema` on a case class to be told which field has none.",
+  "${A} has no Schema, so cannot be asked for or said as JSON. A case class, sealed trait or enum has one where each of its fields does, unless it has a circe Encoder of its own, and another type has one made by Schema.of or converted from one by imap or emap. Write `derives Schema` on a type to derive one anyway and be told which field has none; a type nested very deeply may need a higher -Xmax-inlines.",
 )
 final class Schema[A] private (
   val encoder: Encoder[A],
@@ -310,7 +316,7 @@ object Schema extends DerivedSchemas:
     (using mirror: Mirror.ProductOf[T])
     : Schema[T] = tuple(
     TypeName.of[T],
-    summoned[mirror.MirroredElemTypes],
+    instances(summonAll[Tuple.Map[mirror.MirroredElemTypes, Schema]]),
     mirror.fromProduct,
   )
 
@@ -335,7 +341,7 @@ object Schema extends DerivedSchemas:
             TypeName.of[A],
             documented[A].flatMap(_.description),
             labels[sum.MirroredElemLabels],
-            summoned[sum.MirroredElemTypes],
+            instances(summonAll[Tuple.Map[sum.MirroredElemTypes, Schema]]),
             sum.ordinal,
             definable = true,
           )
@@ -343,7 +349,7 @@ object Schema extends DerivedSchemas:
             TypeName.of[A],
             documented[A],
             labels[product.MirroredElemLabels],
-            summoned[product.MirroredElemTypes],
+            instances(summonAll[Tuple.Map[product.MirroredElemTypes, Schema]]),
             Defaults.of[A],
             product.fromProduct,
           )
@@ -372,8 +378,9 @@ object Schema extends DerivedSchemas:
   )
 
   /**
-    * The schema of a union: any one of its alternatives, a value written as the
-    * first whose test it passes, and read as the first that reads it.
+    * The schema of a union of literal types: any one of their values, a value
+    * written as the first whose test it passes, and read as the first that
+    * reads it, which no other could.
     */
   private[iris] def anyOf[A]
     (
@@ -408,6 +415,35 @@ object Schema extends DerivedSchemas:
     )
 
   /**
+    * The schema of any other union: an object holding one of its alternatives
+    * under its name, as a sealed trait holds a case, so that a value is read as
+    * the alternative it was written as. A value is written as the first
+    * alternative whose test it passes, and a literal named by its value.
+    */
+  private[iris] def tagged[A]
+    (
+      name: TypeName,
+      schemas: List[Schema[?]],
+      literals: List[Option[String]],
+      tests: List[Any => Boolean],
+    )
+    : Schema[A] =
+    val names = schemas
+      .lazyZip(literals)
+      .map((schema, literal) =>
+        literal.fold(schema.name)(text => TypeName(text, text)),
+      )
+    val shown = showing(names)
+    union(
+      name,
+      None,
+      names.map(name => shown(name.full)),
+      schemas,
+      value => tests.indexWhere(_(value)),
+      definable = false,
+    )
+
+  /**
     * A type's Scaladoc in plain words, read by Cadmus where the type is
     * compiled alongside, and never under `-Xdrop-docs`.
     */
@@ -419,13 +455,15 @@ object Schema extends DerivedSchemas:
     constValueTuple[Labels].toList.asInstanceOf[List[String]]
 
   /**
-    * The schema of each type, transparently, so that one missing makes a schema
-    * derived wherever it is needed not given, rather than not compile.
+    * The schemas `summonAll` gave. Each is summoned there, in the transparent
+    * expansion, so that one missing makes a schema derived wherever it is
+    * needed not given, rather than not compile, and all at once, by the
+    * compiler itself, as each inline expansion nested within another counts
+    * towards its limit, which a type nested deeply reaches.
     */
-  private transparent inline def summoned[Types <: Tuple]: List[Schema[?]] =
-    inline erasedValue[Types] match
-      case _: EmptyTuple    => Nil
-      case _: (t *: others) => summonInline[Schema[t]] :: summoned[others]
+  private def instances(summoned: Tuple): List[Schema[?]] = summoned
+    .toList
+    .asInstanceOf[List[Schema[?]]]
 
   private def fixed[A : {Encoder, Decoder}]
     (json: Json, name: TypeName)
@@ -654,11 +692,13 @@ object Schema extends DerivedSchemas:
 
     /**
       * The field's schema, described in its own words and then its type's, so
-      * that the model reads both, and its default.
+      * that the model reads both. Its default is not shown, as one made anew
+      * each time, as of the time, would make the schema differ each time, and
+      * so never be cached.
       */
     def described(describe: Schema[?] => Json): Json =
       val json = describe(schema)
-      val own  = description.fold(json)(text =>
+      description.fold(json)(text =>
         describedAs(
           json,
           Some(
@@ -668,9 +708,6 @@ object Schema extends DerivedSchemas:
               .fold(_ => text, joined(text, _)),
           ),
         ),
-      )
-      default.fold(own)(value =>
-        own.mapObject(_.add("default", schema.encoder(value()))),
       )
 
   /**
@@ -926,7 +963,8 @@ sealed trait DerivedSchemas:
 
   /**
     * Derives the schema of a case class, sealed trait or enum wherever one is
-    * needed, where each of its fields has one.
+    * needed, where each of its fields has one, but never over a circe `Encoder`
+    * of its own, which says how it is written already.
     *
     * @tparam A
     *   The type.
@@ -934,8 +972,12 @@ sealed trait DerivedSchemas:
     * @return
     *   The schema of `A`.
     */
-  transparent inline given derivedSchema[A](using Mirror.Of[A]): Schema[A] =
-    Schema.derived[A]
+  transparent inline given derivedSchema[A]
+    (
+      using Mirror.Of[A],
+      NotGiven[Encoder[A]],
+    )
+    : Schema[A] = Schema.derived[A]
 
   /**
     * Makes the schema of a union, any one of its alternatives, each of which

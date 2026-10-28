@@ -84,6 +84,31 @@ final class Token(val value: String)
 
 final case class Stamped(token: Token)
 
+final case class Dog(name: String)
+
+final case class Cat(name: String, lives: Int)
+
+enum Hue:
+  case Red, Green
+
+final case class Level1(next: Level2)
+
+final case class Level2(next: Level3)
+
+final case class Level3(next: Level4)
+
+final case class Level4(next: Level5)
+
+final case class Level5(next: Level6)
+
+final case class Level6(next: Level7)
+
+final case class Level7(next: Level8)
+
+final case class Level8(next: Level9)
+
+final case class Level9(value: Int)
+
 class SchemaSuite extends FunSuite:
 
   private def json(text: String): Json = parse(text).toOption.get
@@ -325,7 +350,7 @@ class SchemaSuite extends FunSuite:
     )
     assertEquals(
       schema.downField("properties").downField("level").focus,
-      Some(json("""{"type":"integer","default":3}""")),
+      Some(json("""{"type":"integer"}""")),
     )
     assertEquals(
       written(Settings("Ada")),
@@ -382,20 +407,78 @@ class SchemaSuite extends FunSuite:
       Right(Right(2)),
     )
 
-  test("a union is any one of its alternatives"):
+  test("a union holds one of its alternatives under its name"):
     assertEquals(
       Schema[Int | String].json,
-      json("""{"anyOf":[{"type":"integer"},{"type":"string"}]}"""),
+      json("""{"anyOf":[
+        {"type":"object","properties":{"Int":{"type":"integer"}},
+          "required":["Int"],"additionalProperties":false},
+        {"type":"object","properties":{"String":{"type":"string"}},
+          "required":["String"],"additionalProperties":false}]}"""),
     )
-    assertEquals(written[Int | String](1), "1")
-    assertEquals(written[Int | String]("one"), "\"one\"")
     assertEquals(
-      read[Int | String]("\"two\""),
+      written[Int | String](1),
+      """{"Int":1}""",
+    )
+    assertEquals(
+      written[Int | String]("one"),
+      """{"String":"one"}""",
+    )
+    assertEquals(
+      read[Int | String]("""{"String":"two"}"""),
       Right("two"),
     )
+    assert(read[Int | String]("\"two\"").isLeft)
+
+  test("a union's value is read back as the alternative it was written as"):
+    val cat = Cat("Tom", 9)
     assertEquals(
-      read[Int | String]("true").left.map(_.message),
-      Left("Expected one of Int, String"),
+      read[Dog | Cat](written[Dog | Cat](cat)).map(_ == cat),
+      Right(true),
+    )
+    assertEquals(
+      read[String | Hue](written[String | Hue](Hue.Red)).map(_ == Hue.Red),
+      Right(true),
+    )
+    assertEquals(
+      read[Int | Long](written[Int | Long](1L)).map(_.isInstanceOf[Long]),
+      Right(true),
+    )
+    assertEquals(
+      read[List[Int] | Vector[Int]](written[List[Int] | Vector[Int]](Vector(1)))
+        .map(_.isInstanceOf[Vector[?]]),
+      Right(true),
+    )
+
+  test("a literal in a union of other types is held under its value"):
+    assertEquals(
+      written["auto" | Int]("auto"),
+      """{"auto":"auto"}""",
+    )
+    assertEquals(
+      read["auto" | Int]("""{"Int":3}""").map(_ == 3),
+      Right(true),
+    )
+
+  test("a named tuple is an object of its fields"):
+    val person: (name: String, age: Int) = (name = "Ada", age = 36)
+    assertEquals(
+      written(person),
+      """{"name":"Ada","age":36}""",
+    )
+    assertEquals(
+      read[(name: String, age: Int)]("""{"name":"Ada","age":36}""").map(
+        _ == person,
+      ),
+      Right(true),
+    )
+
+  test("a type nested deeply is derived where it is needed"):
+    val deep =
+      Level1(Level2(Level3(Level4(Level5(Level6(Level7(Level8(Level9(1)))))))))
+    assertEquals(
+      read[Level1](written(deep)),
+      Right(deep),
     )
 
   test("a literal type is its value alone"):
@@ -413,7 +496,11 @@ class SchemaSuite extends FunSuite:
     assert(compileErrors("Schema[List[Int] | List[String]]").nonEmpty)
 
   test("a type with a field of no schema has none, and derives names it"):
-    assert(compileErrors("Schema[Stamped]").contains("Stamped has no Schema"))
+    val missing = compileErrors("Schema[Stamped]")
+    assert(
+      missing.contains("has no Schema"),
+      missing,
+    )
     val errors =
       compileErrors("final case class Unsayable(token: Token) derives Schema")
     assert(

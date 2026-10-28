@@ -8,9 +8,10 @@ private[iris] object Defaults:
   /**
     * Each field's default, in order, where it has one, made anew whenever it is
     * read. A class nested in another class's instance has none, as its
-    * companion cannot be reached without the instance.
+    * companion cannot be reached without the instance, nor one whose default is
+    * not public, as of a private constructor, which could not be called here.
     */
-  inline def of[A]: List[Option[() => Any]] = ${ defaults[A] }
+  transparent inline def of[A]: List[Option[() => Any]] = ${ defaults[A] }
 
   private def defaults[A : Type](using Quotes): Expr[List[Option[() => Any]]] =
     import quotes.reflect.*
@@ -37,7 +38,9 @@ private[iris] object Defaults:
               .companionClass
               .declaredMethod(s"$$lessinit$$greater$$default$$${ index + 1 }")
               .headOption
-              .filter(_ => field.flags.is(Flags.HasDefault))
+              .filter(getter =>
+                field.flags.is(Flags.HasDefault) && public(getter),
+              )
               .fold('{ None })(getter =>
                 val selected = Ref(companion).select(getter)
                 val generic  = getter.paramSymss.exists(_.exists(_.isTypeParam))
@@ -48,6 +51,12 @@ private[iris] object Defaults:
               ),
           ),
       )
+
+  /** Whether a symbol may be reached from anywhere. */
+  private def public(using Quotes)(symbol: quotes.reflect.Symbol): Boolean =
+    import quotes.reflect.*
+    !symbol.flags.is(Flags.Private) && !symbol.flags.is(Flags.Protected) &&
+    symbol.privateWithin.isEmpty && symbol.protectedWithin.isEmpty
 
   /** Whether what a symbol owns is reached by its name alone. */
   private def reachable(using Quotes)(owner: quotes.reflect.Symbol): Boolean =

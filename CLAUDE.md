@@ -101,19 +101,28 @@ longer.
   from a circe codec, which says nothing of its JSON (the user chose a compile error over an any-JSON schema).
   Each schema holds its `parts` and an `outline`, its own JSON given how to write each part, from which `rendered`
   finds recurring types for `$defs`; there is no enum of shapes (the user chose this). Any case class, sealed
-  trait or enum is derived wherever it is needed, by `DerivedSchemas`' `derivedSchema`, and any union or literal
-  type by `alternativeSchema` (the `Alternatives` macro); a trait `Schema` extends, so every given of `Schema`'s
+  trait or enum is derived wherever it is needed, by `DerivedSchemas`' `derivedSchema`, but never over a circe
+  `Encoder` of its own (`NotGiven[Encoder[A]]`), which says how it is written already, so `Content` says it as
+  that writes it (review found auto-derivation sending `NonEmptyList` as head and tail); `derives Schema` derives
+  one anyway. Any union or literal type is given by `alternativeSchema` (the `Alternatives` macro); a trait `Schema` extends, so every given of `Schema`'s
   own outranks them by inheritance, as does a type's own given in its companion by being monomorphic. Both are
   `transparent inline`, as is everything they expand (`derived`, `summoned`, `Alternatives.of`): only a
   transparent expansion fails during implicit search, so that a type with a field of no schema has none
   (`NotGiven` holds, and `Content` falls back to its `Encoder`), where a non-transparent one would claim every type
-  and fail later. `derived` ties recursion with a local `given Schema[A] = self` (marked `@unused`, which
+  and fail later. Fields and cases are summoned by `summonAll`, a compiler intrinsic, in one inline level: each
+  nested expansion counts towards `-Xmax-inlines` (32), so a recursive helper per field reached it at about eight
+  nested types. `derived` ties recursion with a local `given Schema[A] = self` (marked `@unused`, which
   `-Wunused` flags where nothing recurs), so a recursive type needs no `derives`, and fields are summoned lazily
   so that it can be made before the fields referring to it; it renders a recursive type into `$defs`. Defaults
-  come from the companion's `$lessinit$greater$default$N` getters (`Defaults`), which make a field optional,
-  are read where it is left out and shown as `default`; an optional field is left out only where reading it
-  back gives the same. A union's alternatives must have distinct erased classes, as a value is written as the
-  first whose runtime test it passes. Constraints (minimum, pattern) stay in Scaladoc and `described` (the user
+  come from the companion's public `$lessinit$greater$default$N` getters (`Defaults`; a private constructor's
+  are skipped, as they cannot be called where a type is derived), which make a field optional and are read
+  where it is left out, but are never shown in the schema, which must be the same on every ask to be cached
+  (a default may be `UUID.randomUUID()`); an optional field is left out only where reading it back gives the
+  same. A union is tagged, as a sealed trait is, under each alternative's name (short unless two clash, a
+  literal's its value), as reading untagged JSON as the first alternative that reads it took a `Cat` for a
+  `Dog`; only a union of literals alone is untagged, its values being distinct. Its alternatives must have
+  distinct erased classes, as a value is written as the first whose runtime test it passes. Circe's `Json`
+  has no schema, by the user's choice that the model is never told nothing. Constraints (minimum, pattern) stay in Scaladoc and `described` (the user
   chose this over annotations or Iron for now). A type is told apart
   by its `TypeName`, its full name with its type arguments applied, never by identity (a generic recursive
   type's given is a `def`, so it would never meet itself) nor by simple name (two `User`s, or `Tree[Int]` beside
