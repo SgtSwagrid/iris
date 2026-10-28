@@ -20,7 +20,7 @@ class AskSuite extends FunSuite:
 
   private val adaJson = """{"name":"Ada","age":36}"""
 
-  private val instructions = Question.instructions(Structured[Person])
+  private val instructions = Question.instructions(Schema[Person])
 
   /** Anthropic's answer of the text, stopping as said, costing as said. */
   private def said
@@ -78,7 +78,7 @@ class AskSuite extends FunSuite:
     )
 
   /** The answer an ask gives, or why it gave none. */
-  private def asked[A : Structured]
+  private def asked[A : Schema]
     (
       client: LlmClient[SyncIO],
       attempts: Int = Question.attempts,
@@ -89,14 +89,14 @@ class AskSuite extends FunSuite:
     .attempt
     .unsafeRunSync()
 
-  test("a structured answer is read from the json the model answers with"):
+  test("a typed answer is read from the json the model answers with"):
     assertEquals(
       asked[Person](client(_ => said(adaJson))),
       Right(Some(ada)),
     )
 
   test("the schema closes the user's message, as a paragraph of its own"):
-    assert(instructions.contains(Structured[Person].schema.noSpaces))
+    assert(instructions.contains(Schema[Person].json.noSpaces))
     val told = client(sent =>
       if sent == List(Message(Role.User, s"$asking\n\n$instructions")) then
         said(adaJson)
@@ -296,7 +296,7 @@ class AskSuite extends FunSuite:
     )
 
   test("text is asked for as JSON, as every type is"):
-    val schema = Question.instructions(Structured[String])
+    val schema = Question.instructions(Schema[String])
     assert(
       schema.endsWith("""{"type":"string"}"""),
       schema,
@@ -329,7 +329,7 @@ class AskSuite extends FunSuite:
       Right(Some(ada)),
     )
 
-  test("a structured answer may be any structured type"):
+  test("a typed answer may be of any type with a schema"):
     val colours = client(_ => said("""["Red","Blue"]"""))
     assertEquals(
       asked[List[Colour]](colours),
@@ -418,14 +418,13 @@ class AskSuite extends FunSuite:
     )
 
   /** Whether a reply fails an ask of a type at once. */
-  private def failsAtOnceAs[A : Structured]
-    (answer: String, detail: String)
-    : Unit = asked[A](client(_ => answer)) match
-    case Left(LlmError.Unreadable(attempts, said, answers)) => assertEquals(
-        (attempts, said, answers.size),
-        (1, detail, 1),
-      )
-    case other => fail(s"Expected the ask to fail at once, not $other.")
+  private def failsAtOnceAs[A : Schema](answer: String, detail: String): Unit =
+    asked[A](client(_ => answer)) match
+      case Left(LlmError.Unreadable(attempts, said, answers)) => assertEquals(
+          (attempts, said, answers.size),
+          (1, detail, 1),
+        )
+      case other => fail(s"Expected the ask to fail at once, not $other.")
 
   test(
     "a reply calling a tool, whatever it says of why it stopped, has no answer",

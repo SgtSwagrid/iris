@@ -1,17 +1,17 @@
 // Outside Iris's package, so that types derive as a user's would.
 package com.alecdorrington.example
 
-import com.alecdorrington.iris.Structured
+import com.alecdorrington.iris.Schema
 import io.circe.Json
 import io.circe.parser.parse
 import munit.FunSuite
 
 object github:
 
-  final case class User(login: String) derives Structured
+  final case class User(login: String) derives Schema
 
   final case class Account(login: String, followers: List[Account])
-    derives Structured
+    derives Schema
 
 final case class User
   (
@@ -19,7 +19,7 @@ final case class User
     account: github.User,
     follows: List[User],
   )
-  derives Structured
+  derives Schema
 
 final case class Account
   (
@@ -27,18 +27,18 @@ final case class Account
     github: com.alecdorrington.example.github.Account,
     friends: List[Account],
   )
-  derives Structured
+  derives Schema
 
-final case class Tree[A](value: A, children: List[Tree[A]]) derives Structured
+final case class Tree[A](value: A, children: List[Tree[A]]) derives Schema
 
-final case class Forest(ints: Tree[Int], names: Tree[String]) derives Structured
+final case class Forest(ints: Tree[Int], names: Tree[String]) derives Schema
 
-enum Weather derives Structured:
+enum Weather derives Schema:
 
   case Sunny
   case Rainy(millimetres: Double)
 
-sealed trait Event derives Structured
+sealed trait Event derives Schema
 
 object Event:
 
@@ -53,15 +53,15 @@ class NamingSuite extends FunSuite:
 
   private def json(text: String): Json = parse(text).toOption.get
 
-  private def definitions[A : Structured as A]: Set[String] = A
-    .schema
+  private def definitions[A : Schema as A]: Set[String] = A
+    .json
     .hcursor
     .downField("$defs")
     .keys
     .fold(Set.empty)(_.toSet)
 
   test("a type is not taken for another of its name"):
-    val schema = Structured[User].schema
+    val schema = Schema[User].json
     assertEquals(definitions[User], Set("User"))
     assertEquals(
       schema
@@ -85,7 +85,7 @@ class NamingSuite extends FunSuite:
     )
 
   test("each instance of a generic type is defined apart"):
-    val defined = Structured[Forest].schema.hcursor.downField("$defs")
+    val defined = Schema[Forest].json.hcursor.downField("$defs")
     assertEquals(
       definitions[Forest],
       Set("Tree(Int)", "Tree(String)"),
@@ -109,7 +109,7 @@ class NamingSuite extends FunSuite:
     )
 
   test("an enum of bare and parameterised cases holds each under its name"):
-    val weather = Structured[Weather]
+    val weather = Schema[Weather]
     assertEquals(
       weather.encoder(Weather.Sunny).noSpaces,
       """{"Sunny":{}}""",
@@ -120,7 +120,7 @@ class NamingSuite extends FunSuite:
     )
 
   test("a tagged case reads its optional fields and maps as its schema says"):
-    val events = Structured[Event]
+    val events = Schema[Event]
     assertEquals(
       events.decoder.decodeJson(json("""{"Noted":{"tags":{"a":1}}}""")),
       Right(Event.Noted(None, Map("a" -> 1))),
@@ -132,28 +132,27 @@ class NamingSuite extends FunSuite:
 
   test("a type may be described in so many words"):
     assertEquals(
-      Structured[Int].described("From 1 to 10.").schema,
+      Schema[Int].described("From 1 to 10.").json,
       json("""{"description":"From 1 to 10.","type":"integer"}"""),
     )
 
-final case class RawChapter(title: String, parts: List[Chapter])
-  derives Structured
+final case class RawChapter(title: String, parts: List[Chapter]) derives Schema
 
 /** A chapter, made from a raw one. */
 final case class Chapter(title: String, parts: List[Chapter])
 
 object Chapter:
 
-  given Structured[Chapter] = Structured[RawChapter].imap(raw =>
+  given Schema[Chapter] = Schema[RawChapter].imap(raw =>
     Chapter(raw.title, raw.parts),
   )(chapter => RawChapter(chapter.title, chapter.parts))
 
-final case class `Odd Name`(next: Option[`Odd Name`]) derives Structured
+final case class `Odd Name`(next: Option[`Odd Name`]) derives Schema
 
 class ConvertedNamingSuite extends FunSuite:
 
   test("a type converted from one it recurs through is defined, not unending"):
-    val schema = Structured[Chapter].schema
+    val schema = Schema[Chapter].json
     assertEquals(
       schema.hcursor.downField("$defs").keys.map(_.toList),
       Some(List("Chapter")),
@@ -162,14 +161,14 @@ class ConvertedNamingSuite extends FunSuite:
       "Iris",
       List(Chapter("Usage", List.empty)),
     )
-    val chapters = Structured[Chapter]
+    val chapters = Schema[Chapter]
     assertEquals(
       chapters.decoder.decodeJson(chapters.encoder(chapter)),
       Right(chapter),
     )
 
   test("a name a reference cannot hold as it is is escaped there"):
-    val schema = Structured[`Odd Name`].schema
+    val schema = Schema[`Odd Name`].json
     assertEquals(
       schema.hcursor.get[String]("$ref"),
       Right("#/$defs/Odd%20Name"),
