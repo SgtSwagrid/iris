@@ -81,7 +81,8 @@ object LlmProvider:
   *   provider's, such as a proxy's or a test stub's.
   *
   * @param timeout
-  *   The time to wait for a reply before giving up.
+  *   The longest to wait for a reply, from sending the request to reading the
+  *   reply whole, or, for a stream, for each next part of it.
   */
 final case class LlmConfig
   (

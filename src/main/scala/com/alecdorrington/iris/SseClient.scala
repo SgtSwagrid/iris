@@ -1,6 +1,7 @@
 package com.alecdorrington.iris
 
 import cats.effect.Async
+import cats.syntax.all.*
 import fs2.Stream
 import sttp.capabilities.fs2.Fs2Streams
 import sttp.client4.*
@@ -40,8 +41,15 @@ private[iris] final class SseClient[F[_] : Async]
       )
       .response(asStreamUnsafe(Fs2Streams[F]))
 
+  /**
+    * The reply's body, failing with [[LlmError.TimedOut]] where any part of it
+    * takes longer than the configured timeout to arrive, as the JDK's client
+    * waits only until a reply begins.
+    */
   private def sent(request: SseRequest[F]): Stream[F, Byte] = Stream
-    .eval(request.send(backend))
+    .eval(request.send(backend).adaptError {
+      case _: SttpClientException.TimeoutException => timedOut
+    })
     .flatMap: response =>
       response
         .body
@@ -52,3 +60,9 @@ private[iris] final class SseClient[F[_] : Async]
             ),
           identity,
         )
+    .timeoutOnPullTo(config.timeout, Stream.raiseError[F](timedOut))
+
+  private def timedOut: LlmError = LlmError.TimedOut(
+    api.provider.displayName,
+    config.timeout,
+  )

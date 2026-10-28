@@ -200,7 +200,9 @@ object LlmClient:
     *   The model, key and defaults to use.
     *
     * @param backend
-    *   The backend to send requests through.
+    *   The backend to send requests through, which times them out as it does
+    *   itself: the JDK's client, for one, only until a reply begins, where
+    *   [[resource]] gives each reply the configured timeout whole.
     *
     * @return
     *   A client for the configured provider.
@@ -214,7 +216,9 @@ object LlmClient:
   )
 
   /**
-    * Creates a client with an HTTP backend of its own.
+    * Creates a client with an HTTP backend of its own, which gives each reply
+    * at most the configured timeout, from sending the request to reading the
+    * reply whole.
     *
     * @tparam F
     *   The effect type.
@@ -226,7 +230,7 @@ object LlmClient:
     *   A resource holding the client and its backend.
     */
   def resource[F[_] : Async](config: LlmConfig): Resource[F, LlmClient[F]] =
-    Platform.backend[F].map(apply(config, _))
+    Platform.backend[F].map(backend => apply(config, Deadlined(backend)))
 
   /**
     * Creates a client configured from the environment by [[LlmConfig.fromEnv]].

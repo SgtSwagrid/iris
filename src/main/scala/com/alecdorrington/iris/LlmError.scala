@@ -87,7 +87,7 @@ enum LlmError(message: String) extends Exception(message):
 
   /**
     * A request the provider did not answer within the configured timeout, such
-    * as one whose reply took too long to write.
+    * as one whose reply took too long to write or stalled partway.
     *
     * @param provider
     *   The name of the provider, for display.
