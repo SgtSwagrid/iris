@@ -34,7 +34,7 @@ trait LlmClient[F[_]]:
     * attempt goes through [[send]], so a wrapper overriding it sees each.
     *
     * {{{
-    * case class Person(name: String, age: Int) derives Structured
+    * case class Person(name: String, age: Int)
     *
     * client.ask[Person](Chat.of("Invent a person.")).map(_.value)
     * }}}
@@ -59,7 +59,7 @@ trait LlmClient[F[_]]:
     *   the tools it asked for. It fails with [[LlmError.Unreadable]] where the
     *   last reply could not be read either.
     */
-  final def ask[A : Structured]
+  final def ask[A : Schema]
     (
       chat: Chat,
       options: ReplyOptions = ReplyOptions(),

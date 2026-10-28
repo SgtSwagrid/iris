@@ -15,7 +15,7 @@ This is Iris, a Scala 3 library giving one provider-agnostic interface to the AP
 adapters for Anthropic, OpenAI and Google Gemini, built on Cats Effect, sttp and Circe. It is still a prototype.
 
 It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js. `LlmClient` is the public interface: callers `ask` a `Chat`
-for an answer of any `Structured` type, `String` included, as a uniform `Answer[A]`, and `send` is the protected request every
+for an answer of any type with a `Schema`, `String` included, as a uniform `Answer[A]`, and `send` is the protected request every
 `ask` makes, which `JsonClient` implements and wrappers override (`LlmClient.Forwarding`, `mapK`). Each `LlmProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
 `JsonHttp`), which tells the one `JsonClient` and the one `SseClient` all they need to know of it: its endpoints,
 request bodies, credentials, the chats it refuses, how its replies read, and how it counts tokens. Anything
@@ -67,7 +67,7 @@ longer.
   `reasoning_effort` (`Max` as `max`, or as `high` on the models in `OpenAiApi.cappedAtHigh`, such as `gpt-5`) and Gemini's `generationConfig.thinkingConfig.thinkingBudget`
   (fixed amounts within every thinking Gemini model's range). Iris never chooses one, and a model that cannot take one
   refuses the request; retrying at a lower effort is the host's to do.
-- `LlmClient.ask[A : Structured]` reads every type one way, `String` included, and always gives an `Answer[A]`:
+- `LlmClient.ask[A : Schema]` reads every type one way, `String` included, and always gives an `Answer[A]`:
   the last reply's text, stop reason and tool calls, the usage of every attempt summed, the attempts, and
   `value: Option[A]`, `None` where the model asked for a tool. Never read one type differently from another, as
   the removed `Answer` type class once did, nor give some types a different result: the user wants every ask
@@ -89,27 +89,54 @@ longer.
   from the whole reply, then its last fence, and nowhere else (the user chose this over finding JSON amid prose),
   so a fence inside a JSON string is never taken.
 - What goes in is a `Content[A]` everywhere (`Chat.of`, `Chat.user`/`assistant`, `Message.apply`, `Part.of`):
-  `String` as text, a `Part` as itself, a `Structured` value as its JSON, else an `Encoder`'s JSON. `NotGiven`s keep
-  the givens apart, `Structured` winning, so a value is said as the schema the model is told describes it.
+  `String` as text, a `Part` as itself, a value with a `Schema` as its JSON, else an `Encoder`'s JSON. `NotGiven`s
+  keep the givens apart, `Schema` winning (a derived one too), so a value is said as the schema the model is told
+  describes it. No type text may be (`NotGiven[String <:< A]`) is said as JSON: varargs of text and a number infer
+  `String | Double`, which has a schema, and must still be refused, pointing to `Part.of`.
   A single-turn prompt is `Chat.of(content)`, never an overload of `Chat.apply`, which would capture
   `Chat(messages)` (the case class's own `apply` needs the default `system`, so loses). `Chat.user` and
   `assistant` take `A*` of one content type rather than an overload beside `Part*`: Scala 3 never ranks a varargs
   alternative more specific, so a single part was ambiguous. Mixed kinds go through `Part.of`.
-- `Structured` is one type class of schema, encoder and decoder, so the three cannot disagree; never derive one
-  from a circe codec. Derivation (`Mirror`s) summons field instances lazily, so that a recursive type's given
-  can be made before the fields referring to it, and renders a recursive type into `$defs`. A type is told apart
+- `Schema` is one type class of schema, encoder and decoder, so the three cannot disagree; never derive one
+  from a circe codec, which says nothing of its JSON (the user chose a compile error over an any-JSON schema).
+  Each schema holds its `parts` and an `outline`, its own JSON given how to write each part, from which `rendered`
+  finds recurring types for `$defs`; there is no enum of shapes (the user chose this). Any case class, sealed
+  trait or enum is derived wherever it is needed, by `DerivedSchemas`' `derivedSchema`, but never over a circe
+  `Encoder` of its own (`NotGiven[Encoder[A]]`), which says how it is written already, so `Content` says it as
+  that writes it (review found auto-derivation sending `NonEmptyList` as head and tail); `derives Schema` derives
+  one anyway. Any union or literal type is given by `alternativeSchema` (the `Alternatives` macro); a trait `Schema` extends, so every given of `Schema`'s
+  own outranks them by inheritance, as does a type's own given in its companion by being monomorphic. Both are
+  `transparent inline`, as is everything they expand (`derived`, `summoned`, `Alternatives.of`): only a
+  transparent expansion fails during implicit search, so that a type with a field of no schema has none
+  (`NotGiven` holds, and `Content` falls back to its `Encoder`), where a non-transparent one would claim every type
+  and fail later. Fields and cases are summoned by `summonAll`, a compiler intrinsic, in one inline level: each
+  nested expansion counts towards `-Xmax-inlines` (32), so a recursive helper per field reached it at about eight
+  nested types. `derived` ties recursion with a local `given Schema[A] = self` (marked `@unused`, which
+  `-Wunused` flags where nothing recurs), so a recursive type needs no `derives`, and fields are summoned lazily
+  so that it can be made before the fields referring to it; it renders a recursive type into `$defs`. Defaults
+  come from the companion's public `$lessinit$greater$default$N` getters (`Defaults`; a private constructor's
+  are skipped, as they cannot be called where a type is derived), which make a field optional and are read
+  where it is left out, but are never shown in the schema, which must be the same on every ask to be cached
+  (a default may be `UUID.randomUUID()`); an optional field is left out only where reading it back gives the
+  same. A union is tagged, as a sealed trait is, under each alternative's name (short unless two clash, a
+  literal's its value), as reading untagged JSON as the first alternative that reads it took a `Cat` for a
+  `Dog`; only a union of literals alone is untagged, its values being distinct. Its alternatives must have
+  distinct erased classes, as a value is written as the first whose runtime test it passes. Circe's `Json`
+  has no schema, by the user's choice that the model is never told nothing. Constraints (minimum, pattern) stay in Scaladoc and `described` (the user
+  chose this over annotations or Iron for now). A type is told apart
   by its `TypeName`, its full name with its type arguments applied, never by identity (a generic recursive
   type's given is a `def`, so it would never meet itself) nor by simple name (two `User`s, or `Tree[Int]` beside
   `Tree[String]`, would share a definition). A generic type is derived once for every argument, so the `TypeName`
-  macro names its arguments at runtime from their own `Structured` instances. Definitions are shown by short
+  macro names its arguments at runtime from their own `Schema` instances. Definitions are shown by short
   name, in full only where two short names clash, in parentheses (`Tree(Int)`), which a `$ref` may hold. Cases of a sealed trait are
   externally tagged (`{"Circle":{...}}`), or just their names where none has fields. Descriptions come from
   Scaladoc through [Cadmus](https://github.com/SgtSwagrid/cadmus) (`Scaladoc.of`, rendered `plain`), whose
   comments the compiler keeps by default for sources compiled in the same run, as a `derives` clause's type always
-  is (others need `-Xread-docs`, and under `-Xdrop-docs` there are none, which Cadmus gives as `None` from 0.1.1);
+  is (a type derived where it is needed elsewhere needs `-Xread-docs`, and under `-Xdrop-docs` there are none, which Cadmus gives as `None` from 0.1.1);
   a comment on a parameter is never kept, so fields are described by the class's `@param` tags, which `record`
-  aligns with the `Mirror`'s labels. `imap`/`emap` are inline so as to read the target type's. Test derivation from
-  outside the package (`StructuredSuite` is in `com.alecdorrington.example`), as inline code reaches private
+  aligns with the `Mirror`'s labels. A field's words always come before its type's own description, never in
+  place of it (the user wants the model to read both), joined as paragraphs, then any `described` words. `imap`/`emap` are inline so as to read the target type's. Test derivation from
+  outside the package (`SchemaSuite` is in `com.alecdorrington.example`), as inline code reaches private
   helpers only through accessors.
 - Unset optional fields are omitted one level deep, by `JsonHttp.objectOf`/`body`. Never deep-drop nulls: inside a
   tool's schema or a tool call's arguments, a null is a value.

@@ -1,7 +1,7 @@
 // Outside Iris's package, so that types derive as a user's would.
 package com.alecdorrington.example
 
-import com.alecdorrington.iris.Structured
+import com.alecdorrington.iris.Schema
 import io.circe.Json
 import io.circe.parser.parse
 import munit.FunSuite
@@ -28,10 +28,10 @@ final case class Review
     mood: Mood,
     verdict: Verdict,
   )
-  derives Structured
+  derives Schema
 
 /** How a reader may feel. */
-enum Mood derives Structured:
+enum Mood derives Schema:
 
   /** Glad to have read it. */
   case Pleased
@@ -39,7 +39,7 @@ enum Mood derives Structured:
   case Indifferent
 
 /** What should become of a piece. */
-sealed trait Verdict derives Structured
+sealed trait Verdict derives Schema
 
 object Verdict:
 
@@ -60,22 +60,21 @@ object Verdict:
   * @param parts
   *   The sections within it.
   */
-final case class Section(heading: String, parts: List[Section])
-  derives Structured
+final case class Section(heading: String, parts: List[Section]) derives Schema
 
 /** A rating out of five. */
 final case class Rating(stars: Int)
 
 object Rating:
 
-  given Structured[Rating] = Structured[Int].imap(Rating(_))(_.stars)
+  given Schema[Rating] = Schema[Int].imap(Rating(_))(_.stars)
 
 /** A grade. */
 final case class Grade(value: Int)
 
 object Grade:
 
-  given Structured[Grade] = Structured[Int]
+  given Schema[Grade] = Schema[Int]
     .imap(Grade(_))(_.value)
     .described("A whole number from 1 to 10.")
 
@@ -85,7 +84,7 @@ object Grade:
   * @param grade
   *   Out of ten, where five is passable.
   */
-final case class Marked(grade: Grade) derives Structured
+final case class Marked(grade: Grade) derives Schema
 
 class DescriptionSuite extends FunSuite:
 
@@ -106,7 +105,7 @@ class DescriptionSuite extends FunSuite:
     "required":["Revise"],"additionalProperties":false}""")
 
   test("a case class is described by its scaladoc, and its fields by tags"):
-    val schema = Structured[Review].schema.hcursor
+    val schema = Schema[Review].json.hcursor
     assertEquals(
       schema.get[String]("description"),
       Right("A review of a piece of writing.\n\nKept short."),
@@ -118,31 +117,31 @@ class DescriptionSuite extends FunSuite:
         "type":"string"}""")),
     )
 
-  test("a field's description replaces its type's"):
+  test("a field is described in its own words, then its type's"):
     assertEquals(
-      Structured[Review]
-        .schema
+      Schema[Review]
+        .json
         .hcursor
         .downField("properties")
         .downField("mood")
         .get[String]("description"),
-      Right("How the reviewer felt."),
+      Right("How the reviewer felt.\n\nHow a reader may feel."),
     )
 
   test("a field of no description of its own keeps its type's"):
     assertEquals(
-      Structured[Review]
-        .schema
+      Schema[Review]
+        .json
         .hcursor
         .downField("properties")
         .downField("verdict")
         .focus,
-      Some(Structured[Verdict].schema),
+      Some(Schema[Verdict].json),
     )
 
   test("an enum's cases are each described where documented"):
     assertEquals(
-      Structured[Mood].schema,
+      Schema[Mood].json,
       json("""{"description":"How a reader may feel.","anyOf":[
         {"description":"Glad to have read it.","const":"Pleased"},
         {"const":"Indifferent"}]}"""),
@@ -150,7 +149,7 @@ class DescriptionSuite extends FunSuite:
 
   test("a sealed trait's cases are described as types of their own"):
     assertEquals(
-      Structured[Verdict].schema,
+      Schema[Verdict].json,
       Json.obj(
         "description" -> Json.fromString("What should become of a piece."),
         "anyOf"       -> Json.arr(accept, revise),
@@ -159,7 +158,7 @@ class DescriptionSuite extends FunSuite:
 
   test("a recursive type is described in its definition"):
     assertEquals(
-      Structured[Section].schema,
+      Schema[Section].json,
       json("""{"$ref":"#/$defs/Section","$defs":{"Section":{
         "description":"A section of a document.",
         "type":"object","properties":{
@@ -171,13 +170,13 @@ class DescriptionSuite extends FunSuite:
 
   test("a converted type is described by its own scaladoc"):
     assertEquals(
-      Structured[Rating].schema,
+      Schema[Rating].json,
       json("""{"description":"A rating out of five.","type":"integer"}"""),
     )
 
   test("descriptions say nothing of how a value is written"):
     assertEquals(
-      Structured[Review]
+      Schema[Review]
         .encoder(Review("Clear.", Mood.Pleased, Verdict.Accept))
         .noSpaces,
       """{"summary":"Clear.","mood":"Pleased","verdict":{"Accept":{}}}""",
@@ -185,17 +184,17 @@ class DescriptionSuite extends FunSuite:
 
   test("words a type is described in stay beside its scaladoc and a field's"):
     assertEquals(
-      Structured[Grade].schema.hcursor.get[String]("description"),
+      Schema[Grade].json.hcursor.get[String]("description"),
       Right("A grade.\n\nA whole number from 1 to 10."),
     )
     assertEquals(
-      Structured[Marked]
-        .schema
+      Schema[Marked]
+        .json
         .hcursor
         .downField("properties")
         .downField("grade")
         .get[String]("description"),
       Right(
-        "Out of ten, where five is passable.\n\nA whole number from 1 to 10.",
+        "Out of ten, where five is passable.\n\nA grade.\n\nA whole number from 1 to 10.",
       ),
     )
