@@ -32,10 +32,12 @@ longer.
   within `LlmConfig.timeout` is `LlmError.TimedOut`, such as one whose reply takes too long to write;
   other transport failures are sttp's own.
 - The JDK's client counts a request's read timeout only until its reply begins, so `resource` wraps the backend it
-  makes in `Deadlined`, which gives each exchange that long whole, body included, and `SseClient` gives each next
-  part of a stream that long (`timeoutOnPullTo`). `Deadlined` must use `timeoutAndForget`, never `timeout` or
-  `timeoutTo`: sttp reads the body in `F.blocking`, which cannot be cancelled, so those would wait on the very read
-  that stalled. `LlmClient.apply` takes the host's backend as it is, and stays on `MonadThrow`, as the shared tests
+  makes in `Deadlined`, which gives each exchange that long whole, body included, and `SseClient.bounded` gives each
+  next part of a stream that long. Neither may wait for the read it gives up on, which cannot be cancelled: sttp
+  reads a body in `F.blocking`, and fs2's reactive-streams subscriber waits for a stream's next part in `F.async_`.
+  So `Deadlined` uses `timeoutAndForget`, never `timeout` or `timeoutTo`, and `bounded` reads the stream on a fiber
+  of its own, timing out each take from it and cancelling that fiber without waiting for it (as `timeoutOnPull`
+  would wait). `LlmClient.apply` takes the host's backend as it is, and stays on `MonadThrow`, as the shared tests
   run in `SyncIO`.
 - Models are `LlmModel` cases, never strings: each names the provider serving it (`LlmConfig.provider` is its model's)
   and its API `id`, which `LlmModel.parse` reads back. A model Iris does not list is an `LlmModel.Other`,
