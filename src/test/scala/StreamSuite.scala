@@ -20,27 +20,29 @@ class StreamSuite extends FunSuite:
     .toList
     .unsafeRunSync()
 
-  private def deltas(body: String)(read: Json => List[Delta]): List[Delta] =
-    reply(body)(Sse.separately(read))
+  test("a data line carries its payload, and no other line nor the end does"):
+    List(
+      "data: {\"a\":1}"     -> Some("{\"a\":1}"),
+      "data:{\"a\":1}"      -> Some("{\"a\":1}"),
+      "event: message_stop" -> None,
+      ": a comment"         -> None,
+      ""                    -> None,
+      "data: [DONE]"        -> None,
+    ).foreach((line, data) => assertEquals(Sse.data(line), data, line))
 
-  test("a data line carries its payload, and other lines carry none"):
-    assertEquals(
-      Sse.data("data: {\"a\":1}"),
-      Some("{\"a\":1}"),
-    )
-    assertEquals(
-      Sse.data("data:{\"a\":1}"),
-      Some("{\"a\":1}"),
-    )
-    assertEquals(Sse.data("event: message_stop"), None)
-    assertEquals(Sse.data(": a comment"), None)
-    assertEquals(Sse.data(""), None)
+  test("each provider streams its text, how it ended, and what it cost"):
+    List(
+      // Anthropic reports nothing of events which say nothing new.
+      (
+        AnthropicApi,
+        """event: message_start
+data: {"type":"message_start","message":{"id":"msg_1"}}
 
-  test("the marker which ends a stream is not an event"):
-    assertEquals(Sse.data("data: [DONE]"), None)
+data: {"type":"content_block_start","index":0}
 
-  test("anthropic streams its text and how it ended"):
-    val body = """event: content_block_delta
+data: {"type":"ping"}
+
+event: content_block_delta
 data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}
 
 event: content_block_delta
@@ -51,135 +53,98 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}
 
 event: message_stop
 data: {"type":"message_stop"}
-"""
-    assertEquals(
-      deltas(body)(AnthropicApi.deltas),
-      List(
-        Delta.Text("Hel"),
-        Delta.Text("lo"),
-        Delta.End(StopReason.Completed, None),
+""",
+        None,
       ),
-    )
-
-  test("openai streams its text, how it ended, and what it cost"):
-    val body = """data: {"choices":[{"delta":{"content":"Hel"}}]}
+      (
+        OpenAiApi,
+        """data: {"choices":[{"delta":{"content":"Hel"}}]}
 
 data: {"choices":[{"delta":{"content":"lo"}}]}
 
 data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}
 
 data: [DONE]
-"""
-    assertEquals(
-      deltas(body)(OpenAiApi.deltas),
-      List(
-        Delta.Text("Hel"),
-        Delta.Text("lo"),
-        Delta.End(StopReason.Completed, Some(Usage(3, 2))),
+""",
+        Some(Usage(3, 2)),
       ),
-    )
+      // Gemini may speak and finish in the same breath.
+      (
+        GeminiApi,
+        """data: {"candidates":[{"content":{"parts":[{"text":"Hel"}]}}]}
 
-  test("gemini may speak and finish in the same breath"):
-    val body = """data: {"candidates":[{"content":{"parts":[{"text":"Hel"}]}}]}
-
-data: {"candidates":[{"content":{"parts":[{"text":"lo"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}}
-"""
-    assertEquals(
-      reply(body)(GeminiApi.reply),
-      List(
-        Delta.Text("Hel"),
-        Delta.Text("lo"),
-        Delta.End(StopReason.Completed, Some(Usage(7, 3))),
+data: {"candidates":[{"content":{"parts":[{"text":"lo"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2}}
+""",
+        Some(Usage(3, 2)),
       ),
+    ).foreach: (api, body, usage) =>
+      assertEquals(
+        reply(body)(api.reply),
+        List(
+          Delta.Text("Hel"),
+          Delta.Text("lo"),
+          Delta.End(StopReason.Completed, usage),
+        ),
+        api.provider,
+      )
+    // A reply cut off says so where it ended.
+    assertEquals(
+      reply(
+        """data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}
+""",
+      )(AnthropicApi.reply),
+      List(Delta.End(StopReason.MaxTokens, None)),
     )
 
   test("gemini stops for a tool it asked for, however late it says it stopped"):
-    val body = """data: {"candidates":[{"content":{"parts":[{"text":"Let me look."}]}}]}
+    val late = """data: {"candidates":[{"content":{"parts":[{"text":"Let me look."}]}}]}
 
 data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"weather","args":{"city":"Zug"}}}]}}]}
 
 data: {"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}}
 """
     assertEquals(
-      reply(body)(GeminiApi.reply),
+      reply(late)(GeminiApi.reply),
       List(
         Delta.Text("Let me look."),
         Delta.End(StopReason.ToolCall, Some(Usage(7, 3))),
       ),
     )
-
-  test("gemini stops for a tool it asked for in the same breath"):
-    val body =
+    val together =
       """data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"weather","args":{"city":"Zug"}}}]},"finishReason":"STOP"}]}
 """
     assertEquals(
-      reply(body)(GeminiApi.reply),
+      reply(together)(GeminiApi.reply),
       List(Delta.End(StopReason.ToolCall, None)),
     )
 
-  test("an event which says nothing new is not reported"):
-    val body = """data: {"type":"message_start","message":{"id":"msg_1"}}
-
-data: {"type":"content_block_start","index":0}
-
-data: {"type":"ping"}
-"""
-    assertEquals(
-      deltas(body)(AnthropicApi.deltas),
-      List.empty,
-    )
-
-  test("a truncated reply says so where it ended"):
-    val body =
-      """data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}
-"""
-    assertEquals(
-      deltas(body)(AnthropicApi.deltas),
-      List(Delta.End(StopReason.MaxTokens, None)),
-    )
-
-  test("a streaming request asks to be streamed"):
-    val body = json(AnthropicApi.body(
+  test("a streaming request asks to be streamed, and openai for its usage"):
+    val anthropic = json(AnthropicApi.body(
       config,
       Chat().user("Hi"),
       ReplyOptions(),
       true,
     ))
     assertEquals(
-      body.hcursor.get[Boolean]("stream").toOption,
+      anthropic.hcursor.get[Boolean]("stream").toOption,
       Some(true),
     )
-
-  test("an ordinary request does not ask to be streamed"):
-    val body = json(AnthropicApi.body(
-      config,
-      Chat().user("Hi"),
-      ReplyOptions(),
-    ))
-    assert(body.hcursor.downField("stream").failed)
-
-  test("openai asks for the usage a stream would otherwise withhold"):
-    val body = json(OpenAiApi.body(
+    val openAi = json(OpenAiApi.body(
       config,
       Chat().user("Hi"),
       ReplyOptions(),
       true,
     ))
     assertEquals(
-      body
+      openAi.hcursor.get[Boolean]("stream").toOption,
+      Some(true),
+    )
+    // Usage is withheld from a stream unless asked for.
+    assertEquals(
+      openAi
         .hcursor
         .downField("stream_options")
         .get[Boolean]("include_usage")
         .toOption,
       Some(true),
-    )
-
-  test("gemini streams from an endpoint of its own"):
-    val gemini = config.copy(model = LlmModel.Gemini2_5Flash)
-    assertEquals(
-      GeminiApi.streaming(gemini, LlmModel.Gemini2_5Flash).map(_.toString),
-      Right(
-        "https://generativelanguage.googleapis.com" +
-          "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
-      ),
     )

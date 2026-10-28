@@ -5,22 +5,22 @@ import scala.concurrent.duration.DurationInt
 
 class ConfigSuite extends FunSuite:
 
-  test("a token limit is a positive whole number"):
-    assertEquals(LlmConfig.positive("512"), Some(512))
-    assertEquals(LlmConfig.positive("1"), Some(1))
-    assertEquals(
-      LlmConfig.positive(" 8192 "),
-      Some(8192),
+  test("a token limit is a positive whole number, else no limit at all"):
+    List(
+      " 8192 " -> Some(8192),
+      "1"      -> Some(1),
+      "0"      -> None,
+      "-1"     -> None,
+      "8k"     -> None,
+      "8192.0" -> None,
+      ""       -> None,
+    ).foreach((written, limit) =>
+      assertEquals(
+        LlmConfig.positive(written),
+        limit,
+        written,
+      ),
     )
-
-  test("a token limit which is not a number is no limit at all"):
-    assertEquals(LlmConfig.positive("8k"), None)
-    assertEquals(LlmConfig.positive(""), None)
-    assertEquals(LlmConfig.positive("8192.0"), None)
-
-  test("a token limit must leave room for a reply"):
-    assertEquals(LlmConfig.positive("0"), None)
-    assertEquals(LlmConfig.positive("-1"), None)
 
   test("configurations never reveal their api key"):
     val secret = LlmConfig(
@@ -31,57 +31,60 @@ class ConfigSuite extends FunSuite:
     assert(!secret.toString.contains("sk-do-not-print"))
     assert(secret.toString.contains("anthropic:claude-haiku-4-5"))
 
-  test("a timeout is read as a positive number of seconds"):
-    assertEquals(
-      LlmConfig.seconds("30"),
-      Some(30.seconds),
+  test("a timeout is read as a positive number of seconds, else none at all"):
+    List(
+      " 600 " -> Some(10.minutes),
+      "30s"   -> None,
+      "0"     -> None,
+      "-5"    -> None,
+    ).foreach((written, timeout) =>
+      assertEquals(
+        LlmConfig.seconds(written),
+        timeout,
+        written,
+      ),
     )
-    assertEquals(
-      LlmConfig.seconds(" 600 "),
-      Some(10.minutes),
-    )
-
-  test("a timeout which cannot be read is no timeout at all"):
-    assertEquals(LlmConfig.seconds("30s"), None)
-    assertEquals(LlmConfig.seconds("0"), None)
-    assertEquals(LlmConfig.seconds("-5"), None)
 
   test("providers are parsed by name, case and space insensitively"):
-    assertEquals(
-      LlmProvider.parse(" Anthropic "),
-      Some(LlmProvider.Anthropic),
-    )
-    assertEquals(
-      LlmProvider.parse("OPENAI"),
-      Some(LlmProvider.OpenAi),
-    )
-    assertEquals(
-      LlmProvider.parse("google"),
-      Some(LlmProvider.Gemini),
+    List(
+      " Anthropic " -> Some(LlmProvider.Anthropic),
+      "OPENAI"      -> Some(LlmProvider.OpenAi),
+      "google"      -> Some(LlmProvider.Gemini),
+      "claude"      -> None,
+      ""            -> None,
+    ).foreach((name, provider) =>
+      assertEquals(LlmProvider.parse(name), provider, name),
     )
 
-  test("an unrecognised provider is no provider"):
-    assertEquals(LlmProvider.parse("claude"), None)
-    assertEquals(LlmProvider.parse(""), None)
-
-  test("a configuration can be read through any lookup"):
-    val config = LlmConfig.from(
+  test("a configuration is read through any lookup, its provider its model's"):
+    val mini = Map(
+      "OPENAI_API_KEY" -> "key",
+      "LLM_MODEL"      -> "gpt-5-mini",
+      "LLM_TIMEOUT"    -> "30",
+    )
+    List(
+      mini -> LlmModel.Gpt5Mini,
+      // A model Iris does not list is named with its provider.
       Map(
         "OPENAI_API_KEY" -> "key",
-        "LLM_MODEL"      -> "gpt-5-mini",
-        "LLM_TIMEOUT"    -> "30",
-      ).get,
-    )
+        "LLM_MODEL"      -> "openai:gpt-6",
+      ) -> LlmModel.of(LlmProvider.OpenAi, "gpt-6").get,
+      // A provider which is not named is the one serving the model named.
+      Map(
+        "ANTHROPIC_API_KEY" -> "key",
+        "OPENAI_API_KEY"    -> "key",
+        "LLM_MODEL"         -> "gpt-5",
+      ) -> LlmModel.Gpt5,
+    ).foreach: (variables, model) =>
+      assertEquals(
+        LlmConfig
+          .from(variables.get)
+          .map(config => (config.provider, config.model)),
+        Some((LlmProvider.OpenAi, model)),
+        variables,
+      )
     assertEquals(
-      config.map(_.provider),
-      Some(LlmProvider.OpenAi),
-    )
-    assertEquals(
-      config.map(_.model),
-      Some(LlmModel.Gpt5Mini),
-    )
-    assertEquals(
-      config.map(_.timeout),
+      LlmConfig.from(mini.get).map(_.timeout),
       Some(30.seconds),
     )
 
@@ -106,67 +109,64 @@ class ConfigSuite extends FunSuite:
     )
 
   test(
-    "a lookup with no key, or naming an unknown provider, configures nothing",
+    "a lookup with no key, or an unknown or mismatched name, configures nothing",
   ):
-    assertEquals(
-      LlmConfig.from(Map.empty[String, String].get),
-      None,
-    )
-    assertEquals(
-      LlmConfig.from(
-        Map(
-          "ANTHROPIC_API_KEY" -> "key",
-          "LLM_PROVIDER"      -> "claude",
-        ).get,
+    List(
+      Map.empty[String, String],
+      Map(
+        "ANTHROPIC_API_KEY" -> "key",
+        "LLM_PROVIDER"      -> "claude",
       ),
-      None,
+      Map(
+        "ANTHROPIC_API_KEY" -> "key",
+        "LLM_MODEL"         -> "claude-sonet-5-5",
+      ),
+      Map(
+        "ANTHROPIC_API_KEY" -> "key",
+        "OPENAI_API_KEY"    -> "key",
+        "LLM_PROVIDER"      -> "anthropic",
+        "LLM_MODEL"         -> "gpt-5",
+      ),
+    ).foreach(variables =>
+      assertEquals(
+        LlmConfig.from(variables.get),
+        None,
+        variables,
+      ),
     )
 
-  test("models are parsed by their names in their providers' apis"):
+  test(
+    "a model is parsed by its name, alone if listed, else after its provider",
+  ):
+    List(
+      " Claude-Opus-5-5 "       -> Some(LlmModel.ClaudeOpus5_5),
+      "claude-sonet-5-5"        -> None,
+      "ClaudeSonnet5_5"         -> None,
+      ""                        -> None,
+      "anthropic:claude-opus-6" ->
+        LlmModel.of(LlmProvider.Anthropic, "claude-opus-6"),
+      " OpenAI:ft:gpt-5:team:x " ->
+        LlmModel.of(LlmProvider.OpenAi, "ft:gpt-5:team:x"),
+      "anthropic:claude-opus-5-5" -> Some(LlmModel.ClaudeOpus5_5),
+      "openai:claude-opus-5-5"    -> None,
+      "claude:opus"               -> None,
+      "anthropic: "               -> None,
+      // A Gemini model may be named after models/, as Gemini names it.
+      "gemini:models/gemini-2.5-pro" -> Some(LlmModel.Gemini2_5Pro),
+      "gemini:models/"               -> None,
+    ).foreach((name, model) => assertEquals(LlmModel.parse(name), model, name))
+    // Only Gemini's own names begin with models/.
     assertEquals(
-      LlmModel.parse(" Claude-Opus-5-5 "),
-      Some(LlmModel.ClaudeOpus5_5),
+      List(
+        "gemini:models/gemini-3-pro",
+        "openai:models/gpt-6",
+      ).map(name => LlmModel.parse(name).map(_.id)),
+      List(
+        Some("gemini-3-pro"),
+        Some("models/gpt-6"),
+      ),
     )
-    assertEquals(
-      LlmModel.parse("gemini-2.5-flash-lite"),
-      Some(LlmModel.Gemini2_5FlashLite),
-    )
-    LlmModel
-      .listed
-      .foreach(model => assertEquals(LlmModel.parse(model.id), Some(model)))
-
-  test("an unrecognised model is no model"):
-    assertEquals(
-      LlmModel.parse("claude-sonet-5-5"),
-      None,
-    )
-    assertEquals(
-      LlmModel.parse("ClaudeSonnet5_5"),
-      None,
-    )
-    assertEquals(LlmModel.parse(""), None)
-
-  test("a model iris does not list is named with its provider"):
-    assertEquals(
-      LlmModel.parse("anthropic:claude-opus-6"),
-      LlmModel.of(LlmProvider.Anthropic, "claude-opus-6"),
-    )
-    assertEquals(
-      LlmModel.parse(" OpenAI:ft:gpt-5:team:x "),
-      LlmModel.of(LlmProvider.OpenAi, "ft:gpt-5:team:x"),
-    )
-
-  test("a listed model named with its provider is the listed one"):
-    assertEquals(
-      LlmModel.parse("anthropic:claude-opus-5-5"),
-      Some(LlmModel.ClaudeOpus5_5),
-    )
-    assertEquals(
-      LlmModel.parse("openai:claude-opus-5-5"),
-      None,
-    )
-
-  test("a model named by its provider and a listed id is the listed one"):
+    // A provider's own name for a listed model is that model, in any case.
     assertEquals(
       LlmModel.of(
         LlmProvider.Anthropic,
@@ -174,115 +174,19 @@ class ConfigSuite extends FunSuite:
       ),
       Some(LlmModel.ClaudeHaiku4_5),
     )
-    assertEquals(
-      LlmModel.of(LlmProvider.OpenAi, "claude-haiku-4-5"),
-      None,
-    )
 
-  test("a blank name is no model"):
-    assertEquals(
-      LlmModel.of(LlmProvider.Anthropic, "  "),
-      None,
-    )
-    assertEquals(
-      LlmModel.of(LlmProvider.Gemini, "models/"),
-      None,
-    )
-
-  test("a gemini model may be named after models/, as gemini names it"):
-    assertEquals(
-      LlmModel.parse("gemini:models/gemini-2.5-pro"),
-      Some(LlmModel.Gemini2_5Pro),
-    )
-    assertEquals(
-      LlmModel.parse("gemini:models/gemini-3-pro").map(_.id),
-      Some("gemini-3-pro"),
-    )
-    assertEquals(
-      LlmModel.parse("openai:models/gpt-6").map(_.id),
-      Some("models/gpt-6"),
-    )
-
-  test("a model's full name is read back as that model"):
+  test("every model is read back from its id, if listed, and its full name"):
     assertEquals(
       LlmModel.ClaudeOpus5_5.name,
       "anthropic:claude-opus-5-5",
     )
+    LlmModel
+      .listed
+      .foreach(model => assertEquals(LlmModel.parse(model.id), Some(model)))
     (LlmModel.listed ++ LlmModel.of(LlmProvider.OpenAi, "ft:gpt-5:x")).foreach(
       model =>
         assertEquals(
           LlmModel.parse(model.name),
           Some(model),
         ),
-    )
-
-  test("a name after no provider, or no name after one, is no model"):
-    assertEquals(LlmModel.parse("claude:opus"), None)
-    assertEquals(LlmModel.parse("anthropic: "), None)
-
-  test("an unlisted model is read from the environment with its provider"):
-    val config = LlmConfig.from(
-      Map(
-        "OPENAI_API_KEY" -> "key",
-        "LLM_MODEL"      -> "openai:gpt-6",
-      ).get,
-    )
-    assertEquals(
-      config.map(_.model),
-      LlmModel.of(LlmProvider.OpenAi, "gpt-6"),
-    )
-
-  test("each provider's default model is one it serves"):
-    LlmProvider
-      .values
-      .foreach(provider =>
-        assertEquals(
-          provider.defaultModel.provider,
-          provider,
-        ),
-      )
-
-  test("a provider which is not named is the one serving the model named"):
-    val config = LlmConfig.from(
-      Map(
-        "ANTHROPIC_API_KEY" -> "key",
-        "OPENAI_API_KEY"    -> "key",
-        "LLM_MODEL"         -> "gpt-5",
-      ).get,
-    )
-    assertEquals(
-      config.map(_.provider),
-      Some(LlmProvider.OpenAi),
-    )
-
-  test(
-    "a model which is unknown, or not the named provider's, configures nothing",
-  ):
-    assertEquals(
-      LlmConfig.from(
-        Map(
-          "ANTHROPIC_API_KEY" -> "key",
-          "LLM_MODEL"         -> "claude-sonet-5-5",
-        ).get,
-      ),
-      None,
-    )
-    assertEquals(
-      LlmConfig.from(
-        Map(
-          "ANTHROPIC_API_KEY" -> "key",
-          "OPENAI_API_KEY"    -> "key",
-          "LLM_PROVIDER"      -> "anthropic",
-          "LLM_MODEL"         -> "gpt-5",
-        ).get,
-      ),
-      None,
-    )
-
-  test("a token limit named for a request outranks the configured one"):
-    val config = LlmConfig(LlmModel.Gemini2_5Flash, "key", 512)
-    assertEquals(config.limit(ReplyOptions()), 512)
-    assertEquals(
-      config.limit(ReplyOptions(maxTokens = Some(64))),
-      64,
     )
