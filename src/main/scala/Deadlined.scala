@@ -16,14 +16,14 @@ import sttp.client4.wrappers.DelegateBackend
   * exchange given up on is left to end by itself, as a blocked read cannot be
   * interrupted.
   */
-private[iris] final class Deadlined[F[_] : Temporal](delegate: Backend[F])
+private[iris] final class Deadlined[F[_] : Temporal]
+  (delegate: Backend[F])
   extends DelegateBackend[F, Any](delegate), Backend[F]:
 
   override def send[T]
     (request: GenericRequest[T, Any & Effect[F]])
     : F[Response[T]] = request.options.readTimeout match
-    case limit: FiniteDuration =>
-      delegate
+    case limit: FiniteDuration => delegate
         .send(request)
         .timeoutAndForget(limit)
         .adaptError { case cause: TimeoutException =>

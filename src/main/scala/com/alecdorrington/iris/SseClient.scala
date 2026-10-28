@@ -47,9 +47,11 @@ private[iris] final class SseClient[F[_] : Async]
     * waits only until a reply begins.
     */
   private def sent(request: SseRequest[F]): Stream[F, Byte] = Stream
-    .eval(request.send(backend).adaptError {
-      case _: SttpClientException.TimeoutException => timedOut
-    })
+    .eval(
+      request
+        .send(backend)
+        .adaptError { case _: SttpClientException.TimeoutException => timedOut },
+    )
     .flatMap: response =>
       response
         .body
@@ -60,7 +62,10 @@ private[iris] final class SseClient[F[_] : Async]
             ),
           identity,
         )
-    .timeoutOnPullTo(config.timeout, Stream.raiseError[F](timedOut))
+    .timeoutOnPullTo(
+      config.timeout,
+      Stream.raiseError[F](timedOut),
+    )
 
   private def timedOut: LlmError = LlmError.TimedOut(
     api.provider.displayName,
