@@ -1,7 +1,8 @@
 package com.alecdorrington.iris
 
-import cats.{~>, MonadThrow}
+import cats.{~>, Monad, MonadThrow}
 import cats.effect.{Async, Clock, Resource}
+import cats.syntax.flatMap.*
 import cats.syntax.traverse.*
 import fs2.Stream
 import sttp.capabilities.fs2.Fs2Streams
@@ -273,6 +274,46 @@ trait LlmClient[F[_]]:
 
       override def stream(chat: Chat, options: ReplyOptions): Stream[G, Delta] =
         client.stream(chat, options).translate(transform)
+
+  /**
+    * Runs a function on what each request this client makes spent, as its reply
+    * comes: once for every attempt of an [[ask]], on that attempt's reply
+    * before it is read, so an ask that fails after three attempts is metered
+    * three times, once for [[warm]], and once for each [[stream]], at its
+    * [[Delta.End]]. [[count]] costs nothing, so is never metered, nor is a
+    * request that fails with no reply, nor a stream stopped before its end,
+    * which reports no usage. The meter runs before the reply is handed on, so a
+    * meter that fails fails the request, and the meters of requests sent at
+    * once may run at once.
+    *
+    * {{{
+    * client.metered((_, cost) => cost.traverse_(spent => total.update(_ + spent)))
+    * }}}
+    *
+    * @param meter
+    *   The function, given the request's token counts and what it cost, or
+    *   `None` where Iris knows no rates for the model.
+    *
+    * @return
+    *   A client sending through this one.
+    */
+  final def metered
+    (meter: (Usage, Option[Usd]) => F[Unit])
+    (using Monad[F])
+    : LlmClient[F] = new LlmClient.Forwarding(this):
+    override protected def send(chat: Chat, options: ReplyOptions): F[Reply] =
+      super.send(chat, options).flatTap(reply => meter(reply.usage, reply.cost))
+
+    override def warm(chat: Chat, options: ReplyOptions): F[Reply] = super
+      .warm(chat, options)
+      .flatTap(reply => meter(reply.usage, reply.cost))
+
+    override def stream(chat: Chat, options: ReplyOptions): Stream[F, Delta] =
+      super
+        .stream(chat, options)
+        .evalTap:
+          case Delta.End(_, usage, cost) => meter(usage, cost)
+          case _                         => Monad[F].unit
 
 object LlmClient:
 

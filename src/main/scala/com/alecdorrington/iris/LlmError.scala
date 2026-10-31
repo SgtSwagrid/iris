@@ -99,6 +99,31 @@ enum LlmError(message: String) extends Exception(message):
     extends LlmError(s"$provider did not answer within $after")
 
   /**
+    * A request a [[Budget]] refused, as as much as its limit was spent. No
+    * request is made.
+    *
+    * @param limit
+    *   The most the budget's requests may spend together.
+    *
+    * @param spent
+    *   What they had spent when this one was refused.
+    */
+  case OverBudget(limit: Usd, spent: Usd)
+    extends LlmError(
+      s"Over budget: US$$${ spent.amount } of US$$${ limit.amount } spent",
+    )
+
+  /**
+    * A reply a [[Budget]] could not charge, as it has no cost: from a model
+    * Iris does not list, whose configuration gives no rates. The provider has
+    * charged for the request by then, and its reply is lost.
+    */
+  case Unpriced
+    extends LlmError(
+      "A budget cannot charge a reply with no cost: give the configuration rates for a model Iris does not list",
+    )
+
+  /**
     * A reply that could not be read as the answer [[LlmClient.ask]] asked for:
     * after the model was told why as often as allowed, or at once where asking
     * again could not help, as for a reply cut off at the token limit.

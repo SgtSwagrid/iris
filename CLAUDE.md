@@ -63,6 +63,20 @@ longer.
 - A set but unrecognised `LLM_PROVIDER` or `LLM_MODEL` means unconfigured (`None`), never a fall back to key inference.
 - The library does no throttling, retrying or logging of its own; those are the host's to wrap around a client.
   The one exception is `ask`, which asks again after a reply it cannot read, never after a failed request.
+  `LlmClient.metered` (the user approved it for Code Switch's spending total) runs a host's function on each
+  request's `Usage` and `cost` as its reply comes: once per attempt of an ask, before it is read, once for
+  `warm`, and once for each `stream`, at its `Delta.End` (one stopped before its end reports nothing). It is the
+  one `Forwarding` overriding every method that spends, so a method that spends added later must be metered there.
+  The one policy Iris offers is opt-in: a `Budget` (the user asked for USD limits per session), a `Ref` of what was
+  spent shared by every client it `limits`, each an `LlmClient.Forwarding` refusing requests over `metered`, which
+  charges them (never `mapK`, which wraps each pull of a stream and so can hold no check across one). It refuses a
+  request, or a stream before it starts, once the limit is spent (`LlmError.OverBudget`), then charges each reply's
+  `cost`, so requests in flight, a running stream among them, may take it past the limit (the user chose this soft
+  limit, which in-flight requests may overshoot, never reset); a reply with no cost fails (`LlmError.Unpriced`)
+  after the provider has charged for it, which is documented, not prevented (the user chose this over a flag
+  saying whether a client can price, by which `limits` would refuse up front). `count` costs nothing and is never refused. Each tool
+  round and `emit` round of an ask is a request of its own, through `send` or `stream`, so is metered and checked:
+  a `Budget` is what bounds the tool loop below, which nothing else caps. Clients themselves stay stateless.
   It runs a tool only where the host hands `ask` one with its implementation (`RunnableTool`), which the user
   chose, as handing it over says it may run: `ask` then runs any the model asks for alone (`Toolbox.runs`), tells
   it their outputs and asks it to go on (`Question.onwards`, `Verdict.Run`), not counting those rounds against
