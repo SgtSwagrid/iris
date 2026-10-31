@@ -14,15 +14,15 @@ import sttp.model.{Header, Uri}
   */
 private[iris] object OpenAiApi extends ProviderApi:
 
-  override val provider: LlmProvider = LlmProvider.OpenAi
+  override val provider: ModelProvider = ModelProvider.OpenAi
 
   override def endpoint
     (
-      config: LlmConfig,
-      options: ReplyOptions,
+      config: ModelConfig,
+      options: ModelRequest.Options,
       streamed: Boolean,
     )
-    : Either[LlmError, Uri] = JsonHttp.endpoint(
+    : Either[ModelError, Uri] = JsonHttp.endpoint(
     provider,
     config.origin,
     "v1",
@@ -30,30 +30,30 @@ private[iris] object OpenAiApi extends ProviderApi:
     "completions",
   )
 
-  override def credentials(config: LlmConfig): Seq[Header] =
+  override def credentials(config: ModelConfig): Seq[Header] =
     Seq(Header.authorization("Bearer", config.apiKey))
 
-  override val replies: Decoder[Either[LlmError, Reply]] = Decoder[Response]
-    .map(_.toReply)
+  override val wholeResponse: Decoder[Either[ModelError, ModelResponse]] =
+    Decoder[Response].map(_.toReply)
 
   /**
     * As https://developers.openai.com/api/docs/pricing gives them. GPT-5.6
     * Sol's are promotional, until November 21, 2026 at least, and OpenAI has
     * not said what they are after.
     */
-  override def rates(model: LlmModel, at: FiniteDuration): Option[Rates] =
+  override def rates(model: Model, at: FiniteDuration): Option[Rates] =
     model match
-      case LlmModel.Gpt6Astra   => Some(writing(10, 1, 50))
-      case LlmModel.Gpt6_1Sol   => Some(writing(2, 0.10, 10))
-      case LlmModel.Gpt6Sol     => Some(writing(2, 0.20, 10))
-      case LlmModel.Gpt5_6Sol   => Some(writing(4, 0.40, 20))
-      case LlmModel.Gpt6_1Terra => Some(writing(1, 0.05, 5))
-      case LlmModel.Gpt5_6Terra => Some(writing(2, 0.20, 12))
-      case LlmModel.Gpt6Luna    => Some(writing(0.10, 0.01, 0.50))
-      case LlmModel.Gpt5_6Luna  => Some(writing(0.20, 0.02, 1.20))
-      case LlmModel.Gpt5        => Some(priced(1.25, 0.125, 10))
-      case LlmModel.Gpt5Mini    => Some(priced(0.25, 0.025, 2))
-      case _                    => None
+      case Model.Gpt6Astra   => Some(writing(10, 1, 50))
+      case Model.Gpt6_1Sol   => Some(writing(2, 0.10, 10))
+      case Model.Gpt6Sol     => Some(writing(2, 0.20, 10))
+      case Model.Gpt5_6Sol   => Some(writing(4, 0.40, 20))
+      case Model.Gpt6_1Terra => Some(writing(1, 0.05, 5))
+      case Model.Gpt5_6Terra => Some(writing(2, 0.20, 12))
+      case Model.Gpt6Luna    => Some(writing(0.10, 0.01, 0.50))
+      case Model.Gpt5_6Luna  => Some(writing(0.20, 0.02, 1.20))
+      case Model.Gpt5        => Some(priced(1.25, 0.125, 10))
+      case Model.Gpt5Mini    => Some(priced(0.25, 0.025, 2))
+      case _                 => None
 
   /**
     * The rates of GPT-5.6 and later, which charge a quarter more than input for
@@ -108,7 +108,7 @@ private[iris] object OpenAiApi extends ProviderApi:
       written: Usd,
     )
     : Rates = Rates(
-    uncached = input,
+    withoutBreakpoints = input,
     cacheRead = cached,
     cacheWrite = written,
     uncachedAudio = input,
@@ -121,36 +121,35 @@ private[iris] object OpenAiApi extends ProviderApi:
     * The reply a stream's events make up, which ends with the stream, as its
     * usage comes in an event of its own after the one saying why it stopped.
     */
-  override def reply[F[_] : RaiseThrowable]
+  override def deltas[F[_] : RaiseThrowable]
     (events: Stream[F, Json])
     : Stream[F, Delta] = events
     .noneTerminate
     .zipWithScan1(Ending())((ending, event) => event.fold(ending)(ending.after))
     .flatMap:
-      case (Some(event), _) => Stream.emits(said(event).toList)
+      case (Some(event), _) => Stream.emits(textDelta(event).toList)
       case (None, ending)   =>
         Stream.fromEither[F](ending.end).flatMap(Stream.emits)
 
   /** Refuses an empty chat, and one carrying media other than pictures. */
-  override def acceptable
+  override def refuseUnsendable
     (
-      config: LlmConfig,
+      config: ModelConfig,
       chat: Chat,
-      options: ReplyOptions,
+      options: ModelRequest.Options,
     )
-    : Either[LlmError, Unit] = JsonHttp
-    .answerable(provider, chat)
-    .flatMap(_ => JsonHttp.viewable(provider, chat, media))
+    : Either[ModelError, Unit] = JsonHttp
+    .refuseUnanswerable(provider, chat)
+    .flatMap(_ => JsonHttp.refuseUnsupportedMedia(provider, chat, media))
 
   /**
     * The models whose reasoning effort goes no higher than `high`. OpenAI's
     * newer models also take `xhigh` and `max`, and an unlisted model is taken
     * to be as new.
     */
-  private val cappedAtHigh: Set[LlmModel] =
-    Set(LlmModel.Gpt5, LlmModel.Gpt5Mini)
+  private val cappedAtHigh: Set[Model] = Set(Model.Gpt5, Model.Gpt5Mini)
 
-  private def reasoning(model: LlmModel, effort: Effort): String = effort match
+  private def reasoning(model: Model, effort: Effort): String = effort match
     case Effort.Low    => "low"
     case Effort.Medium => "medium"
     case Effort.High   => "high"
@@ -158,13 +157,13 @@ private[iris] object OpenAiApi extends ProviderApi:
 
   override def body
     (
-      config: LlmConfig,
+      config: ModelConfig,
       chat: Chat,
-      options: ReplyOptions,
+      options: ModelRequest.Options,
       streamed: Boolean,
     )
     : String =
-    val messages = chat.system.map(text("system", _)).toList ++
+    val messages = chat.instructions.map(text("system", _)).toList ++
       chat.messages.flatMap(message)
     JsonHttp.body(
       "model"                 -> config.model.id.asJson,
@@ -201,36 +200,43 @@ private[iris] object OpenAiApi extends ProviderApi:
   /** Serialises a message, each tool result as a message of its own. */
   private def message(message: Message): List[Json] =
     // OpenAI caches long prefixes by itself, so breakpoints are dropped.
-    val spoken = message
-      .uncached
-      .content
-      .filterNot(_.isInstanceOf[Part.ToolResult])
+    val parts = message
+      .withoutBreakpoints
+      .parts
+      .filterNot(_.isInstanceOf[MessagePart.ToolResult])
     message.toolResults.map(result) ++
-      Option.when(spoken.nonEmpty)(said(message.role, spoken))
+      Option.when(parts.nonEmpty)(written(message.role, parts))
 
-  private def result(result: Part.ToolResult): Json = Json.obj(
+  private def result(result: MessagePart.ToolResult): Json = Json.obj(
     "role"         -> "tool".asJson,
     "tool_call_id" -> result.callId.asJson,
     "content"      -> result.output.asJson,
   )
 
-  private def said(role: Role, spoken: List[Part]): Json =
-    val calls = spoken.collect:
-      case call: Part.ToolCall => call
+  /** Serialises a message of the parts, its tool calls apart. */
+  private def written(role: Role, parts: List[MessagePart]): Json =
+    val calls = parts.collect:
+      case call: MessagePart.ToolCall => call
     JsonHttp.objectOf(
-      "role"       -> role.code.asJson,
-      "content"    -> content(spoken.filterNot(_.isInstanceOf[Part.ToolCall])),
+      "role"    -> named(role).asJson,
+      "content" ->
+        content(parts.filterNot(_.isInstanceOf[MessagePart.ToolCall])),
       "tool_calls" -> Option.when(calls.nonEmpty)(calls.map(call)).asJson,
     )
 
   /** Serialises what a message says, separated once its tools are out. */
-  private def content(spoken: List[Part]): Json =
-    val sent = Message.separated(spoken)
+  private def content(parts: List[MessagePart]): Json =
+    val sent = Message.separated(parts)
     if sent.isEmpty then Json.Null
     else JsonHttp.plain(sent).fold(sent.flatMap(part).asJson)(_.asJson)
 
+  /** A role's name in OpenAI's API. */
+  private def named(role: Role): String = role match
+    case Role.User  => "user"
+    case Role.Model => "assistant"
+
   /** Serialises a tool call, whose arguments OpenAI takes as a string. */
-  private def call(call: Part.ToolCall): Json = Json.obj(
+  private def call(call: MessagePart.ToolCall): Json = Json.obj(
     "id"       -> call.id.asJson,
     "type"     -> "function".asJson,
     "function" -> Json.obj(
@@ -244,17 +250,18 @@ private[iris] object OpenAiApi extends ProviderApi:
     "function" -> JsonHttp.declared(tool, "parameters"),
   )
 
-  private def part(part: Part): Option[Json] = part match
-    case Part.Text(text) => Some(Json.obj(
+  private def part(part: MessagePart): Option[Json] = part match
+    case MessagePart.Text(text) => Some(Json.obj(
         "type" -> "text".asJson,
         "text" -> text.asJson,
       ))
-    case Part.Media(mediaType, data) => Some(Json.obj(
+    case MessagePart.Media(mediaType, data) => Some(Json.obj(
         "type"      -> "image_url".asJson,
         "image_url" ->
           Json.obj("url" -> s"data:${ mediaType.name };base64,$data".asJson),
       ))
-    case _: Part.ToolCall | _: Part.ToolResult | Part.CacheBreakpoint => None
+    case _: MessagePart.ToolCall | _: MessagePart.ToolResult | MessagePart
+        .CacheBreakpoint => None
 
   private val stopReason: Option[String] => StopReason = StopReason.normalise(
     "stop",
@@ -262,7 +269,7 @@ private[iris] object OpenAiApi extends ProviderApi:
     toolCall = Some("tool_calls"),
   )
 
-  private def said(event: Json): Option[Delta] = event
+  private def textDelta(event: Json): Option[Delta] = event
     .hcursor
     .downField("choices")
     .downN(0)
@@ -324,7 +331,7 @@ private[iris] object OpenAiApi extends ProviderApi:
       * The tool calls and end of the reply, where it said why it stopped, or
       * why a call is malformed.
       */
-    def end: Either[LlmError, List[Delta]] = reason
+    def end: Either[ModelError, List[Delta]] = reason
       .toList
       .flatTraverse(reason =>
         calls
@@ -350,26 +357,26 @@ private[iris] object OpenAiApi extends ProviderApi:
 
   final case class ToolCall(id: String, function: FunctionCall) derives Decoder:
 
-    def toPart: Part.ToolCall = Part.ToolCall(
+    def toPart: MessagePart.ToolCall = MessagePart.ToolCall(
       id,
       function.name,
       function.parsedArguments,
     )
 
-  final case class ReplyMessage
+  final case class ResponseMessage
     (
       content: Option[String],
       toolCalls: Option[List[ToolCall]],
     )
 
-  object ReplyMessage:
+  object ResponseMessage:
 
-    given Decoder[ReplyMessage] =
-      Decoder.forProduct2("content", "tool_calls")(ReplyMessage.apply)
+    given Decoder[ResponseMessage] =
+      Decoder.forProduct2("content", "tool_calls")(ResponseMessage.apply)
 
   final case class Choice
     (
-      message: ReplyMessage,
+      message: ResponseMessage,
       finishReason: Option[String],
     )
 
@@ -449,14 +456,14 @@ private[iris] object OpenAiApi extends ProviderApi:
     )
     derives Decoder:
 
-    def toReply: Either[LlmError, Reply] = choices
+    def toReply: Either[ModelError, ModelResponse] = choices
       .headOption
-      .toRight(LlmError.Malformed(
-        LlmProvider.OpenAi.displayName,
+      .toRight(ModelError.Malformed(
+        ModelProvider.OpenAi.displayName,
         "no choices",
       ))
       .map: choice =>
-        Reply(
+        ModelResponse(
           text = choice.message.content.getOrElse(""),
           stopReason = stopReason(choice.finishReason),
           usage = usage.fold(Usage())(_.toUsage),

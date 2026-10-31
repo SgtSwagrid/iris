@@ -1,9 +1,16 @@
 package com.alecdorrington.iris
 
+import cats.Functor
+import cats.syntax.functor.*
+import cats.syntax.traverse.*
+
 /**
-  * The model's answer to a [[Chat]], as [[LlmClient.ask]] gives it, alike for
-  * every type: its value, as soon as everything in it but its streams is read,
-  * and the reply it was read from, once that reply ends.
+  * The model's response to a [[Chat]] as [[ModelClient.ask]] gives it, its
+  * value read and validated against the type's schema, alike for every type:
+  * the value, as soon as everything in it but its streams is read, and every
+  * response the ask took, once the last ends. An ask may take several, each a
+  * request of its own: asking again after a response that cannot be read, and
+  * going on after tools are run.
   *
   * @tparam F
   *   The effect type.
@@ -12,65 +19,79 @@ package com.alecdorrington.iris
   *   The type of the value.
   *
   * @param value
-  *   The value read from the last reply, or `None` where the model asked for
+  *   The value read from the last response, or `None` where the model asked for
   *   tools instead. Each `fs2.Stream` within it delivers its elements as the
   *   model writes them, each time it is read, from the first.
   *
-  * @param reply
-  *   The last reply, once it ends, with the usage of every reply asked for.
-  *   Where the reply cannot be read to its end after its value was given, it
-  *   fails as the value's streams not yet ended do: with
-  *   [[LlmError.Unreadable]] where what the model wrote cannot be read, and as
-  *   the request fails where that fails partway.
+  * @param responses
+  *   Every response the ask took, oldest first, once the last ends: the last is
+  *   the one the value was read from. Where the last cannot be read to its end
+  *   after the value was given, it fails as the value's streams not yet ended
+  *   do: with [[ModelError.UnreadableResponse]] where what the model wrote
+  *   cannot be read, and as the request fails where that fails partway.
   *
   * @param cancel
-  *   Stops reading the reply, where it is still being read once its value was
-  *   given, as it is for a type holding a stream: its streams not yet ended,
-  *   and its reply, then fail with an `IllegalStateException`. Otherwise it
-  *   does nothing, as does a cancel once the reply has ended.
+  *   Stops reading the last response, where it is still being read once the
+  *   value was given, as it is for a type holding a stream: its streams not yet
+  *   ended, and its responses, then fail with an `IllegalStateException`.
+  *   Otherwise it does nothing, as does a cancel once the response has ended.
   */
-final case class Answer[F[_], +A]
+final case class ValidatedResponse[F[_], +A]
   (
     value: Option[A],
-    reply: F[Reply],
+    responses: F[List[ModelResponse]],
     cancel: F[Unit],
-  )
+  ):
+
+  /**
+    * The token counts of every response the ask took, together.
+    *
+    * @return
+    *   An effect producing the counts, once the last response ends.
+    */
+  def usage(using Functor[F]): F[Usage] =
+    responses.map(_.foldLeft(Usage())(_ + _.usage))
+
+  /**
+    * What every response the ask took cost, together.
+    *
+    * @return
+    *   An effect producing the cost, once the last response ends, or `None`
+    *   where any response has none, as from a model Iris does not list.
+    */
+  def cost(using Functor[F]): F[Option[Usd]] =
+    responses.map(_.traverse(_.cost).map(_.foldLeft(Usd.zero)(_ + _)))
 
 /**
-  * A reply of the model's as the provider gave it, before any value is read
-  * from it: what [[LlmClient.ask]] gives of the reply its answer was read from,
-  * what `send` and `warm` give, and what [[LlmError.Unreadable]] keeps.
+  * One response of the model's, as the provider gave it, before any value is
+  * read from it: what a client's `send` and [[ModelClient.warmCache]] give,
+  * and each of the responses a [[ValidatedResponse]] or
+  * [[ModelError.UnreadableResponse]] keeps.
   *
   * @param text
-  *   The text of the reply, as the model wrote it.
+  *   The text of the response, as the model wrote it.
   *
   * @param stopReason
   *   The reason the model stopped.
   *
   * @param usage
-  *   The token counts of the reply, or of every reply an answer was asked for
-  *   in, together.
+  *   The token counts of the response.
   *
   * @param cost
-  *   What the reply cost, or every reply an answer was asked for in, together,
-  *   each priced as it came at the [[Rates]] of the configuration or else of
-  *   its model, or `None` where any has none, as for a model Iris does not
-  *   list.
+  *   What the response cost, priced as it came at the [[Rates]] of the
+  *   configuration or else of its model, or `None` where there are none, as for
+  *   a model Iris does not list.
   *
   * @param toolCalls
   *   The tools the model asks to have run before it goes on, if any.
-  *
-  * @param attempts
-  *   The number of replies an answer was asked for in, this one included.
   */
-final case class Reply
+final case class ModelResponse
   (
     text: String,
     stopReason: StopReason = StopReason.Completed,
     usage: Usage = Usage(),
     cost: Option[Usd] = None,
-    toolCalls: List[Part.ToolCall] = List.empty,
-    attempts: Int = 1,
+    toolCalls: List[MessagePart.ToolCall] = List.empty,
   )
 
 /** The reason a model stopped generating, normalised across providers. */

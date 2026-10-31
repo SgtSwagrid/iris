@@ -9,7 +9,7 @@ import scala.concurrent.duration.FiniteDuration
   * kind: cache writes as input where writing the cache costs nothing more,
   * audio as other input where it is priced alike, and thinking as the reply.
   *
-  * @param uncached
+  * @param withoutBreakpoints
   *   The rate of tokens of the request read afresh, other than audio.
   *
   * @param cacheRead
@@ -36,7 +36,7 @@ import scala.concurrent.duration.FiniteDuration
   */
 final case class Rates
   (
-    uncached: Usd,
+    withoutBreakpoints: Usd,
     cacheRead: Usd,
     cacheWrite: Usd,
     uncachedAudio: Usd,
@@ -50,7 +50,7 @@ final case class Rates
     * Prices one request's token counts, at the rates for the length of its
     * prompt. Counts summed over several requests may be priced at the wrong
     * rates, where the provider charges more for a long prompt, so each request
-    * is priced alone, as [[Reply.cost]] is.
+    * is priced alone, as [[ModelResponse.cost]] is.
     *
     * @param usage
     *   The request's token counts.
@@ -63,13 +63,13 @@ final case class Rates
       longer.cost(usage)
     case _ => Usd(
         List(
-          uncached       -> usage.uncachedTokens,
-          cacheRead      -> usage.cacheReadTokens,
-          cacheWrite     -> usage.cacheWriteTokens,
-          uncachedAudio  -> usage.uncachedAudioTokens,
-          cacheReadAudio -> usage.cacheReadAudioTokens,
-          visible        -> usage.visibleTokens,
-          thinking       -> usage.thinkingTokens,
+          withoutBreakpoints -> usage.uncachedTokens,
+          cacheRead          -> usage.cacheReadTokens,
+          cacheWrite         -> usage.cacheWriteTokens,
+          uncachedAudio      -> usage.uncachedAudioTokens,
+          cacheReadAudio     -> usage.cacheReadAudioTokens,
+          visible            -> usage.visibleTokens,
+          thinking           -> usage.thinkingTokens,
         ).map((rate, tokens) => rate.amount * BigDecimal(tokens)).sum /
           Rates.perMillion,
       )
@@ -130,6 +130,6 @@ object Rates:
     * @return
     *   The rates, or `None` for a model Iris does not list.
     */
-  def listed(model: LlmModel, at: FiniteDuration): Option[Rates] = ProviderApi
+  def listed(model: Model, at: FiniteDuration): Option[Rates] = ProviderApi
     .of(model.provider)
     .rates(model, at)

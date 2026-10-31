@@ -53,7 +53,7 @@ class RatesSuite extends FunSuite:
     )
 
   test("every model iris lists has rates, and one it does not has none"):
-    LlmModel
+    Model
       .listed
       .foreach(model =>
         assert(
@@ -62,8 +62,8 @@ class RatesSuite extends FunSuite:
         ),
       )
     assertEquals(
-      LlmModel
-        .of(LlmProvider.Gemini, "gemini-next")
+      Model
+        .of(ModelProvider.Gemini, "gemini-next")
         .flatMap(Rates.listed(_, now)),
       None,
     )
@@ -72,21 +72,21 @@ class RatesSuite extends FunSuite:
     // Anthropic charges a quarter more than input for writing its cache.
     assertEquals(
       Rates
-        .listed(LlmModel.ClaudeSonnet5_5, now)
+        .listed(Model.ClaudeSonnet5_5, now)
         .map(_.cost(Usage(1000, 10_000, 2000, 0, 0, 500, 1500))),
       Some(usd("0.028")),
     )
     // Claude Haiku 5.5 charges more for a prompt over 100,000 tokens.
     assertEquals(
       Rates
-        .listed(LlmModel.ClaudeHaiku5_5, now)
+        .listed(Model.ClaudeHaiku5_5, now)
         .map(_.cost(Usage(uncachedTokens = 100_001))),
       Some(usd("0.0500005")),
     )
     // GPT-6.1 Sol charges more for a prompt over 272K tokens.
     assertEquals(
       Rates
-        .listed(LlmModel.Gpt6_1Sol, now)
+        .listed(Model.Gpt6_1Sol, now)
         .map(_.cost(Usage(
           uncachedTokens = 300_000,
           visibleTokens = 1000,
@@ -96,7 +96,7 @@ class RatesSuite extends FunSuite:
     // Gemini 2.5 Flash charges more for audio, read afresh or from the cache.
     assertEquals(
       Rates
-        .listed(LlmModel.Gemini2_5Flash, now)
+        .listed(Model.Gemini2_5Flash, now)
         .map(_.cost(Usage(
           uncachedAudioTokens = 1_000_000,
           cacheReadAudioTokens = 1_000_000,
@@ -107,25 +107,27 @@ class RatesSuite extends FunSuite:
   test("a provider's rates change from the day it said they would"):
     def input
       (
-        model: LlmModel,
+        model: Model,
         year: Int,
         month: Int,
         day: Int,
-      ) = Rates.listed(model, ProviderApi.utc(year, month, day)).map(_.uncached)
+      ) = Rates
+      .listed(model, ProviderApi.utc(year, month, day))
+      .map(_.withoutBreakpoints)
     assertEquals(
-      input(LlmModel.Gemini4Argon, 2026, 11, 30),
+      input(Model.Gemini4Argon, 2026, 11, 30),
       Some(usd("2")),
     )
     assertEquals(
-      input(LlmModel.Gemini4Argon, 2026, 12, 1),
+      input(Model.Gemini4Argon, 2026, 12, 1),
       Some(usd("4")),
     )
     assertEquals(
-      input(LlmModel.Gemini3_8Flash, 2026, 12, 31),
+      input(Model.Gemini3_8Flash, 2026, 12, 31),
       Some(usd("0.75")),
     )
     assertEquals(
-      input(LlmModel.Gemini3_8Flash, 2027, 1, 1),
+      input(Model.Gemini3_8Flash, 2027, 1, 1),
       Some(usd("1.5")),
     )
 

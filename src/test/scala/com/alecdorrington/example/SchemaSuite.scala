@@ -1,7 +1,7 @@
 // Outside Iris's package, so that types derive as a user's would.
 package com.alecdorrington.example
 
-import com.alecdorrington.iris.{Part, Schema}
+import com.alecdorrington.iris.{MessagePart, Schema}
 import io.circe.Json
 import io.circe.parser.parse
 import munit.FunSuite
@@ -287,8 +287,8 @@ class SchemaSuite extends FunSuite:
 
   test("a value is sent to the model as its json"):
     assertEquals(
-      Part.of(Person("Ada", 36, None)),
-      Part.Text("""{"name":"Ada","age":36}"""),
+      MessagePart.of(Person("Ada", 36, None)),
+      MessagePart.Text("""{"name":"Ada","age":36}"""),
     )
 
   test("a type needs no derives clause, nor do the types of its fields"):

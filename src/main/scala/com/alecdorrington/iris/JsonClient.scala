@@ -9,63 +9,68 @@ import sttp.client4.*
 import sttp.model.Uri
 
 /**
-  * An [[LlmClient]] for any provider's JSON API, as its [[ProviderApi]] says,
+  * An [[ModelClient]] for any provider's JSON API, as its [[ProviderApi]] says,
   * streaming through an [[SseClient]] where its backend can, and otherwise
   * giving each reply whole.
   */
 private[iris] final class JsonClient[F[_] : MonadThrow : Clock]
   (
     api: ProviderApi,
-    config: LlmConfig,
+    config: ModelConfig,
     backend: Backend[F],
     streamer: Option[SseClient[F]],
   )
-  extends LlmClient[F]:
+  extends ModelClient[F]:
 
-  override protected def send(chat: Chat, options: ReplyOptions): F[Reply] =
+  override protected def send(request: ModelRequest): F[ModelResponse] =
+    val ModelRequest(chat, options) = request
     MonadThrow[F]
       .fromEither(
         api
-          .acceptable(config, chat, options)
+          .refuseUnsendable(config, chat, options)
           .flatMap(_ => api.endpoint(config, options, false)),
       )
       .flatMap(endpoint =>
-        ask[Either[LlmError, Reply]](
+        fetch[Either[ModelError, ModelResponse]](
           endpoint,
           api.body(config, chat, options),
-        )(using api.replies),
+        )(using api.wholeResponse),
       )
       .flatMap(MonadThrow[F].fromEither(_))
-      .flatMap(reply =>
+      .flatMap(response =>
         Clock[F]
           .realTime
-          .map(now => reply.copy(cost = api.cost(config, reply.usage, now))),
+          .map(now =>
+            response.copy(cost = api.cost(config, response.usage, now)),
+          ),
       )
 
-  override def count(chat: Chat, options: ReplyOptions): F[Int] = MonadThrow[F]
-    .fromEither(api.counting(config, chat, options))
+  override def countTokens(request: ModelRequest): F[Int] = MonadThrow[F]
+    .fromEither(api.counting(config, request.chat, request.options))
     .flatMap(counting =>
-      ask[Int](counting.endpoint, counting.body)(using counting.tokens),
+      fetch[Int](counting.endpoint, counting.body)(using counting.tokens),
     )
 
-  override def stream(chat: Chat, options: ReplyOptions): Stream[F, Delta] =
-    streamer.fold(super.stream(chat, options))(_.stream(chat, options))
+  override def stream(request: ModelRequest): Stream[F, Delta] = streamer.fold(
+    super.stream(request),
+  )(_.stream(request.chat, request.options))
 
-  /** Warms with the shortest reply the provider allows. */
-  override def warm(chat: Chat, options: ReplyOptions): F[Reply] = send(
-    chat.cacheable,
-    options.copy(maxTokens = Some(api.leastReply)),
-  )
+  /** Warms with the shortest response the provider allows. */
+  override def warmCache(request: ModelRequest): F[ModelResponse] =
+    send(ModelRequest(
+      request.chat.cachePrefix,
+      request.options.copy(maxTokens = Some(api.leastMaxTokens)),
+    ))
 
   /**
     * Posts JSON with the provider's credentials, reading an `A` back, failing
-    * with [[LlmError.TimedOut]] where no answer came in time.
+    * with [[ModelError.TimedOut]] where no answer came in time.
     */
-  private def ask[A : Decoder](endpoint: Uri, body: String): F[A] = api
+  private def fetch[A : Decoder](endpoint: Uri, body: String): F[A] = api
     .post(config, endpoint, body)
     .send(backend)
     .adaptError { case _: SttpClientException.TimeoutException =>
-      LlmError.TimedOut(
+      ModelError.TimedOut(
         api.provider.displayName,
         config.timeout,
       )

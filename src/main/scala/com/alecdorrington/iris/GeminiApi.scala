@@ -12,24 +12,24 @@ import sttp.model.{Header, Uri}
   */
 private[iris] object GeminiApi extends ProviderApi:
 
-  override val provider: LlmProvider = LlmProvider.Gemini
+  override val provider: ModelProvider = ModelProvider.Gemini
 
   /** Gemini streams a reply from an endpoint of its own. */
   override def endpoint
     (
-      config: LlmConfig,
-      options: ReplyOptions,
+      config: ModelConfig,
+      options: ModelRequest.Options,
       streamed: Boolean,
     )
-    : Either[LlmError, Uri] =
+    : Either[ModelError, Uri] =
     if streamed then streaming(config, config.model)
     else endpoint(config, config.model)
 
-  override def credentials(config: LlmConfig): Seq[Header] =
+  override def credentials(config: ModelConfig): Seq[Header] =
     Seq(Header("x-goog-api-key", config.apiKey))
 
-  override val replies: Decoder[Either[LlmError, Reply]] = Decoder[Response]
-    .map(_.toReply)
+  override val wholeResponse: Decoder[Either[ModelError, ModelResponse]] =
+    Decoder[Response].map(_.toReply)
 
   /**
     * As https://ai.google.dev/gemini-api/docs/pricing gives them. Google names
@@ -37,23 +37,23 @@ private[iris] object GeminiApi extends ProviderApi:
     * UTC, nor says whether cached tokens count towards Gemini 2.5 Pro's 200K,
     * so they are taken to, as [[Rates.Above]] says.
     */
-  override def rates(model: LlmModel, at: FiniteDuration): Option[Rates] =
+  override def rates(model: Model, at: FiniteDuration): Option[Rates] =
     model match
-      case LlmModel.Gemini4Argon => Some(
+      case Model.Gemini4Argon => Some(
           if at < ProviderApi.utc(2026, 12, 1) then
             priced(2.00, 0.10, 2.00, 0.10, 10.00)
           else priced(4.00, 0.20, 4.00, 0.20, 20.00),
         )
-      case LlmModel.Gemini3_8Flash | LlmModel.Gemini3_6Flash => Some(
+      case Model.Gemini3_8Flash | Model.Gemini3_6Flash => Some(
           if at < ProviderApi.utc(2027, 1, 1) then
             priced(0.75, 0.075, 0.75, 0.075, 3.75)
           else priced(1.50, 0.15, 1.50, 0.15, 7.50),
         )
-      case LlmModel.Gemini3_5FlashLite =>
+      case Model.Gemini3_5FlashLite =>
         Some(priced(0.30, 0.03, 0.30, 0.03, 2.50))
-      case LlmModel.Gemini3_1FlashLite =>
+      case Model.Gemini3_1FlashLite =>
         Some(priced(0.25, 0.025, 0.50, 0.05, 1.50))
-      case LlmModel.Gemini2_5Pro => Some(
+      case Model.Gemini2_5Pro => Some(
           priced(1.25, 0.125, 1.25, 0.125, 10.00).copy(above =
             Some(Rates.Above(
               200_000,
@@ -61,8 +61,8 @@ private[iris] object GeminiApi extends ProviderApi:
             )),
           ),
         )
-      case LlmModel.Gemini2_5Flash => Some(priced(0.30, 0.03, 1.00, 0.10, 2.50))
-      case LlmModel.Gemini2_5FlashLite =>
+      case Model.Gemini2_5Flash => Some(priced(0.30, 0.03, 1.00, 0.10, 2.50))
+      case Model.Gemini2_5FlashLite =>
         Some(priced(0.10, 0.01, 0.30, 0.03, 0.40))
       case _ => None
 
@@ -79,7 +79,7 @@ private[iris] object GeminiApi extends ProviderApi:
       output: Double,
     )
     : Rates = Rates(
-    uncached = ProviderApi.usd(input),
+    withoutBreakpoints = ProviderApi.usd(input),
     cacheRead = ProviderApi.usd(cached),
     cacheWrite = ProviderApi.usd(input),
     uncachedAudio = ProviderApi.usd(audio),
@@ -90,13 +90,13 @@ private[iris] object GeminiApi extends ProviderApi:
 
   override def counting
     (
-      config: LlmConfig,
+      config: ModelConfig,
       chat: Chat,
-      options: ReplyOptions,
+      options: ModelRequest.Options,
     )
-    : Either[LlmError, Counting] =
+    : Either[ModelError, Counting] =
     for
-      _        <- JsonHttp.answerable(provider, chat)
+      _        <- JsonHttp.refuseUnanswerable(provider, chat)
       endpoint <- calling(config, config.model, "countTokens")
     yield Counting(
       endpoint,
@@ -107,11 +107,11 @@ private[iris] object GeminiApi extends ProviderApi:
   /** The URL of a model's method, encoding the model so it cannot add a path. */
   private def calling
     (
-      config: LlmConfig,
-      model: LlmModel,
+      config: ModelConfig,
+      model: Model,
       method: String,
     )
-    : Either[LlmError, Uri] = JsonHttp.endpoint(
+    : Either[ModelError, Uri] = JsonHttp.endpoint(
     provider,
     config.origin,
     "v1beta",
@@ -119,10 +119,10 @@ private[iris] object GeminiApi extends ProviderApi:
     s"${ model.id }:$method",
   )
 
-  def endpoint(config: LlmConfig, model: LlmModel): Either[LlmError, Uri] =
+  def endpoint(config: ModelConfig, model: Model): Either[ModelError, Uri] =
     calling(config, model, "generateContent")
 
-  def streaming(config: LlmConfig, model: LlmModel): Either[LlmError, Uri] =
+  def streaming(config: ModelConfig, model: Model): Either[ModelError, Uri] =
     calling(config, model, "streamGenerateContent").map(
       _.addParam("alt", "sse"),
     )
@@ -133,7 +133,7 @@ private[iris] object GeminiApi extends ProviderApi:
     */
   def countBody(chat: Chat): String = JsonHttp.body(
     "contents" ->
-      (chat.system.map(Message(Role.User, _)).toList ++ chat.messages)
+      (chat.instructions.map(Message(Role.User, _)).toList ++ chat.messages)
         .map(content)
         .asJson,
   )
@@ -143,14 +143,17 @@ private[iris] object GeminiApi extends ProviderApi:
   /** Serialises a chat alike whether streamed. */
   override def body
     (
-      config: LlmConfig,
+      config: ModelConfig,
       chat: Chat,
-      options: ReplyOptions,
+      options: ModelRequest.Options,
       streamed: Boolean,
     )
     : String = JsonHttp.body(
     "system_instruction" ->
-      chat.system.map(text => Json.obj("parts" -> Json.arr(part(text)))).asJson,
+      chat
+        .instructions
+        .map(text => Json.obj("parts" -> Json.arr(part(text))))
+        .asJson,
     "tools"            -> tools(options),
     "contents"         -> chat.messages.map(content).asJson,
     "generationConfig" -> JsonHttp.objectOf(
@@ -175,7 +178,8 @@ private[iris] object GeminiApi extends ProviderApi:
   /** Serialises a message, dropping breakpoints, as Gemini caches by itself. */
   private def content(message: Message): Json = Json.obj(
     "role"  -> role(message.role).asJson,
-    "parts" -> Message.separated(message.uncached.content).map(part).asJson,
+    "parts" ->
+      Message.separated(message.withoutBreakpoints.parts).map(part).asJson,
   )
 
   private def part(text: String): Json = Json.obj("text" -> text.asJson)
@@ -184,29 +188,29 @@ private[iris] object GeminiApi extends ProviderApi:
     * The reply a stream's events make up. A reply that asked for a tool in any
     * event stopped for it, as Gemini gives no finish reason for that.
     */
-  override def reply[F[_] : RaiseThrowable]
+  override def deltas[F[_] : RaiseThrowable]
     (events: Stream[F, Json])
     : Stream[F, Delta] = events
     .zipWithScan1(false)(_ || asks(_))
     .flatMap((event, asked) => Stream.emits(deltas(event, asked)))
 
   private def asks(event: Json): Boolean =
-    carried(event).exists(_.functionCall.nonEmpty)
+    partsOf(event).exists(_.functionCall.nonEmpty)
 
-  private def carried(event: Json): List[ReplyPart] = event
+  private def partsOf(event: Json): List[ResponsePart] = event
     .hcursor
     .downField("candidates")
     .downN(0)
     .downField("content")
-    .get[List[ReplyPart]]("parts")
+    .get[List[ResponsePart]]("parts")
     .toOption
     .getOrElse(List.empty)
 
   private def deltas(event: Json, asked: Boolean): List[Delta] =
-    val parts = carried(event)
-    val said  = parts.flatMap(_.text).mkString
+    val parts = partsOf(event)
+    val text  = parts.flatMap(_.text).mkString
     List.concat(
-      Option.when(said.nonEmpty)(Delta.Text(said)),
+      Option.when(text.nonEmpty)(Delta.Text(text)),
       parts.flatMap(_.toolCall).map(Delta.ToolCall(_)),
       event
         .hcursor
@@ -226,30 +230,31 @@ private[iris] object GeminiApi extends ProviderApi:
     )
 
   /** Serialises the tools on offer, which Gemini takes under one entry. */
-  private def tools(options: ReplyOptions): Json = Option
+  private def tools(options: ModelRequest.Options): Json = Option
     .when(options.tools.nonEmpty)(List(Json.obj(
       "functionDeclarations" ->
         options.tools.map(JsonHttp.declared(_, "parameters")).asJson,
     )))
     .asJson
 
-  private def part(content: Part): Json = content match
-    case Part.Text(text)             => part(text)
-    case Part.Media(mediaType, data) => Json.obj(
+  private def part(content: MessagePart): Json = content match
+    case MessagePart.Text(text)             => part(text)
+    case MessagePart.Media(mediaType, data) => Json.obj(
         "inline_data" -> Json.obj(
           "mime_type" -> mediaType.name.asJson,
           "data"      -> data.asJson,
         ),
       )
-    case Part.ToolCall(id, tool, arguments, signature) => JsonHttp.objectOf(
-        "functionCall" -> JsonHttp.objectOf(
-          "id"   -> issued(id, tool).asJson,
-          "name" -> tool.asJson,
-          "args" -> arguments,
-        ),
-        "thoughtSignature" -> signature.asJson,
-      )
-    case Part.ToolResult(callId, tool, output) => Json.obj(
+    case MessagePart.ToolCall(id, tool, arguments, signature) => JsonHttp
+        .objectOf(
+          "functionCall" -> JsonHttp.objectOf(
+            "id"   -> issued(id, tool).asJson,
+            "name" -> tool.asJson,
+            "args" -> arguments,
+          ),
+          "thoughtSignature" -> signature.asJson,
+        )
+    case MessagePart.ToolResult(callId, tool, output) => Json.obj(
         "functionResponse" -> JsonHttp.objectOf(
           "id"       -> issued(callId, tool).asJson,
           "name"     -> tool.asJson,
@@ -257,7 +262,7 @@ private[iris] object GeminiApi extends ProviderApi:
         ),
       )
     // Breakpoints are taken out of a message before its parts are serialised.
-    case Part.CacheBreakpoint => Json.obj()
+    case MessagePart.CacheBreakpoint => Json.obj()
 
   /**
     * The id Gemini gave a call, where it gave one: the tool's name stands in
@@ -267,8 +272,8 @@ private[iris] object GeminiApi extends ProviderApi:
     Option.when(id != tool)(id)
 
   private def role(role: Role): String = role match
-    case Role.Assistant => "model"
-    case other          => other.code
+    case Role.User  => "user"
+    case Role.Model => "model"
 
   private val stopReason: Option[String] => StopReason =
     StopReason.normalise("STOP", "MAX_TOKENS")
@@ -291,7 +296,7 @@ private[iris] object GeminiApi extends ProviderApi:
     * if any. A signature on text is not kept, as a reply's text parts are
     * joined, and Gemini requires one back only with a call.
     */
-  final case class ReplyPart
+  final case class ResponsePart
     (
       text: Option[String],
       functionCall: Option[FunctionCall],
@@ -300,15 +305,15 @@ private[iris] object GeminiApi extends ProviderApi:
     derives Decoder:
 
     /** The call this part makes, its tool's name the id where it has none. */
-    def toolCall: Option[Part.ToolCall] = functionCall.map: call =>
-      Part.ToolCall(
+    def toolCall: Option[MessagePart.ToolCall] = functionCall.map: call =>
+      MessagePart.ToolCall(
         call.id.getOrElse(call.name),
         call.name,
         call.args.getOrElse(Json.obj()),
         thoughtSignature,
       )
 
-  final case class Content(parts: Option[List[ReplyPart]]) derives Decoder
+  final case class Content(parts: Option[List[ResponsePart]]) derives Decoder
 
   final case class Candidate
     (
@@ -319,7 +324,7 @@ private[iris] object GeminiApi extends ProviderApi:
 
   final case class PromptFeedback(blockReason: Option[String]) derives Decoder
 
-  private def parts(candidate: Candidate): List[ReplyPart] = candidate
+  private def parts(candidate: Candidate): List[ResponsePart] = candidate
     .content
     .flatMap(_.parts)
     .getOrElse(List.empty)
@@ -328,7 +333,7 @@ private[iris] object GeminiApi extends ProviderApi:
     .flatMap(_.text)
     .mkString
 
-  private def toolCalls(candidate: Candidate): List[Part.ToolCall] =
+  private def toolCalls(candidate: Candidate): List[MessagePart.ToolCall] =
     parts(candidate).flatMap(_.toolCall)
 
   /** The tokens of one kind of media, such as `AUDIO`. */
@@ -395,15 +400,15 @@ private[iris] object GeminiApi extends ProviderApi:
       * This response as a reply, failing without a candidate: a blocked prompt
       * gets `200` and none, which would pass for an empty reply.
       */
-    def toReply: Either[LlmError, Reply] = candidates
+    def toReply: Either[ModelError, ModelResponse] = candidates
       .flatMap(_.headOption)
-      .toRight(LlmError.Malformed(
-        LlmProvider.Gemini.displayName,
+      .toRight(ModelError.Malformed(
+        ModelProvider.Gemini.displayName,
         unanswered,
       ))
       .map: candidate =>
         val calls = toolCalls(candidate)
-        Reply(
+        ModelResponse(
           text = text(candidate),
           stopReason = stopped(calls.nonEmpty, candidate.finishReason),
           usage = usageMetadata.fold(Usage())(_.toUsage),

@@ -86,7 +86,7 @@ data: {"candidates":[{"content":{"parts":[{"text":"lo"}]},"finishReason":"STOP"}
 """,
     ).foreach: (api, body) =>
       assertEquals(
-        reply(body)(api.reply),
+        reply(body)(api.deltas),
         List(
           Delta.Text("Hel"),
           Delta.Text("lo"),
@@ -99,13 +99,13 @@ data: {"candidates":[{"content":{"parts":[{"text":"lo"}]},"finishReason":"STOP"}
       reply(
         """data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}
 """,
-      )(AnthropicApi.reply),
+      )(AnthropicApi.deltas),
       List(Delta.End(StopReason.MaxTokens, Usage())),
     )
     // OpenAI's usage is read where it comes with the stop reason, too.
     assertEquals(
       reply("""data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}
-""")(OpenAiApi.reply),
+""")(OpenAiApi.deltas),
       List(Delta.End(StopReason.MaxTokens, usage)),
     )
 
@@ -115,7 +115,7 @@ data: {"candidates":[{"content":{"parts":[{"text":"lo"}]},"finishReason":"STOP"}
 data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":5,"output_tokens":12,"output_tokens_details":{"thinking_tokens":10}}}
 """
     assertEquals(
-      reply(body)(AnthropicApi.reply),
+      reply(body)(AnthropicApi.deltas),
       List(Delta.End(
         StopReason.Completed,
         Usage(
@@ -130,7 +130,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input
   test("openai's stream that stops without saying why has no end"):
     assertEquals(
       reply("""data: {"choices":[{"delta":{"content":"Hel"}}],"usage":null}
-""")(OpenAiApi.reply),
+""")(OpenAiApi.deltas),
       List(Delta.Text("Hel")),
     )
 
@@ -142,7 +142,7 @@ data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"weather","arg
 data: {"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}}
 """
     assertEquals(
-      reply(late)(GeminiApi.reply),
+      reply(late)(GeminiApi.deltas),
       List(
         Delta.Text("Let me look."),
         Delta.ToolCall(weather),
@@ -156,7 +156,7 @@ data: {"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}],
       """data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"weather","args":{"city":"Zug"}}}]},"finishReason":"STOP"}]}
 """
     assertEquals(
-      reply(together)(GeminiApi.reply),
+      reply(together)(GeminiApi.deltas),
       List(
         Delta.ToolCall(weather),
         Delta.End(StopReason.ToolCall, Usage()),
@@ -168,7 +168,7 @@ data: {"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}],
       """data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"a1","name":"weather","args":{"city":"Zug"}},"thoughtSignature":"c2lnbmVk"},{"functionCall":{"id":"b2","name":"weather","args":{"city":"Zug"}}}]},"finishReason":"STOP"}]}
 """
     assertEquals(
-      reply(together)(GeminiApi.reply),
+      reply(together)(GeminiApi.deltas),
       List(
         Delta.ToolCall(weather.copy(id = "a1", signature = Some("c2lnbmVk"))),
         Delta.ToolCall(weather.copy(id = "b2")),
@@ -194,7 +194,7 @@ data: {"type":"content_block_stop","index":1}
 data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
 """
     assertEquals(
-      reply(anthropic)(AnthropicApi.reply),
+      reply(anthropic)(AnthropicApi.deltas),
       List(
         Delta.Text("Let me look."),
         Delta.ToolCall(weather),
@@ -214,7 +214,7 @@ data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
 data: [DONE]
 """
     assertEquals(
-      reply(openAi)(OpenAiApi.reply),
+      reply(openAi)(OpenAiApi.deltas),
       List(
         Delta.Text("Let me look."),
         Delta.ToolCall(weather),
@@ -235,19 +235,19 @@ data: {"type":"content_block_stop","index":0}
         .emits(cut.getBytes("UTF-8"))
         .covary[SyncIO]
         .through(Sse.events)
-        .through(AnthropicApi.reply)
+        .through(AnthropicApi.deltas)
         .compile
         .toList
         .attempt
         .unsafeRunSync(),
-      Left(LlmError.Malformed(
+      Left(ModelError.Malformed(
         "Anthropic",
         "the arguments of a call of `weather` are not JSON",
       )),
     )
 
   /** The call each provider is asked for, as it is read. */
-  private val weather = Part.ToolCall(
+  private val weather = MessagePart.ToolCall(
     "weather",
     "weather",
     Json.obj("city" -> Json.fromString("Zug")),
@@ -256,8 +256,8 @@ data: {"type":"content_block_stop","index":0}
   test("a streaming request asks to be streamed, and openai for its usage"):
     val anthropic = json(AnthropicApi.body(
       config,
-      Chat().user("Hi"),
-      ReplyOptions(),
+      Chat().userSays("Hi"),
+      ModelRequest.Options(),
       true,
     ))
     assertEquals(
@@ -266,8 +266,8 @@ data: {"type":"content_block_stop","index":0}
     )
     val openAi = json(OpenAiApi.body(
       config,
-      Chat().user("Hi"),
-      ReplyOptions(),
+      Chat().userSays("Hi"),
+      ModelRequest.Options(),
       true,
     ))
     assertEquals(

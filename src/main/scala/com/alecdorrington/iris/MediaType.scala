@@ -1,11 +1,11 @@
 package com.alecdorrington.iris
 
 /**
-  * The kind of a picture, document or other media in a [[Part.Media]], by its
-  * IANA media type. The kinds Iris lists are constants (`MediaType.Png`), so
-  * that a provider refuses one it cannot take before any request is spent
-  * finding out; any other is an [[MediaType.Other]], sent only to Gemini, which
-  * takes audio and video as well, and judges for itself.
+  * The kind of a picture, document or other media in a [[MessagePart.Media]],
+  * by its IANA media type. The kinds Iris lists are constants
+  * (`MediaType.Png`), so that a provider refuses one it cannot take before any
+  * request is spent finding out; any other is an [[MediaType.Other]], sent only
+  * to Gemini, which takes audio and video as well, and judges for itself.
   */
 sealed trait MediaType:
 

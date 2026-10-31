@@ -11,7 +11,7 @@ import scala.concurrent.duration.{DurationInt, FiniteDuration}
   * @param origin
   *   The origin of the provider's API, used unless one is configured.
   */
-enum LlmProvider
+enum ModelProvider
   (
     val displayName: String,
     val origin: String,
@@ -19,31 +19,31 @@ enum LlmProvider
 
   /** Anthropic's Messages API. */
   case Anthropic
-    extends LlmProvider(
+    extends ModelProvider(
       "Anthropic",
       "https://api.anthropic.com",
     )
 
   /** OpenAI's Chat Completions API. */
-  case OpenAi extends LlmProvider("OpenAI", "https://api.openai.com")
+  case OpenAi extends ModelProvider("OpenAI", "https://api.openai.com")
 
   /** Google's Gemini API. */
   case Gemini
-    extends LlmProvider(
+    extends ModelProvider(
       "Gemini",
       "https://generativelanguage.googleapis.com",
     )
 
   /** The model prompted when none is configured. */
-  def defaultModel: LlmModel = this match
-    case Anthropic => LlmModel.ClaudeSonnet5_5
-    case OpenAi    => LlmModel.Gpt5_6Sol
-    case Gemini    => LlmModel.Gemini3_8Flash
+  def defaultModel: Model = this match
+    case Anthropic => Model.ClaudeSonnet5_5
+    case OpenAi    => Model.Gpt5_6Sol
+    case Gemini    => Model.Gemini3_8Flash
 
-  /** The provider's name as [[LlmProvider.parse]] reads it, such as `openai`. */
-  def key: String = toString.map(_.toLower)
+  /** The provider's name as [[ModelProvider.parse]] reads it, such as `openai`. */
+  def id: String = toString.map(_.toLower)
 
-object LlmProvider:
+object ModelProvider:
 
   /**
     * Parses a provider from its name, ignoring case.
@@ -54,7 +54,7 @@ object LlmProvider:
     * @return
     *   A provider, or `None` for an unknown name.
     */
-  def parse(name: String): Option[LlmProvider] =
+  def parse(name: String): Option[ModelProvider] =
     // By character, not by the default locale's rules, by which `OPENAI` lowers
     // to `openaı` in Turkish; nor by `Locale.ROOT`'s, as JavaScript has none.
     name.trim.map(_.toLower) match
@@ -88,33 +88,33 @@ object LlmProvider:
   *   The rates replies cost, in place of those Iris lists for the model, as for
   *   a model it does not list, a proxy charging its own, or a discount.
   */
-final case class LlmConfig
+final case class ModelConfig
   (
-    model: LlmModel,
+    model: Model,
     apiKey: String,
     maxTokens: Int,
     baseUrl: Option[String] = None,
-    timeout: FiniteDuration = LlmConfig.defaultTimeout,
+    timeout: FiniteDuration = ModelConfig.defaultTimeout,
     rates: Option[Rates] = None,
   ):
 
   /** The provider whose API to use: the one serving [[model]]. */
-  def provider: LlmProvider = model.provider
+  def provider: ModelProvider = model.provider
 
-  private[iris] def limit(options: ReplyOptions): Int = options
+  private[iris] def limit(options: ModelRequest.Options): Int = options
     .maxTokens
     .getOrElse(maxTokens)
 
   /** The API origin to send to: [[baseUrl]] when set, else the provider's. */
   def origin: String = baseUrl.getOrElse(provider.origin)
 
-  override def toString: String = s"LlmConfig(${ model
+  override def toString: String = s"ModelConfig(${ model
       .name }, <redacted>, $maxTokens, $baseUrl, $timeout, $rates)"
 
-object LlmConfig:
+object ModelConfig:
 
   /** The environment variables that may hold provider API keys. */
-  val apiKeyVariables: List[String] = LlmProvider
+  val apiKeyVariables: List[String] = ModelProvider
     .values
     .toList
     .flatMap(keyVariables)
@@ -140,7 +140,7 @@ object LlmConfig:
     *     of `LLM_MODEL`, else inferred from whichever API key is set.
     *   - `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY` (or
     *     `GOOGLE_API_KEY`): the API key.
-    *   - `LLM_MODEL`: the model, as [[LlmModel.parse]] reads it, else the
+    *   - `LLM_MODEL`: the model, as [[Model.parse]] reads it, else the
     *     provider's default.
     *   - `LLM_MAX_TOKENS`: the reply's token limit, else `defaultMaxTokens`.
     *   - `LLM_BASE_URL`: the API origin, else the provider's.
@@ -156,8 +156,8 @@ object LlmConfig:
     *   number.
     */
   def fromEnv
-    (defaultMaxTokens: Int = LlmConfig.defaultMaxTokens)
-    : Option[LlmConfig] = from(env, defaultMaxTokens)
+    (defaultMaxTokens: Int = ModelConfig.defaultMaxTokens)
+    : Option[ModelConfig] = from(env, defaultMaxTokens)
 
   /**
     * Loads configuration as [[fromEnv]] does, reading each variable through the
@@ -177,22 +177,22 @@ object LlmConfig:
   def from
     (
       variable: String => Option[String],
-      defaultMaxTokens: Int = LlmConfig.defaultMaxTokens,
+      defaultMaxTokens: Int = ModelConfig.defaultMaxTokens,
     )
-    : Option[LlmConfig] =
+    : Option[ModelConfig] =
     val named = variable("LLM_MODEL")
     for
       provider <- variable("LLM_PROVIDER").fold(
-        named.fold(inferProvider(variable))(LlmModel.parse(_).map(_.provider)),
-      )(LlmProvider.parse)
+        named.fold(inferProvider(variable))(Model.parse(_).map(_.provider)),
+      )(ModelProvider.parse)
       model <- named.fold(
         Some(provider.defaultModel),
-      )(LlmModel.parse(_).filter(_.provider == provider))
+      )(Model.parse(_).filter(_.provider == provider))
       apiKey    <- apiKey(variable, provider)
       maxTokens <-
         variable("LLM_MAX_TOKENS").fold(Some(defaultMaxTokens))(positive)
       timeout <- variable("LLM_TIMEOUT").fold(Some(defaultTimeout))(seconds)
-    yield LlmConfig(
+    yield ModelConfig(
       model = model,
       apiKey = apiKey,
       maxTokens = maxTokens,
@@ -211,21 +211,22 @@ object LlmConfig:
 
   private def inferProvider
     (variable: String => Option[String])
-    : Option[LlmProvider] = LlmProvider
+    : Option[ModelProvider] = ModelProvider
     .values
     .find(apiKey(variable, _).isDefined)
 
   private def apiKey
     (
       variable: String => Option[String],
-      provider: LlmProvider,
+      provider: ModelProvider,
     )
     : Option[String] = keyVariables(provider).flatMap(variable).headOption
 
-  private def keyVariables(provider: LlmProvider): List[String] = provider match
-    case LlmProvider.Anthropic => List("ANTHROPIC_API_KEY")
-    case LlmProvider.OpenAi    => List("OPENAI_API_KEY")
-    case LlmProvider.Gemini    => List("GEMINI_API_KEY", "GOOGLE_API_KEY")
+  private def keyVariables(provider: ModelProvider): List[String] =
+    provider match
+      case ModelProvider.Anthropic => List("ANTHROPIC_API_KEY")
+      case ModelProvider.OpenAi    => List("OPENAI_API_KEY")
+      case ModelProvider.Gemini    => List("GEMINI_API_KEY", "GOOGLE_API_KEY")
 
   private def env(name: String): Option[String] = sys
     .env

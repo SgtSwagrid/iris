@@ -14,21 +14,26 @@ private[iris] type SseRequest[F[_]] = StreamRequest[
 ]
 
 /**
-  * The streaming of replies for an [[LlmClient]] whose backend can stream, for
-  * any provider, as its [[ProviderApi]] says.
+  * The streaming of replies for an [[ModelClient]] whose backend can stream,
+  * for any provider, as its [[ProviderApi]] says.
   */
 private[iris] final class SseClient[F[_] : Async]
   (
     api: ProviderApi,
-    config: LlmConfig,
+    config: ModelConfig,
     backend: StreamBackend[F, Fs2Streams[F]],
   ):
 
-  def stream(chat: Chat, options: ReplyOptions): Stream[F, Delta] = Stream
+  def stream
+    (
+      chat: Chat,
+      options: ModelRequest.Options,
+    )
+    : Stream[F, Delta] = Stream
     .eval(Async[F].fromEither(request(chat, options)))
     .flatMap(sent)
     .through(Sse.events)
-    .through(api.reply[F])
+    .through(api.deltas[F])
     .evalMap(priced)
 
   /** The reply's end with what it cost, at the rates of the moment it came. */
@@ -45,10 +50,13 @@ private[iris] final class SseClient[F[_] : Async]
     case text => Async[F].pure(text)
 
   private def request
-    (chat: Chat, options: ReplyOptions)
-    : Either[LlmError, SseRequest[F]] =
+    (
+      chat: Chat,
+      options: ModelRequest.Options,
+    )
+    : Either[ModelError, SseRequest[F]] =
     for
-      _        <- api.acceptable(config, chat, options)
+      _        <- api.refuseUnsendable(config, chat, options)
       endpoint <- api.endpoint(config, options, true)
     yield api
       .post(
@@ -76,7 +84,7 @@ private[iris] final class SseClient[F[_] : Async]
         )
 
   /**
-    * The body, failing with [[LlmError.TimedOut]] where any part of it takes
+    * The body, failing with [[ModelError.TimedOut]] where any part of it takes
     * longer than the configured timeout to arrive, as the JDK's client waits
     * only until a reply begins. A fiber of its own reads the body, and is given
     * up on rather than waited for, as a read waiting for the next part cannot
@@ -117,7 +125,7 @@ private[iris] final class SseClient[F[_] : Async]
             )),
         )
 
-  private def timedOut: LlmError = LlmError.TimedOut(
+  private def timedOut: ModelError = ModelError.TimedOut(
     api.provider.displayName,
     config.timeout,
   )

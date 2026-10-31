@@ -7,18 +7,18 @@ import scala.concurrent.duration.DurationInt
 
 class AdapterSuite extends FunSuite:
 
-  private val gemini = config.copy(model = LlmModel.Gemini2_5Flash)
+  private val gemini = config.copy(model = Model.Gemini2_5Flash)
 
-  private val options = ReplyOptions()
+  private val options = ModelRequest.Options()
 
   /** An Anthropic model Iris does not list. */
-  private val unlisted = LlmModel.of(LlmProvider.Anthropic, "claude-new").get
+  private val unlisted = Model.of(ModelProvider.Anthropic, "claude-new").get
 
   private val chat = Chat()
-    .withSystem("Be brief.")
-    .user("Hello")
-    .assistant("Hi!")
-    .user("How are you?")
+    .withInstructions("Be brief.")
+    .userSays("Hello")
+    .modelSays("Hi!")
+    .userSays("How are you?")
 
   private def roles(json: Json, field: String): Option[List[String]] = json
     .hcursor
@@ -31,7 +31,7 @@ class AdapterSuite extends FunSuite:
     val anthropic = json(AnthropicApi.body(
       config,
       chat,
-      ReplyOptions(
+      ModelRequest.Options(
         temperature = Some(0.5),
         stopSequences = List("END"),
       ),
@@ -64,7 +64,7 @@ class AdapterSuite extends FunSuite:
     val openAi = json(OpenAiApi.body(
       config,
       chat,
-      ReplyOptions(maxTokens = Some(64)),
+      ModelRequest.Options(maxTokens = Some(64)),
     ))
     assertEquals(
       openAi.hcursor.get[Int]("max_completion_tokens").toOption,
@@ -131,11 +131,12 @@ class AdapterSuite extends FunSuite:
     )
 
   test("anthropic sends sampling options only to the models that accept them"):
-    val sampled = ReplyOptions(temperature = Some(0.5), topP = Some(0.9))
+    val sampled =
+      ModelRequest.Options(temperature = Some(0.5), topP = Some(0.9))
     List(
-      LlmModel.ClaudeHaiku4_5 -> true,
-      LlmModel.ClaudeSonnet5  -> false,
-      unlisted                -> false,
+      Model.ClaudeHaiku4_5 -> true,
+      Model.ClaudeSonnet5  -> false,
+      unlisted             -> false,
     ).foreach: (model, samples) =>
       val body =
         json(AnthropicApi.body(config.copy(model = model), chat, sampled))
@@ -154,7 +155,7 @@ class AdapterSuite extends FunSuite:
       )
 
   test("an effort is sent as each provider asks for one"):
-    val thoughtful = ReplyOptions(effort = Some(Effort.Medium))
+    val thoughtful = ModelRequest.Options(effort = Some(Effort.Medium))
     assertEquals(
       json(AnthropicApi.body(config, chat, thoughtful))
         .hcursor
@@ -181,39 +182,40 @@ class AdapterSuite extends FunSuite:
     )
 
   /** The reasoning effort OpenAI is asked of a model for the most effort. */
-  private def most(model: LlmModel): Option[String] = json(OpenAiApi.body(
+  private def most(model: Model): Option[String] = json(OpenAiApi.body(
     config.copy(model = model),
     chat,
-    ReplyOptions(effort = Some(Effort.Max)),
+    ModelRequest.Options(effort = Some(Effort.Max)),
   )).hcursor.get[String]("reasoning_effort").toOption
 
   test(
     "openai is asked for its most effort, or high of a model going no higher",
   ):
-    assertEquals(most(LlmModel.Gpt6Astra), Some("max"))
+    assertEquals(most(Model.Gpt6Astra), Some("max"))
     assertEquals(
-      most(LlmModel.of(LlmProvider.OpenAi, "gpt-new").get),
+      most(Model.of(ModelProvider.OpenAi, "gpt-new").get),
       Some("max"),
     )
-    assertEquals(most(LlmModel.Gpt5), Some("high"))
+    assertEquals(most(Model.Gpt5), Some("high"))
 
-  private val picture = Part.Media(MediaType.Png, "aGVsbG8=")
+  private val picture = MessagePart.Media(MediaType.Png, "aGVsbG8=")
 
   /** Two text parts in a row, then the picture they ask about. */
-  private val looking = Chat().user(
-    Part.Text("Look."),
-    Part.Text("What is this?"),
+  private val looking = Chat().userSays(
+    MessagePart.Text("Look."),
+    MessagePart.Text("What is this?"),
     picture,
   )
 
-  private val paper = Chat().user(Part.Media(MediaType.Pdf, "JVBERi0="))
+  private val paper =
+    Chat().userSays(MessagePart.Media(MediaType.Pdf, "JVBERi0="))
 
   private val recording =
-    Chat().user(Part.Media(MediaType.of("audio/mp3").get, "SUQz"))
+    Chat().userSays(MessagePart.Media(MediaType.of("audio/mp3").get, "SUQz"))
 
-  private val named = Chat().user(
-    Part.Text("BOOK 1: notes.txt"),
-    Part.Text("Chapter one."),
+  private val named = Chat().userSays(
+    MessagePart.Text("BOOK 1: notes.txt"),
+    MessagePart.Text("Chapter one."),
   )
 
   private def said(body: Json, field: String): Option[String] = body
@@ -255,20 +257,20 @@ class AdapterSuite extends FunSuite:
   ):
     assertEquals(
       Message.separated(List(
-        Part.Text("Page 1"),
+        MessagePart.Text("Page 1"),
         picture,
-        Part.Text("Page 2"),
-        Part.CacheBreakpoint,
-        Part.Text(""),
-        Part.Text("End."),
+        MessagePart.Text("Page 2"),
+        MessagePart.CacheBreakpoint,
+        MessagePart.Text(""),
+        MessagePart.Text("End."),
       )),
       List(
-        Part.Text("Page 1"),
+        MessagePart.Text("Page 1"),
         picture,
-        Part.Text("Page 2"),
-        Part.CacheBreakpoint,
-        Part.Text(""),
-        Part.Text("\n\nEnd."),
+        MessagePart.Text("Page 2"),
+        MessagePart.CacheBreakpoint,
+        MessagePart.Text(""),
+        MessagePart.Text("\n\nEnd."),
       ),
     )
     // A message's text holds each text part as a paragraph of its own.
@@ -276,10 +278,10 @@ class AdapterSuite extends FunSuite:
       Message(
         Role.User,
         List(
-          Part.Text("Page 1"),
+          MessagePart.Text("Page 1"),
           picture,
-          Part.Text(""),
-          Part.Text("End."),
+          MessagePart.Text(""),
+          MessagePart.Text("End."),
         ),
       ).text,
       "Page 1\n\nEnd.",
@@ -288,13 +290,13 @@ class AdapterSuite extends FunSuite:
   test(
     "openai sends text around a tool call apart, once the call is taken out",
   ):
-    val call  = Part.ToolCall("1", "weather", Json.obj())
+    val call  = MessagePart.ToolCall("1", "weather", Json.obj())
     val asked = Chat()
-      .user("Hi")
-      .assistant(
-        Part.Text("Looking."),
+      .userSays("Hi")
+      .modelSays(
+        MessagePart.Text("Looking."),
         call,
-        Part.Text("Done."),
+        MessagePart.Text("Done."),
       )
     assertEquals(
       json(OpenAiApi.body(config, asked, options))
@@ -388,25 +390,25 @@ class AdapterSuite extends FunSuite:
       List(Some("document")),
     )
     assertEquals(
-      OpenAiApi.acceptable(config, paper, options),
-      Left(LlmError.Unsupported(
+      OpenAiApi.refuseUnsendable(config, paper, options),
+      Left(ModelError.Unsupported(
         "OpenAI",
         "sending application/pdf in a chat",
       )),
     )
-    assert(OpenAiApi.acceptable(config, looking, options).isRight)
+    assert(OpenAiApi.refuseUnsendable(config, looking, options).isRight)
 
   test("only gemini is sent media iris does not list, which it judges itself"):
     assertEquals(
-      AnthropicApi.acceptable(config, recording, options),
-      Left(LlmError.Unsupported(
+      AnthropicApi.refuseUnsendable(config, recording, options),
+      Left(ModelError.Unsupported(
         "Anthropic",
         "sending audio/mp3 in a chat",
       )),
     )
-    assert(AnthropicApi.acceptable(config, paper, options).isRight)
-    assert(OpenAiApi.acceptable(config, recording, options).isLeft)
-    assert(GeminiApi.acceptable(config, recording, options).isRight)
+    assert(AnthropicApi.refuseUnsendable(config, paper, options).isRight)
+    assert(OpenAiApi.refuseUnsendable(config, recording, options).isLeft)
+    assert(GeminiApi.refuseUnsendable(config, recording, options).isRight)
     assertEquals(
       parts(
         GeminiApi.body(config, recording, options),
@@ -442,7 +444,7 @@ class AdapterSuite extends FunSuite:
                     "cache_creation_input_tokens":20,
                     "cache_read_input_tokens":30,
                     "output_tokens_details":{"thinking_tokens":10}}}""",
-        Reply(
+        ModelResponse(
           "Hello!",
           StopReason.Completed,
           Usage(
@@ -462,7 +464,7 @@ class AdapterSuite extends FunSuite:
            "usage":{"prompt_tokens":40,"completion_tokens":12,
                     "prompt_tokens_details":{"cached_tokens":32},
                     "completion_tokens_details":{"reasoning_tokens":10}}}""",
-        Reply(
+        ModelResponse(
           "Hello!",
           StopReason.MaxTokens,
           Usage(
@@ -482,7 +484,7 @@ class AdapterSuite extends FunSuite:
            "usageMetadata":{"promptTokenCount":40,"candidatesTokenCount":2,
                             "cachedContentTokenCount":32,
                             "thoughtsTokenCount":10}}""",
-        Reply(
+        ModelResponse(
           "Hello!",
           StopReason.Completed,
           Usage(
@@ -528,7 +530,7 @@ class AdapterSuite extends FunSuite:
     ).foreach: (api, body, why) =>
       assertEquals(
         answer(api, body),
-        Left(LlmError.Malformed(api.provider.displayName, why)),
+        Left(ModelError.Malformed(api.provider.displayName, why)),
         why,
       )
 
@@ -557,7 +559,7 @@ class AdapterSuite extends FunSuite:
         OpenAiApi,
         """{"choices":[{"message":{"content":"Hi"},"finish_reason":"stop"}]}""",
       ),
-      Right(Reply("Hi", StopReason.Completed, Usage())),
+      Right(ModelResponse("Hi", StopReason.Completed, Usage())),
     )
 
   test("gemini's audio is counted apart, read afresh or from the cache"):
@@ -631,19 +633,19 @@ class AdapterSuite extends FunSuite:
       ),
     )
 
-  private val prefilled = Chat().user("Hello").assistant("Once upon a")
+  private val prefilled = Chat().userSays("Hello").modelSays("Once upon a")
 
   test("only a model which accepts a prefill is asked to continue one"):
     List(
-      ("haiku 4.5, prefilled", prefilled, LlmModel.ClaudeHaiku4_5, true),
-      ("sonnet 5, prefilled", prefilled, LlmModel.ClaudeSonnet5, false),
+      ("haiku 4.5, prefilled", prefilled, Model.ClaudeHaiku4_5, true),
+      ("sonnet 5, prefilled", prefilled, Model.ClaudeSonnet5, false),
       // Opus 4.6 still samples, but no longer continues a prefill.
-      ("opus 4.6, prefilled", prefilled, LlmModel.ClaudeOpus4_6, false),
+      ("opus 4.6, prefilled", prefilled, Model.ClaudeOpus4_6, false),
       ("an unlisted model, prefilled", prefilled, unlisted, false),
-      ("sonnet 5, asked by the user", chat, LlmModel.ClaudeSonnet5, true),
+      ("sonnet 5, asked by the user", chat, Model.ClaudeSonnet5, true),
     ).foreach: (row, asked, model, continues) =>
       assertEquals(
-        AnthropicApi.continuable(asked, model).isRight,
+        AnthropicApi.refusePrefill(asked, model).isRight,
         continues,
         row,
       )
@@ -653,11 +655,11 @@ class AdapterSuite extends FunSuite:
   ):
     val origin = "https://generativelanguage.googleapis.com"
     assertEquals(
-      GeminiApi.endpoint(gemini, LlmModel.Gemini2_5Flash).map(_.toString),
+      GeminiApi.endpoint(gemini, Model.Gemini2_5Flash).map(_.toString),
       Right(s"$origin/v1beta/models/gemini-2.5-flash:generateContent"),
     )
     assertEquals(
-      GeminiApi.streaming(gemini, LlmModel.Gemini2_5Flash).map(_.toString),
+      GeminiApi.streaming(gemini, Model.Gemini2_5Flash).map(_.toString),
       Right(
         s"$origin/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
       ),
@@ -666,7 +668,7 @@ class AdapterSuite extends FunSuite:
       GeminiApi
         .endpoint(
           gemini.copy(baseUrl = Some("https://proxy.test")),
-          LlmModel.Gemini2_5Flash,
+          Model.Gemini2_5Flash,
         )
         .map(_.toString),
       Right("https://proxy.test/v1beta/models/gemini-2.5-flash:generateContent"),
@@ -675,6 +677,11 @@ class AdapterSuite extends FunSuite:
   test("a model name cannot escape the path segment it names"):
     val endpoint = GeminiApi.endpoint(
       gemini,
-      LlmModel.of(LlmProvider.Gemini, "../v1/elsewhere").get,
+      Model
+        .of(
+          ModelProvider.Gemini,
+          "../v1/elsewhere",
+        )
+        .get,
     )
     assert(endpoint.exists(uri => !uri.toString.contains("/v1/elsewhere")))

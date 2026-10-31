@@ -11,7 +11,7 @@ import scala.util.matching.Regex
   * type's JSON Schema, and its reply read as JSON conforming to it, or answered
   * with why it could not be and asked again.
   */
-private[iris] object Question:
+private[iris] object WholeAsker:
 
   /** The most replies an ask asks for, unless told otherwise. */
   val attempts: Int = 3
@@ -26,20 +26,20 @@ private[iris] object Question:
     */
   def ask[F[_] : MonadThrow, A : Schema as A]
     (
-      send: Chat => F[Reply],
+      send: Chat => F[ModelResponse],
       chat: Chat,
       attempts: Int,
       tools: Toolbox[F] = Toolbox[F](Nil),
     )
-    : F[Answer[F, A]] =
+    : F[ValidatedResponse[F, A]] =
     // Sends the chat, after the replies so far, `tried` of them read.
     def attempt
       (
         chat: Chat,
-        replies: Vector[Reply],
+        replies: Vector[ModelResponse],
         tried: Int,
       )
-      : F[Answer[F, A]] = send(chat).flatMap(reply =>
+      : F[ValidatedResponse[F, A]] = send(chat).flatMap(reply =>
       verdict(
         A,
         chat,
@@ -48,9 +48,9 @@ private[iris] object Question:
         tried + 1,
         tools,
       ) match
-        case Verdict.Answered(value, whole) => Answer(
+        case Verdict.Answered(value, responses) => ValidatedResponse(
             value,
-            whole.pure[F],
+            responses.pure[F],
             MonadThrow[F].unit,
           ).pure[F]
         case Verdict.Run(calls) => tools
@@ -69,7 +69,7 @@ private[iris] object Question:
       _.raiseError,
       _ =>
         attempt(
-          opening(chat, instructions(A)),
+          opening(chat, schemaPrompt(A)),
           Vector.empty,
           0,
         ),
@@ -79,13 +79,13 @@ private[iris] object Question:
   def onwards
     (
       chat: Chat,
-      reply: Reply,
-      results: List[Part.ToolResult],
+      reply: ModelResponse,
+      results: List[MessagePart.ToolResult],
     )
-    : Chat = chat.assistant(reply).user(results*)
+    : Chat = chat.modelSays(reply).userSays(results*)
 
   /** What the model is told of the form its reply must take. */
-  def instructions(schema: Schema[?]): String =
+  def schemaPrompt(schema: Schema[?]): String =
     "Reply with JSON alone, with no other text and no code fence, " +
       s"conforming to this JSON Schema:\n${ schema.json.noSpaces }"
 
@@ -103,9 +103,9 @@ private[iris] object Question:
     * The chat to send first: instructed, unless no provider would answer it, so
     * that the provider refuses it before any request.
     */
-  def opening(chat: Chat, instructions: String): Chat = chat
+  def opening(chat: Chat, prompt: String): Chat = chat
     .unanswerable
-    .fold(instructed(chat, instructions))(_ => chat)
+    .fold(instructed(chat, prompt))(_ => chat)
 
   /**
     * What becomes of an ask once its latest reply has come, the `tried`th read
@@ -117,7 +117,7 @@ private[iris] object Question:
     (
       schema: Schema[A],
       chat: Chat,
-      replies: Vector[Reply],
+      replies: Vector[ModelResponse],
       attempts: Int,
       tried: Int,
       tools: Toolbox[?],
@@ -126,12 +126,12 @@ private[iris] object Question:
     val reply = replies.last
     if calledTools(reply) then
       if tools.runs(reply.toolCalls) then Verdict.Run(reply.toolCalls)
-      else Verdict.Answered(None, summed(replies))
+      else Verdict.Answered(None, replies.toList)
     else
       hopeless(reply) match
         case Some(fatal) => Verdict.Failed(unreadable(replies, fatal))
         case None        => read(schema, reply).leftMap(stopped(reply, _)) match
-            case Right(value) => Verdict.Answered(Some(value), summed(replies))
+            case Right(value) => Verdict.Answered(Some(value), replies.toList)
             case Left(why) if tried < attempts =>
               Verdict.Again(corrected(chat, reply, why))
             case Left(why) => Verdict.Failed(unreadable(replies, why))
@@ -139,21 +139,30 @@ private[iris] object Question:
   /** What becomes of an ask once its latest reply has come. */
   enum Verdict[+A]:
 
-    /** The value, where the model gave one, and the reply it was read from. */
-    case Answered(value: Option[A], reply: Reply)
+    /** The value, where the model gave one, and every response asked for. */
+    case Answered
+      (
+        value: Option[A],
+        responses: List[ModelResponse],
+      )
 
     /** The tools asked for, to run before asking the model to go on. */
-    case Run(calls: List[Part.ToolCall])
+    case Run(calls: List[MessagePart.ToolCall])
 
     /** Another attempt, at the chat told what was wrong. */
     case Again(chat: Chat)
 
     /** The failure, where asking again could not help. */
-    case Failed(error: LlmError)
+    case Failed(error: ModelError)
 
   /** Why the replies asked for could not be read, as the last could not. */
-  def unreadable(replies: Vector[Reply], detail: String): LlmError = LlmError
-    .Unreadable(replies.size, detail, replies.toList)
+  def unreadable
+    (
+      replies: Vector[ModelResponse],
+      detail: String,
+    )
+    : ModelError =
+    ModelError.UnreadableResponse(replies.size, detail, replies.toList)
 
   /**
     * Whether a reply asks for tools, by its calls or why it stopped, as OpenAI
@@ -161,27 +170,16 @@ private[iris] object Question:
     * where it stopped as it would for them: one cut off at the token limit may
     * be cut short, and one the provider stopped, as on a refusal, is no call.
     */
-  def calledTools(reply: Reply): Boolean =
+  def calledTools(reply: ModelResponse): Boolean =
     reply.stopReason == StopReason.ToolCall ||
     reply.toolCalls.nonEmpty &&
     (reply.stopReason == StopReason.Completed ||
     reply.stopReason == StopReason.StopSequence)
 
-  /**
-    * The last reply, counting every attempt: its usage is theirs together, and
-    * its cost too, where each has one.
-    */
-  def summed(replies: Vector[Reply]): Reply = replies
-    .last
-    .copy(
-      usage = replies.map(_.usage).reduce(_ + _),
-      cost = replies.traverse(_.cost).map(_.reduce(_ + _)),
-      attempts = replies.size,
-    )
-
   /** The answer a reply holds, or why it holds none. */
-  private def read[A](schema: Schema[A], reply: Reply): Either[String, A] =
-    parsed(reply.text).flatMap(decoded(schema, _))
+  private def read[A]
+    (schema: Schema[A], reply: ModelResponse)
+    : Either[String, A] = parsed(reply.text).flatMap(decoded(schema, _))
 
   /**
     * Why no reading of a reply could be trusted, nor asking again help, where
@@ -190,7 +188,7 @@ private[iris] object Question:
     * said nothing. A reply ended by a stop sequence is read, and if it cannot
     * be, asked for again, told so, as only Anthropic reports one.
     */
-  def hopeless(reply: Reply): Option[String] = reply.stopReason match
+  def hopeless(reply: ModelResponse): Option[String] = reply.stopReason match
     case StopReason.MaxTokens =>
       Some("It was cut off at the token limit before it was complete.")
     case StopReason.Other(reason)     => Some(s"It stopped, as `$reason`.")
@@ -198,28 +196,34 @@ private[iris] object Question:
     case _                            => None
 
   /** Why a reply could not be read, said to have ended at a stop sequence. */
-  private def stopped(reply: Reply, why: String): String =
+  private def stopped(reply: ModelResponse, why: String): String =
     if reply.stopReason == StopReason.StopSequence then
       s"It stopped at a stop sequence. $why"
     else why
 
   /**
-    * Closes the user's last message with the instructions, or else, after the
-    * assistant's, adds them in a message of their own, so that the model
-    * answers afresh. A cached prefix is sent as it was.
+    * Closes the user's last message with the prompt, or else, after the
+    * model's, adds it in a message of its own, so that the model answers
+    * afresh. A cached prefix is sent as it was.
     */
-  private def instructed(chat: Chat, instructions: String): Chat =
+  private def instructed(chat: Chat, prompt: String): Chat =
     chat.messages.lastOption.filter(_.role == Role.User) match
       case Some(last) => chat.copy(messages =
           chat.messages.init :+
-            last.copy(content = last.content :+ Part.Text(instructions)),
+            last.copy(parts = last.parts :+ MessagePart.Text(prompt)),
         )
-      case None => chat.user(instructions)
+      case None => chat.userSays(prompt)
 
   /** The chat continued with a reply that said something, and why it failed. */
-  private def corrected(chat: Chat, reply: Reply, why: String): Chat = chat
-    .assistant(reply.text)
-    .user(s"That reply could not be read:\n$why\n\nReply again as asked.")
+  private def corrected
+    (
+      chat: Chat,
+      reply: ModelResponse,
+      why: String,
+    )
+    : Chat = chat
+    .modelSays(reply.text)
+    .userSays(s"That reply could not be read:\n$why\n\nReply again as asked.")
 
   /**
     * The JSON of a reply: the whole reply, else what its last code fence holds,

@@ -16,4 +16,4 @@ class BrowserSuite extends FunSuite:
     )
 
   test("there is no environment to configure a client from"):
-    assertEquals(LlmConfig.fromEnv(), None)
+    assertEquals(ModelConfig.fromEnv(), None)

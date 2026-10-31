@@ -10,13 +10,13 @@ import io.circe.Json
 /**
   * The asking of an answer given as its reply unfolds: as soon as all of it but
   * its streams is read, each stream then fed as its elements are. Until then,
-  * it is asked as [[Question]] asks, and asked again where its reply cannot be
-  * read; afterwards, a reply that cannot be read to its end fails the streams
-  * not yet ended, and the answer's reply. Where tools are run and the answer is
-  * itself a stream, its elements are given through [[Emit]] instead, one call
-  * of it each, so that the model may call the tools between them.
+  * it is asked as [[WholeAsker]] asks, and asked again where its reply cannot
+  * be read; afterwards, a reply that cannot be read to its end fails the
+  * streams not yet ended, and the answer's reply. Where tools are run and the
+  * answer is itself a stream, its elements are given through [[Emit]] instead,
+  * one call of it each, so that the model may call the tools between them.
   */
-private[iris] object Unfolding:
+private[iris] object StreamingAsker:
 
   /**
     * Asks the model through a client's `stream` until its answer can be given,
@@ -25,24 +25,27 @@ private[iris] object Unfolding:
     */
   def ask[F[_] : Async, A : Schema as A]
     (
-      stream: (Chat, ReplyOptions) => Stream[F, Delta],
+      stream: (Chat, ModelRequest.Options) => Stream[F, Delta],
       chat: Chat,
-      options: ReplyOptions,
+      options: ModelRequest.Options,
       attempts: Int,
       tools: Toolbox[F],
     )
-    : F[Answer[F, A]] =
+    : F[ValidatedResponse[F, A]] =
     val emitting = Emit.element(A).filter(_ => tools.tools.nonEmpty)
     val base     = tools.offered(options)
     val offered  = emitting.fold(base)(element =>
       base.copy(tools = base.tools :+ Emit.tool(element)),
     )
-    (Question.counted(attempts) *> Emit.unclaimed(emitting, options, offered))
+    (WholeAsker.counted(attempts) *> Emit.unclaimed(emitting, options, offered))
       .liftTo[F] *>
       (
         Ref.of[F, Map[Int, SignallingRef[F, Feed]]](Map.empty),
         Deferred[F, Either[Throwable, Option[A]]],
-        Deferred[F, Either[Throwable, Reply]],
+        Deferred[
+          F,
+          Either[Throwable, List[ModelResponse]],
+        ],
       ).mapN(Asking(
           stream(_, offered),
           A,
@@ -57,17 +60,17 @@ private[iris] object Unfolding:
           // Started and watched at once, so that no cancel falls between.
           Async[F].uncancelable(poll =>
             asking
-              .read(Question.opening(
+              .read(WholeAsker.opening(
                 chat,
-                emitting.fold(Question.instructions(A))(_ => Emit.instructions),
+                emitting.fold(WholeAsker.schemaPrompt(A))(_ => Emit.prompt),
               ))
               .start
               .flatMap(reading =>
                 poll(asking.value.get.rethrow)
                   .onCancel(reading.cancel)
-                  .map(Answer(
+                  .map(ValidatedResponse(
                     _,
-                    asking.reply.get.rethrow,
+                    asking.responses.get.rethrow,
                     reading.cancel,
                   )),
               ),
@@ -100,14 +103,14 @@ private[iris] object Unfolding:
   private final case class Round
     (
       text: String = "",
-      calls: Vector[Part.ToolCall] = Vector.empty,
+      calls: Vector[MessagePart.ToolCall] = Vector.empty,
       told: Vector[Option[String]] = Vector.empty,
       refused: Boolean = false,
     ):
 
     def called
       (
-        call: Part.ToolCall,
+        call: MessagePart.ToolCall,
         told: Option[String] = None,
       )
       : Round = copy(
@@ -116,7 +119,7 @@ private[iris] object Unfolding:
     )
 
     /** The calls of tools to run. */
-    def others: List[Part.ToolCall] = calls
+    def others: List[MessagePart.ToolCall] = calls
       .zip(told)
       .collect { case (call, None) => call }
       .toList
@@ -144,7 +147,10 @@ private[iris] object Unfolding:
       emitting: Option[Schema[?]],
       feeds: Ref[F, Map[Int, SignallingRef[F, Feed]]],
       val value: Deferred[F, Either[Throwable, Option[A]]],
-      val reply: Deferred[F, Either[Throwable, Reply]],
+      val responses: Deferred[
+        F,
+        Either[Throwable, List[ModelResponse]],
+      ],
     ):
 
     /**
@@ -164,14 +170,14 @@ private[iris] object Unfolding:
     private def attempt
       (
         chat: Chat,
-        replies: Vector[Reply],
+        replies: Vector[ModelResponse],
         tried: Int,
       )
       : F[Unit] = Async[F]
       .delay(Unfinished(schema, live))
       .flatMap(unfinished =>
         stream(chat)
-          .evalMapAccumulate(Vector.empty[Part.ToolCall]):
+          .evalMapAccumulate(Vector.empty[MessagePart.ToolCall]):
             case (calls, Delta.Text(text)) => Async[F]
                 .delay(unfinished.feed(text))
                 .flatMap(_.traverse_(performed(unfinished, replies)))
@@ -185,7 +191,7 @@ private[iris] object Unfolding:
             ended(
               unfinished,
               chat,
-              replies :+ Reply(
+              replies :+ ModelResponse(
                 text = unfinished.text,
                 stopReason = ending.fold(StopReason.Unknown)(_._2.stopReason),
                 usage = ending.fold(Usage())(_._2.usage),
@@ -202,7 +208,7 @@ private[iris] object Unfolding:
     private def performed
       (
         unfinished: Unfinished,
-        replies: Vector[Reply],
+        replies: Vector[ModelResponse],
       )
       (event: Unfinished.Event)
       : F[Unit] = event match
@@ -212,9 +218,9 @@ private[iris] object Unfolding:
         feeds.get.flatMap(_(stream).update(_.fed(read)))
       case Unfinished.Event.Ended(stream) =>
         feeds.get.flatMap(_(stream).update(_.ended(Right(()))))
-      case Unfinished.Event.Failed(detail) => Question
+      case Unfinished.Event.Failed(detail) => WholeAsker
           .unreadable(
-            replies :+ Reply(unfinished.text, StopReason.Unknown),
+            replies :+ ModelResponse(unfinished.text, StopReason.Unknown),
             detail,
           )
           .raiseError
@@ -228,7 +234,7 @@ private[iris] object Unfolding:
       (
         unfinished: Unfinished,
         chat: Chat,
-        replies: Vector[Reply],
+        replies: Vector[ModelResponse],
         said: Boolean,
         tried: Int,
       )
@@ -236,16 +242,16 @@ private[iris] object Unfolding:
       .tryGet
       .flatMap:
         case _ if !said =>
-          Question
+          WholeAsker
             .unreadable(
               replies,
               "Its stream ended before it said it was over.",
             )
             .raiseError
         case Some(_) => fault(replies, unfinished.whole) match
-            case None => reply.complete(Right(Question.summed(replies))).void
-            case Some(why) => Question.unreadable(replies, why).raiseError
-        case None => Question.verdict(
+            case None      => responses.complete(Right(replies.toList)).void
+            case Some(why) => WholeAsker.unreadable(replies, why).raiseError
+        case None => WholeAsker.verdict(
             schema,
             chat,
             replies,
@@ -253,35 +259,41 @@ private[iris] object Unfolding:
             tried + 1,
             tools,
           ) match
-            case Question.Verdict.Answered(read, whole) =>
-              value.complete(Right(read)) *> reply.complete(Right(whole)).void
-            case Question.Verdict.Run(calls) => tools
+            case WholeAsker.Verdict.Answered(read, whole) =>
+              value.complete(Right(read)) *>
+                responses.complete(Right(whole)).void
+            case WholeAsker.Verdict.Run(calls) => tools
                 .ran(calls)
                 .flatMap(results =>
                   attempt(
-                    Question.onwards(chat, replies.last, results),
+                    WholeAsker.onwards(chat, replies.last, results),
                     replies,
                     tried,
                   ),
                 )
-            case Question.Verdict.Again(next) =>
+            case WholeAsker.Verdict.Again(next) =>
               attempt(next, replies, tried + 1)
-            case Question.Verdict.Failed(error) => error.raiseError
+            case WholeAsker.Verdict.Failed(error) => error.raiseError
 
     /**
       * Why the reply an answer was given from cannot end it, where it cannot,
-      * as [[Question.verdict]] would say of it whole: it asked for a tool, as
+      * as [[WholeAsker.verdict]] would say of it whole: it asked for a tool, as
       * no answer may once given, or is cut off, stopped or empty, or its JSON
       * did not end.
       */
-    private def fault(replies: Vector[Reply], whole: Boolean): Option[String] =
+    private def fault
+      (
+        replies: Vector[ModelResponse],
+        whole: Boolean,
+      )
+      : Option[String] =
       val last = replies.last
       Option
-        .when(Question.calledTools(last))(
+        .when(WholeAsker.calledTools(last))(
           if whole then "It asked for a tool once its answer was given."
           else "It asked for a tool partway through its answer.",
         )
-        .orElse(Question.hopeless(last))
+        .orElse(WholeAsker.hopeless(last))
         .orElse(Option.unless(whole)("It ended before its JSON did."))
 
     /**
@@ -294,7 +306,7 @@ private[iris] object Unfolding:
     private def emitted
       (
         chat: Chat,
-        replies: Vector[Reply],
+        replies: Vector[ModelResponse],
         progress: Progress,
         element: Schema[?],
       )
@@ -335,7 +347,7 @@ private[iris] object Unfolding:
       .compile
       .last
       .flatMap:
-        case None => Question
+        case None => WholeAsker
             .unreadable(
               replies,
               "Its stream ended before it said it was over.",
@@ -343,7 +355,7 @@ private[iris] object Unfolding:
             .raiseError
         case Some(((round, progress), end)) => afterwards(
             chat,
-            replies :+ Reply(
+            replies :+ ModelResponse(
               round.text,
               end.stopReason,
               end.usage,
@@ -363,7 +375,7 @@ private[iris] object Unfolding:
     private def afterwards
       (
         chat: Chat,
-        replies: Vector[Reply],
+        replies: Vector[ModelResponse],
         round: Round,
         progress: Progress,
         element: Schema[?],
@@ -385,17 +397,17 @@ private[iris] object Unfolding:
             .toList
             .traverse:
               case (call, Some(said)) =>
-                Part.ToolResult(call.id, call.tool, said).pure[F]
+                MessagePart.ToolResult(call.id, call.tool, said).pure[F]
               case (call, None) => tools.run(call)
             .flatMap(results =>
               emitted(
-                Question.onwards(chat, replies.last, results),
+                WholeAsker.onwards(chat, replies.last, results),
                 replies,
                 progress,
                 element,
               ),
             ),
-      )(why => Question.unreadable(replies, why).raiseError)
+      )(why => WholeAsker.unreadable(replies, why).raiseError)
 
     /**
       * Ends an answer given through [[Emit]] once the model asks for nothing
@@ -406,14 +418,14 @@ private[iris] object Unfolding:
     private def whole
       (
         chat: Chat,
-        replies: Vector[Reply],
+        replies: Vector[ModelResponse],
         progress: Progress,
         element: Schema[?],
       )
       : F[Unit] =
-      if progress.fed > 0 then finished(Nil, Question.summed(replies))
+      if progress.fed > 0 then finished(Nil, replies.toList)
       else
-        Question.verdict(
+        WholeAsker.verdict(
           Schema.listOf(element.asInstanceOf[Schema[Any]]),
           chat,
           replies,
@@ -421,29 +433,33 @@ private[iris] object Unfolding:
           progress.tried + 1,
           tools,
         ) match
-          case Question.Verdict.Answered(read, whole) =>
+          case WholeAsker.Verdict.Answered(read, whole) =>
             finished(read.getOrElse(Nil), whole)
-          case Question.Verdict.Run(_) =>
-            finished(Nil, Question.summed(replies))
-          case Question.Verdict.Again(next) => emitted(
+          case WholeAsker.Verdict.Run(_)      => finished(Nil, replies.toList)
+          case WholeAsker.Verdict.Again(next) => emitted(
               next,
               replies,
               progress.copy(tried = progress.tried + 1),
               element,
             )
-          case Question.Verdict.Failed(error) => error.raiseError
+          case WholeAsker.Verdict.Failed(error) => error.raiseError
 
     /** Ends an [[Emit]] stream, after any last elements, and its reply. */
-    private def finished(elements: List[Any], whole: Reply): F[Unit] = feeds
+    private def finished
+      (
+        elements: List[Any],
+        whole: List[ModelResponse],
+      )
+      : F[Unit] = feeds
       .get
       .flatMap(
         _(Emit.stream).update(elements.foldLeft(_)(_.fed(_)).ended(Right(()))),
-      ) *> reply.complete(Right(whole)).void
+      ) *> responses.complete(Right(whole)).void
 
     /** The answer an [[Emit]] stream is: its stream, stood in for. */
-    private lazy val standIn: Either[LlmError, Any] = Unfinished
+    private lazy val standIn: Either[ModelError, Any] = Unfinished
       .standIn(schema, live(Emit.stream))
-      .leftMap(why => LlmError.Malformed("Iris", why))
+      .leftMap(why => ModelError.Malformed("Iris", why))
 
     private def opened(stream: Int): F[Unit] = SignallingRef
       .of[F, Feed](Feed())
@@ -456,7 +472,7 @@ private[iris] object Unfolding:
 
     /** Fails whatever is still to be read of the answer. */
     private def failed(error: Throwable): F[Unit] =
-      value.complete(Left(error)) *> reply.complete(Left(error)) *>
+      value.complete(Left(error)) *> responses.complete(Left(error)) *>
         feeds
           .get
           .flatMap(_.values.toList.traverse_(_.update(_.ended(Left(error)))))
@@ -506,7 +522,7 @@ private[iris] object Emit:
     "Not read, as an element before it could not be: emit again from that one."
 
   /** What the model is told of the form its answer must take. */
-  val instructions: String =
+  val prompt: String =
     s"Give your answer only through the `$name` tool, one call per element, in " +
       "order, writing no other text. Emit each element as soon as you can, " +
       "calling any other tool only when the next element needs it. You may " +
@@ -526,8 +542,8 @@ private[iris] object Emit:
   def unclaimed
     (
       emitting: Option[Schema[?]],
-      options: ReplyOptions,
-      offered: ReplyOptions,
+      options: ModelRequest.Options,
+      offered: ModelRequest.Options,
     )
     : Either[IllegalArgumentException, Unit] =
     if emitting.isEmpty then Right(())
@@ -567,13 +583,18 @@ private[iris] object Emit:
     )
 
   /** The element a call of it gives, or why it gives none. */
-  def read(element: Schema[?], call: Part.ToolCall): Either[String, Any] = call
+  def read
+    (
+      element: Schema[?],
+      call: MessagePart.ToolCall,
+    )
+    : Either[String, Any] = call
     .arguments
     .hcursor
     .downField("element")
     .focus
     .toRight("It gave no `element`.")
-    .flatMap(Question.decoded(element, _))
+    .flatMap(WholeAsker.decoded(element, _))
 
   /**
     * Why a reply of an answer given through it cannot go on, where it cannot:
@@ -583,8 +604,8 @@ private[iris] object Emit:
     */
   def fault
     (
-      reply: Reply,
-      others: List[Part.ToolCall],
+      reply: ModelResponse,
+      others: List[MessagePart.ToolCall],
       tools: Toolbox[?],
       wrong: Int,
       attempts: Int,
