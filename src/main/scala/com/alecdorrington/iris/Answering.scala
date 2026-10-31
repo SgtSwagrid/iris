@@ -1,9 +1,9 @@
 package com.alecdorrington.iris
 
 /**
-  * An answer handed over by [[LlmStreamer.ask]] while its reply is still being
-  * written: its value, as soon as everything in it but its streams is read, and
-  * the whole answer, once the reply ends.
+  * An answer handed over by [[LlmClient.askStreamed]] while its reply is still
+  * being written: its value, as soon as everything in it but its streams is
+  * read, and the whole answer, once the reply ends.
   *
   * @tparam F
   *   The effect type.

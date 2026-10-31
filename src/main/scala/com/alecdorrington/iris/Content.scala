@@ -23,7 +23,9 @@ import scala.util.NotGiven
   * given Content[Scan] = scan => Part.Media("image/png", scan.base64)
   * }}}
   *
-  * No other value can be said.
+  * No other value can be said, and one holding an fs2 `Stream` has a schema but
+  * cannot be: saying it throws, as its stream would have to be run. Say a list
+  * of the stream's elements instead.
   *
   * @tparam A
   *   The type of the value.

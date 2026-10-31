@@ -1,7 +1,7 @@
 package com.alecdorrington.iris
 
 /**
-  * A piece of a reply arriving over an [[LlmStreamer]]: a run of [[Text]]
+  * A piece of a reply arriving through [[LlmClient.stream]]: a run of [[Text]]
   * followed by one [[End]].
   */
 enum Delta:

@@ -132,7 +132,7 @@ name, as `{"Circle":{"radius":1.5}}`, as an `Either` holds its value under `Left
 `Int | String`, holds its value under the name of its alternative, as `{"Int":1}`. A value is written as the
 alternative its class tells, so `List[Int] | List[String]` has none. A literal type is its value, and a union
 of literal types alone, as `"low" | "high"`, one of them. A tuple is an array of its elements, and an
-fs2 `Stream` an array of its values, which a streamer delivers as they are written (see
+fs2 `Stream` an array of its values, which `askStreamed` delivers as they are written (see
 [Streaming](#streaming)). A recursive type, such as a tree, refers to itself by name, each type told
 apart by its full name and type arguments. Any other type converts to and from one that has a schema, and
 may refuse what it is given, as the model is then told. Say what it keeps to with `described`, so that the
@@ -183,6 +183,9 @@ client.ask[Review](Chat.of(essay).withSystem("Review the essay you are given."))
 client.ask[Review](Chat.of("Review this draft.", draft, Part.CacheBreakpoint, "Be brief.")) // draft: Draft
 client.ask[Review](chat.assistant(review).user("Now make it kinder."))
 ```
+
+A value holding an fs2 `Stream`, as one `askStreamed` gave, has a schema but cannot be said, as its stream
+would have to be run: saying it throws. Say a list of the stream's elements instead.
 
 A type of your own is said as a given `Content` of its own says it, ahead of any `Schema` or `Encoder`, as a
 picture may be:
@@ -256,15 +259,15 @@ dropped or sent as something it is not.
 
 ### Streaming
 
-Where a reader is waiting, [`LlmStreamer`](src/main/scala/com/alecdorrington/iris/LlmStreamer.scala) delivers the reply
-as it is written. It is a capability apart from `LlmClient`, because it needs a backend which
-can stream.
+Where a reader is waiting, a client delivers the reply as it is written, with `stream`. A client
+made by `resource` or `fromEnv` can always stream; one made over a backend of your own streams where
+that backend is an sttp `StreamBackend` for fs2, and otherwise fails with `LlmError.Unsupported`.
 
 ```scala
-import com.alecdorrington.iris.{Delta, LlmStreamer}
+import com.alecdorrington.iris.{Delta, LlmClient}
 
-LlmStreamer.fromEnv[IO].use {
-  case Some(llm) => llm.stream(Chat.of("Tell me a story.")).evalMap {
+LlmClient.fromEnv[IO].use {
+  case Some(client) => client.stream(Chat.of("Tell me a story.")).evalMap {
     case Delta.Text(text)      => IO.print(text)
     case Delta.End(reason, _)  => IO.println(s"\n($reason)")
   }.compile.drain
@@ -273,24 +276,22 @@ LlmStreamer.fromEnv[IO].use {
 ```
 
 Nothing is sent until the stream is run, and a failure reaches it as an `LlmError` as it
-would anywhere else. `Delta.End` carries the token counts where the provider reports them
-as it ends; Anthropic counts the input at the start instead, so `ask` remains the way to have
-both halves together.
+would anywhere else. `Delta.End` carries the reply's token counts.
 
-A streamer asks too, for any type, as a client does, but hands the answer over while the model is
+`askStreamed` asks for any type, as `ask` does, but hands the answer over while the model is
 still writing it: as soon as everything in it but its streams is read. Any
 [fs2 `Stream`](https://fs2.io) within the type, other than within a list or map, then delivers each
 of its elements as soon as the model has written it whole, which suits showing a long answer a piece
-at a time:
+at a time. Only streams are ever partial: every other value is read whole before it is handed over.
 
 ```scala
-import com.alecdorrington.iris.{Answering, LlmStreamer}
+import com.alecdorrington.iris.Answering
 import fs2.Stream
 
 case class Word(text: String, translation: String)
 case class Page(title: String, words: Stream[IO, Word])
 
-streamer.ask[Page](Chat.of(s"Translate: $text")).use { answering =>
+client.askStreamed[Page](Chat.of(s"Translate: $text")).use { answering =>
   answering.value.traverse_(page => page.words.evalMap(show).compile.drain) *>
     answering.answer.map(_.usage)
 }
@@ -443,6 +444,12 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
 - `Chat.of`, a chat's `user` and `assistant` messages and `Message` take values of any kinds together, so
   `chat.user(Part.of("Review this."), Part.of(draft))` is now `chat.user("Review this.", draft)`. A spliced
   list must be of parts: where you spliced other values, write `chat.user(values.map(Part.of)*)`.
+- `LlmStreamer` is gone, as every client streams: `LlmStreamer.resource`, `fromEnv` and `apply` are
+  `LlmClient.resource`, `fromEnv` and `apply`, and `streamer.stream(chat)` is `client.stream(chat)`.
+  `LlmClient(config, backend)` over an sttp `StreamBackend` for fs2 streams too; over any other backend,
+  `stream` and `askStreamed` fail with `LlmError.Unsupported`.
+- A class implementing `LlmClient` itself, rather than through `LlmClient.Forwarding`, implements
+  `stream` too, and a wrapper that sees every request overrides it as it does `send`.
 
 ### Upgrading from 0.3
 
@@ -510,7 +517,7 @@ as in `LlmConfig.fromEnv(defaultMaxTokens = 16_000)` or `LlmConfig.from(lookup, 
 
 ## 🌐 In the browser
 
-In JavaScript, `LlmClient.resource` and `LlmStreamer.resource` send requests through the
+In JavaScript, `LlmClient.resource` sends requests through the
 [Fetch API](https://developer.mozilla.org/docs/Web/API/Fetch_API), and everything else is as on the JVM.
 There is no environment to read, so `fromEnv` yields `None`: build an `LlmConfig` yourself, or read
 one with `LlmConfig.from` from wherever your page keeps its settings.

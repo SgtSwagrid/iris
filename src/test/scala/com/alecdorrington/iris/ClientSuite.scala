@@ -51,6 +51,15 @@ class ClientSuite extends FunSuite:
       Left(LlmError.TimedOut("Anthropic", config.timeout)),
     )
 
+  test("a client over a backend that cannot stream says so when streaming"):
+    assertEquals(
+      client("{}").stream(prompt).compile.toList.attempt.unsafeRunSync(),
+      Left(LlmError.Unsupported(
+        "Anthropic",
+        "streaming, through a backend that cannot stream",
+      )),
+    )
+
   test("an unsuccessful response is an error carrying its status and delay"):
     List(
       Seq(Header("Retry-After", "30")) -> Some(30.seconds),

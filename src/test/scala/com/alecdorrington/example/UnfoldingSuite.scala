@@ -64,14 +64,21 @@ class UnfoldingSuite extends FunSuite:
   private def part(text: String, size: Int): Stream[IO, Delta] =
     Stream.emits(text.grouped(size).map(Delta.Text(_)).toList)
 
-  /** A streamer giving each reply in turn, keeping each chat it was sent. */
+  /** A client streaming each reply in turn, keeping each chat it was sent. */
   private def streamer
     (replies: Stream[IO, Delta]*)
-    : IO[(LlmStreamer[IO], IO[List[Chat]])] = (
+    : IO[(LlmClient[IO], IO[List[Chat]])] = (
     Ref.of[IO, List[Stream[IO, Delta]]](replies.toList),
     Ref.of[IO, List[Chat]](Nil),
   ).mapN((left, sent) =>
-    val scripted = new LlmStreamer[IO]:
+    val scripted = new LlmClient[IO]:
+      override protected def send
+        (chat: Chat, options: ReplyOptions)
+        : IO[Answer[Nothing]] = IO.raiseError(Exception("Not streamed."))
+
+      override def count(chat: Chat, options: ReplyOptions): IO[Int] = IO
+        .raiseError(Exception("Not counted."))
+
       override def stream
         (chat: Chat, options: ReplyOptions)
         : Stream[IO, Delta] = Stream
@@ -87,13 +94,13 @@ class UnfoldingSuite extends FunSuite:
     .timeout(10.seconds)
     .unsafeToFuture()
 
-  /** The answer asked of a streamer of one reply, with its streams read. */
+  /** The answer asked of a client streaming one reply, its streams read. */
   private def unfolded[A : Schema, B]
     (reply: Stream[IO, Delta])
     (read: A => IO[B])
     : IO[B] = streamer(reply).flatMap((llm, _) =>
     llm
-      .ask[A](Chat.of("Translate."))
+      .askStreamed[A](Chat.of("Translate."))
       .use(answering =>
         answering.value.liftTo[IO](Exception("No value.")).flatMap(read),
       ),
@@ -111,7 +118,7 @@ class UnfoldingSuite extends FunSuite:
           written("""{"text":"b","gloss":"be"}]}""", 8)
         (llm, _) <- streamer(reply)
         read     <- llm
-          .ask[Page](Chat.of("Translate."))
+          .askStreamed[Page](Chat.of("Translate."))
           .use: answering =>
             answering
               .value
@@ -175,7 +182,7 @@ class UnfoldingSuite extends FunSuite:
       (llm, _) <-
         streamer(part(first, 3) ++ Stream.exec(gate.get) ++ written(rest, 3))
       read <- llm
-        .ask[A](Chat.of("Translate."))
+        .askStreamed[A](Chat.of("Translate."))
         .use(
           _.value
             .liftTo[IO](Exception("No value."))
@@ -220,8 +227,11 @@ class UnfoldingSuite extends FunSuite:
         streamer(written(reply, 4))
           .flatMap((llm, _) =>
             if why == "second" then
-              llm.ask[Two](Chat.of("Count.")).use(_.answer.attempt)
-            else llm.ask[Gloss](Chat.of("Translate.")).use(_.answer.attempt),
+              llm.askStreamed[Two](Chat.of("Count.")).use(_.answer.attempt)
+            else
+              llm
+                .askStreamed[Gloss](Chat.of("Translate."))
+                .use(_.answer.attempt),
           )
           .map:
             case Left(LlmError.Unreadable(_, detail, _)) =>
@@ -238,9 +248,8 @@ class UnfoldingSuite extends FunSuite:
       ](written(
         """{"words":[{"text":"a"}],"note":"N","title":"Hi"}""",
         4,
-      ))(gloss => gloss.words.compile.toList.map((gloss.title, gloss.note, _))).map(
-        read => assertEquals(read, ("Hi", Some("N"), List(Word("a")))),
-      ),
+      ))(gloss => gloss.words.compile.toList.map((gloss.title, gloss.note, _)))
+        .map(read => assertEquals(read, ("Hi", Some("N"), List(Word("a"))))),
     )
 
   test("a stream within a stream arrives as it is written"):
@@ -297,7 +306,7 @@ class UnfoldingSuite extends FunSuite:
           written("""{"title":"Hi","words":[{"text":"a"}]}"""),
         )
         read <- llm
-          .ask[Page](Chat.of("Translate."))
+          .askStreamed[Page](Chat.of("Translate."))
           .use(answering =>
             answering
               .value
@@ -337,7 +346,7 @@ class UnfoldingSuite extends FunSuite:
         streamer(reply)
           .flatMap((llm, _) =>
             llm
-              .ask[Page](Chat.of("Translate."))
+              .askStreamed[Page](Chat.of("Translate."))
               .use(answering =>
                 (
                   answering.value.get.words.attempt.compile.toList,
@@ -380,7 +389,7 @@ class UnfoldingSuite extends FunSuite:
         ) ++ Stream.raiseError[IO](timedOut),
       ).flatMap((llm, _) =>
         llm
-          .ask[Page](Chat.of("Translate."))
+          .askStreamed[Page](Chat.of("Translate."))
           .use(answering =>
             (
               answering.value.get.words.attempt.compile.toList,
@@ -404,7 +413,7 @@ class UnfoldingSuite extends FunSuite:
         3,
       )).flatMap((llm, _) =>
           llm
-            .ask[Stream[IO, Verse]](Chat.of("Translate."))
+            .askStreamed[Stream[IO, Verse]](Chat.of("Translate."))
             .use(
               _.value
                 .get
@@ -437,7 +446,7 @@ class UnfoldingSuite extends FunSuite:
         ) ++ Stream.exec(gate.get) ++ written("""{"text":"b"}]}""", 8)
         (llm, _) <- streamer(reply)
         read     <- llm
-          .ask[Page](Chat.of("Translate."))
+          .askStreamed[Page](Chat.of("Translate."))
           .use: answering =>
             val words = answering.value.get.words
             for
@@ -461,7 +470,9 @@ class UnfoldingSuite extends FunSuite:
   test("a released answer fails its streams and answer, not waits for good"):
     run(
       streamer(part("""{"title":"Hi","words":[""", 4) ++ Stream.never[IO])
-        .flatMap((llm, _) => llm.ask[Page](Chat.of("Translate.")).use(IO.pure))
+        .flatMap((llm, _) =>
+          llm.askStreamed[Page](Chat.of("Translate.")).use(IO.pure),
+        )
         .flatMap(answering =>
           (
             answering.value.get.words.compile.toList.attempt,
@@ -483,7 +494,7 @@ class UnfoldingSuite extends FunSuite:
       streamer()
         .flatMap((llm, sent) =>
           llm
-            .ask[Page](
+            .askStreamed[Page](
               Chat.of("Translate."),
               ReplyOptions(tools = List(Tool("look", "Looks up.", Json.obj()))),
             )

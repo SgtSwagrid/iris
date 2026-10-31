@@ -16,9 +16,9 @@ import fs2.concurrent.SignallingRef
 private[iris] object Unfolding:
 
   /**
-    * Asks the model through a streamer's `stream` until its answer can be
-    * handed over, reading the reply in a fiber of its own for as long as the
-    * resource is in use.
+    * Asks the model through a client's `stream` until its answer can be handed
+    * over, reading the reply in a fiber of its own for as long as the resource
+    * is in use.
     */
   def ask[F[_] : Async, A : Schema as A]
     (
@@ -50,7 +50,7 @@ private[iris] object Unfolding:
     options.tools.isEmpty,
     (),
     IllegalArgumentException(
-      "A streamed ask cannot offer tools, as their calls are not streamed: ask through an LlmClient.",
+      "A streamed ask cannot offer tools, as their calls are not streamed: ask with ask instead.",
     ),
   )
 

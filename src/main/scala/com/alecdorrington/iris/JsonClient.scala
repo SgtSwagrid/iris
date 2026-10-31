@@ -2,16 +2,21 @@ package com.alecdorrington.iris
 
 import cats.MonadThrow
 import cats.syntax.all.*
+import fs2.Stream
 import io.circe.Decoder
 import sttp.client4.*
 import sttp.model.Uri
 
-/** An [[LlmClient]] for any provider's JSON API, as its [[ProviderApi]] says. */
+/**
+  * An [[LlmClient]] for any provider's JSON API, as its [[ProviderApi]] says,
+  * streaming through an [[SseClient]] where its backend can.
+  */
 private[iris] final class JsonClient[F[_] : MonadThrow]
   (
     api: ProviderApi,
     config: LlmConfig,
     backend: Backend[F],
+    streamer: Option[SseClient[F]],
   )
   extends LlmClient[F]:
 
@@ -36,6 +41,12 @@ private[iris] final class JsonClient[F[_] : MonadThrow]
     .flatMap(counting =>
       ask[Int](counting.endpoint, counting.body)(using counting.tokens),
     )
+
+  override def stream(chat: Chat, options: ReplyOptions): Stream[F, Delta] =
+    streamer.fold(Stream.raiseError[F](LlmError.Unsupported(
+      api.provider.displayName,
+      "streaming, through a backend that cannot stream",
+    )))(_.stream(chat, options))
 
   /** Warms with the shortest reply the provider allows. */
   override def warm(chat: Chat, options: ReplyOptions): F[Answer[Nothing]] =
