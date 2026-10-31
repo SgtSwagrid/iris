@@ -85,7 +85,7 @@ class StallSuite extends FunSuite:
         Some(List(Delta.End(
           StopReason.Completed,
           Usage(uncachedTokens = 3, visibleTokens = 2),
-          Some(BigDecimal("0.000013")),
+          Some(Usd(BigDecimal("0.000013"))),
         ))),
       ),
     )

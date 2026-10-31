@@ -69,7 +69,7 @@ private[iris] trait ProviderApi:
       usage: Usage,
       at: FiniteDuration,
     )
-    : Option[BigDecimal] = config
+    : Option[Usd] = config
     .rates
     .orElse(rates(config.model, at))
     .map(_.cost(usage))
@@ -123,7 +123,7 @@ private[iris] object ProviderApi:
     (era * 146_097L + days - 719_468).days
 
   /** A rate from its decimal figure, as the provider's page gives it. */
-  def usd(figure: Double): BigDecimal = BigDecimal(figure)
+  def usd(figure: Double): Usd = Usd(BigDecimal(figure))
 
 /** A request counting a chat's tokens, and how to read the count back. */
 private[iris] final case class Counting

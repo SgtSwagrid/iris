@@ -81,7 +81,7 @@ longer.
   of it read from the cache, and the whole reply. Streams count too: Anthropic's start counts the request and its
   stop the reply (taking what it leaves out from the start), and OpenAI's usage comes in a chunk of its own after
   `finish_reason`, so its `Delta.End` comes when the stream does.
-- Each `ProviderApi` lists its models' `Rates` (`rates(model, at)`), USD per million tokens on the standard tier,
+- Each `ProviderApi` lists its models' `Rates` (`rates(model, at)`), `Usd` per million tokens on the standard tier,
   copied by hand from its pricing page (no provider serves prices by API, so they are listed rather than fetched
   from a third party's catalogue), with any change the provider has announced from its day (`ProviderApi.utc`,
   midnight UTC, by hand as JavaScript has no `java.time`). Every listed model must have rates (`RatesSuite`
@@ -94,6 +94,9 @@ longer.
   those listed, so `Answer.cost` and `Delta.End.cost` are per request, summed over an ask only where every attempt
   has one, and `None` for an `Other` model with no rates configured. Iris prices nothing it does not send: batch,
   priority or fast mode, data residency, server tools. `/update-iris` keeps the rates current.
+  Money is a `Usd` (an `amount: BigDecimal`), never a bare number, and Iris converts no currency, as every provider
+  prices in dollars: a host billed in another converts at its own rate (the user chose this over a general money
+  type, or conversion within Iris).
 - Providers run adjacent text blocks together (Anthropic was measured to: two blocks count exactly as their
   texts concatenated), so every `ProviderApi` serialises a message's parts through `Message.separated`, which opens
   with a blank line each text part following another with only breakpoints (or empty text) between them. A part's

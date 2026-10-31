@@ -6,7 +6,18 @@ class RatesSuite extends FunSuite:
 
   private val now = ProviderApi.utc(2026, 11, 1)
 
-  private def usd(figure: String) = BigDecimal(figure)
+  private def usd(figure: String) = Usd(BigDecimal(figure))
+
+  test("dollars add up, scale and order by their amount"):
+    assertEquals(usd("0.25") + usd("1.5"), usd("1.75"))
+    assertEquals(
+      usd("2") * BigDecimal("1.25"),
+      usd("2.5"),
+    )
+    assertEquals(
+      List(usd("3"), Usd.zero, usd("1")).sorted,
+      List(Usd.zero, usd("1"), usd("3")),
+    )
 
   test("each count is priced at its own rate, per million tokens"):
     val rates = Rates(

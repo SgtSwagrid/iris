@@ -113,7 +113,7 @@ private[iris] object Question:
     .last
     .copy(
       usage = answers.map(_.usage).reduce(_ + _),
-      cost = answers.traverse(_.cost).map(_.sum),
+      cost = answers.traverse(_.cost).map(_.reduce(_ + _)),
       value = answer,
       attempts = answers.size,
     )

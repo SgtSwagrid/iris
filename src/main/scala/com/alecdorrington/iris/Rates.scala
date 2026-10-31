@@ -3,12 +3,11 @@ package com.alecdorrington.iris
 import scala.concurrent.duration.FiniteDuration
 
 /**
-  * What a model's tokens cost, in US dollars per million tokens, with one rate
-  * for each of [[Usage]]'s counts, as its provider charges on its standard
-  * tier. A count the provider charges nothing apart for is charged as the rest
-  * of its kind: cache writes as input where writing the cache costs nothing
-  * more, audio as other input where it is priced alike, and thinking as the
-  * reply.
+  * What a model's tokens cost, in [[Usd]] per million tokens, with one rate for
+  * each of [[Usage]]'s counts, as its provider charges on its standard tier. A
+  * count the provider charges nothing apart for is charged as the rest of its
+  * kind: cache writes as input where writing the cache costs nothing more,
+  * audio as other input where it is priced alike, and thinking as the reply.
   *
   * @param uncached
   *   The rate of tokens of the request read afresh, other than audio.
@@ -37,13 +36,13 @@ import scala.concurrent.duration.FiniteDuration
   */
 final case class Rates
   (
-    uncached: BigDecimal,
-    cacheRead: BigDecimal,
-    cacheWrite: BigDecimal,
-    uncachedAudio: BigDecimal,
-    cacheReadAudio: BigDecimal,
-    visible: BigDecimal,
-    thinking: BigDecimal,
+    uncached: Usd,
+    cacheRead: Usd,
+    cacheWrite: Usd,
+    uncachedAudio: Usd,
+    cacheReadAudio: Usd,
+    visible: Usd,
+    thinking: Usd,
     above: Option[Rates.Above] = None,
   ):
 
@@ -57,20 +56,23 @@ final case class Rates
     *   The request's token counts.
     *
     * @return
-    *   What the request cost, in US dollars.
+    *   What the request cost.
     */
-  def cost(usage: Usage): BigDecimal = above match
+  def cost(usage: Usage): Usd = above match
     case Some(Rates.Above(tokens, longer)) if usage.inputTokens > tokens =>
       longer.cost(usage)
-    case _ => List(
-        uncached       -> usage.uncachedTokens,
-        cacheRead      -> usage.cacheReadTokens,
-        cacheWrite     -> usage.cacheWriteTokens,
-        uncachedAudio  -> usage.uncachedAudioTokens,
-        cacheReadAudio -> usage.cacheReadAudioTokens,
-        visible        -> usage.visibleTokens,
-        thinking       -> usage.thinkingTokens,
-      ).map((rate, tokens) => rate * BigDecimal(tokens)).sum / Rates.perMillion
+    case _ => Usd(
+        List(
+          uncached       -> usage.uncachedTokens,
+          cacheRead      -> usage.cacheReadTokens,
+          cacheWrite     -> usage.cacheWriteTokens,
+          uncachedAudio  -> usage.uncachedAudioTokens,
+          cacheReadAudio -> usage.cacheReadAudioTokens,
+          visible        -> usage.visibleTokens,
+          thinking       -> usage.thinkingTokens,
+        ).map((rate, tokens) => rate.amount * BigDecimal(tokens)).sum /
+          Rates.perMillion,
+      )
 
 object Rates:
 
@@ -102,7 +104,7 @@ object Rates:
     * @return
     *   The rates.
     */
-  def of(input: BigDecimal, output: BigDecimal): Rates = Rates(
+  def of(input: Usd, output: Usd): Rates = Rates(
     input,
     input,
     input,

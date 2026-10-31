@@ -84,7 +84,7 @@ private[iris] object AnthropicApi extends ProviderApi:
   private def priced(input: Double, hit: Double, output: Double): Rates = Rates(
     uncached = ProviderApi.usd(input),
     cacheRead = ProviderApi.usd(hit),
-    cacheWrite = ProviderApi.usd(input) * ProviderApi.usd(1.25),
+    cacheWrite = ProviderApi.usd(input) * BigDecimal(1.25),
     uncachedAudio = ProviderApi.usd(input),
     cacheReadAudio = ProviderApi.usd(hit),
     visible = ProviderApi.usd(output),

@@ -383,7 +383,7 @@ class AskSuite extends FunSuite:
         stopReason = StopReason.Completed,
         usage = Usage(uncachedTokens = 30, visibleTokens = 7),
         // Claude Haiku 4.5's $1 and $5 per million tokens.
-        cost = Some(BigDecimal("0.000065")),
+        cost = Some(Usd(BigDecimal("0.000065"))),
         value = Some(ada),
         attempts = 2,
       )),
@@ -417,7 +417,7 @@ class AskSuite extends FunSuite:
         .unsafeRunSync(),
       Right((
         Usage(uncachedTokens = 20, visibleTokens = 5),
-        Some(BigDecimal("0.000045")),
+        Some(Usd(BigDecimal("0.000045"))),
       )),
     )
     // Usage adds up count by count, and so do its totals.
@@ -545,7 +545,7 @@ class AskSuite extends FunSuite:
           adaJson,
           StopReason.Completed,
           Usage(uncachedTokens = 5, visibleTokens = 3),
-          Some(BigDecimal(cost)),
+          Some(Usd(BigDecimal(cost))),
           value = Some(ada),
         )),
         model,
@@ -565,13 +565,16 @@ class AskSuite extends FunSuite:
       costing(config.copy(model = next)),
       Right(None),
     )
-    val rates = Rates.of(BigDecimal(3), BigDecimal(15))
+    val rates = Rates.of(
+      Usd(BigDecimal(3)),
+      Usd(BigDecimal(15)),
+    )
     assertEquals(
       costing(config.copy(model = next, rates = Some(rates))),
-      Right(Some(BigDecimal("0.0045"))),
+      Right(Some(Usd(BigDecimal("0.0045")))),
     )
     // A configuration's rates stand in for those listed, too.
     assertEquals(
       costing(config.copy(rates = Some(rates))),
-      Right(Some(BigDecimal("0.0045"))),
+      Right(Some(Usd(BigDecimal("0.0045")))),
     )

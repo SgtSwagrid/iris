@@ -69,15 +69,15 @@ private[iris] object OpenAiApi extends ProviderApi:
     : Rates =
     val (in, read, out) =
       (ProviderApi.usd(input), ProviderApi.usd(cached), ProviderApi.usd(output))
-    val (twice, half) = (BigDecimal(2), ProviderApi.usd(1.5))
-    rated(in, read, out, in * ProviderApi.usd(1.25)).copy(above =
+    val (twice, half) = (BigDecimal(2), BigDecimal(1.5))
+    rated(in, read, out, in * BigDecimal(1.25)).copy(above =
       Some(Rates.Above(
         272_000,
         rated(
           in * twice,
           read * twice,
           out * half,
-          in * ProviderApi.usd(2.5),
+          in * BigDecimal(2.5),
         ),
       )),
     )
@@ -100,10 +100,10 @@ private[iris] object OpenAiApi extends ProviderApi:
 
   private def rated
     (
-      input: BigDecimal,
-      cached: BigDecimal,
-      output: BigDecimal,
-      written: BigDecimal,
+      input: Usd,
+      cached: Usd,
+      output: Usd,
+      written: Usd,
     )
     : Rates = Rates(
     uncached = input,
