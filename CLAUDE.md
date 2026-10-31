@@ -119,7 +119,11 @@ longer.
   Only the newest end is marked, as Anthropic finds the previous write itself, up to 20 blocks back, a run of
   tool calls or of results counting as one. It goes after the results, as the schema prompt lies before every round
   in the opening message: a round's breakpoint caches it, harmlessly, as it is the same throughout an ask.
-  The last round's write is never read, costing a quarter more on its own tokens.
+  Anthropic bills a write for all past the highest cache hit, so the first request after the opening writes all
+  past the host's last breakpoint (the whole prompt where there is none), and the last request's write is never
+  read. So with no host breakpoint a one-round ask pays 25% more on its second request's whole input, and the trade
+  pays only where another request follows more than about 28% of the time (0.25 / 0.9); a host breakpoint after the
+  fixed prefix keeps the writes to the rounds (README says so).
 - A `MessagePart.ToolCall` goes back to its provider as the reply gave it. Gemini may give a call no `id`, so the tool's
   name stands in, and is never sent as one (`GeminiApi.issued`), on the call or its `functionResponse`. Gemini puts a
   `thoughtSignature` on the part beside a `functionCall` (the first of calls made together), which its thinking

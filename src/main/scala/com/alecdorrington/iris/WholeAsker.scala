@@ -83,12 +83,13 @@ private[iris] object WholeAsker:
   /**
     * The chat to send, its end closed by a breakpoint once tools have been run
     * since the `opening`, so that each request after a round reads the rounds
-    * before it from the cache, and writes only its own. Only the newest end is
-    * marked: Anthropic, which caches only where told, finds the last write by
-    * itself, looking up to twenty blocks back (a run of tool calls, or of their
-    * results, counting as one), and marks at most four blocks, the host's
-    * first. The chat an ask goes on with is never marked, so that the mark
-    * moves on with each request.
+    * before it from the cache, and writes only its own. The first after the
+    * opening writes all past the host's last breakpoint, the whole prompt where
+    * there is none. Only the newest end is marked: Anthropic, which caches only
+    * where told, finds the last write by itself, looking up to twenty blocks
+    * back (a run of tool calls, or of their results, counting as one), and
+    * marks at most four blocks, the host's first. The chat an ask goes on with
+    * is never marked, so that the mark moves on with each request.
     */
   def cached(opening: Chat, chat: Chat): Chat =
     if chat.messages.drop(opening.messages.size).exists(_.toolResults.nonEmpty)

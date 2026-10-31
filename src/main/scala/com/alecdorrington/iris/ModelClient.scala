@@ -122,7 +122,9 @@ trait ModelClient[F[_]]:
     *   without end. Each request after a round closes with a
     *   [[MessagePart.CacheBreakpoint]] of its own, so that it reads the rounds
     *   before it from the cache, writing only its own; Anthropic marks it only
-    *   where the chat's own breakpoints leave room.
+    *   where the chat's own breakpoints leave room. The first such request
+    *   writes all after the chat's last breakpoint, the whole prompt where it
+    *   has none, so end a fixed prefix with one to keep the writes to rounds.
     *
     * @return
     *   An effect producing the answer, as soon as it can be given. It fails

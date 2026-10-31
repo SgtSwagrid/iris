@@ -465,6 +465,13 @@ and writes only its own, where the provider caches only what it is told to (Anth
 alone is marked, after your own breakpoints, and where yours already mark the four blocks Anthropic allows,
 the rounds are left unmarked rather than crowd one of yours out.
 
+A write costs a quarter more than reading afresh, and covers all after the last prefix already cached: the
+first request after a round writes all after your last breakpoint, the whole prompt where you have none, and
+the last request's write is never read. So an ask that runs tools only once pays a quarter more for what its
+second request writes than it would uncached; more rounds repay that many times over. End what every ask shares,
+such as the instructions and any documents, with a breakpoint of your own, so that only the rounds are ever
+written.
+
 Or offer the model tools for you to run yourself, through `ModelRequest.Options.tools`, and it will say so in its
 reply's `toolCalls`, with no `value`: append the reply and each tool's result, and ask again.
 
