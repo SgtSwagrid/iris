@@ -163,6 +163,19 @@ data: {"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}],
       ),
     )
 
+  test("gemini streams each call with its id and thought signature"):
+    val together =
+      """data: {"candidates":[{"content":{"parts":[{"functionCall":{"id":"a1","name":"weather","args":{"city":"Zug"}},"thoughtSignature":"c2lnbmVk"},{"functionCall":{"id":"b2","name":"weather","args":{"city":"Zug"}}}]},"finishReason":"STOP"}]}
+"""
+    assertEquals(
+      reply(together)(GeminiApi.reply),
+      List(
+        Delta.ToolCall(weather.copy(id = "a1", signature = Some("c2lnbmVk"))),
+        Delta.ToolCall(weather.copy(id = "b2")),
+        Delta.End(StopReason.ToolCall, Usage()),
+      ),
+    )
+
   test("anthropic and openai stream a tool call whole, once its pieces end"):
     val anthropic = """data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
 

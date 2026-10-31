@@ -108,19 +108,30 @@ object Part:
 
   /**
     * A call by the model for a tool to be run. It is part of the model's
-    * message, and is sent back with the conversation.
+    * message, and is sent back with the conversation as the reply gave it.
     *
     * @param id
     *   The provider's identifier of the call, by which its result is matched.
-    *   Gemini has none, so the tool's name stands in.
+    *   Where Gemini gives none, the tool's name stands in, and is not sent.
     *
     * @param tool
     *   The name of the [[Tool]] to run.
     *
     * @param arguments
     *   The arguments, as described by [[Tool.parameters]].
+    *
+    * @param signature
+    *   An opaque token the provider gave with the call, sent back with it
+    *   unchanged: Gemini's thought signature, which its thinking models need to
+    *   go on with their reasoning. No other provider gives one.
     */
-  final case class ToolCall(id: String, tool: String, arguments: Json)
+  final case class ToolCall
+    (
+      id: String,
+      tool: String,
+      arguments: Json,
+      signature: Option[String] = None,
+    )
     extends Part
 
   /**
@@ -130,7 +141,8 @@ object Part:
     *   The [[ToolCall.id]] this answers.
     *
     * @param tool
-    *   The name of the tool run, which Gemini matches by.
+    *   The name of the tool run, which Gemini matches by where the call has no
+    *   id of its own.
     *
     * @param output
     *   The tool's output, for the model to read.

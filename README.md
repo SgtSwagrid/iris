@@ -389,6 +389,11 @@ for
 yield answer.value
 ```
 
+Append the reply itself, with `chat.assistant(reply)`, so that each call goes back as it came: its
+`id` is the provider's, by which its result is matched (where Gemini gives a call none, the tool's
+name stands in), and Gemini's thinking models need back the thought signature a call carries, its
+`signature`, to go on with their reasoning.
+
 A reply which asked for a tool has `StopReason.ToolCall`, on every provider, and so does a
 streamed reply's `Delta.End` — Gemini reports no such reason of its own, so the asking is what
 says so. A streamed answer may ask for tools too, its calls in its reply's `toolCalls` once it ends.
