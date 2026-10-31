@@ -58,7 +58,8 @@ private[iris] trait ProviderApi:
   /**
     * The rates of a model this provider serves at a moment since 1970, as its
     * pricing page gives them, with any change it has announced from its day, or
-    * `None` for a model Iris does not list.
+    * `None` for a model Iris does not list. A reply is priced at the rates of
+    * the moment it arrives.
     */
   def rates(model: LlmModel, at: FiniteDuration): Option[Rates]
 
@@ -111,8 +112,10 @@ private[iris] object ProviderApi:
     case LlmProvider.Gemini    => GeminiApi
 
   /**
-    * The moment a day begins in UTC, since 1970, from which new rates apply. By
-    * Howard Hinnant's `days_from_civil`, as JavaScript has no `java.time`.
+    * The moment a day begins in UTC, since 1970, from which new rates apply:
+    * Iris's assumption, as a provider may name no time zone (Google names
+    * none). By Howard Hinnant's `days_from_civil`, as JavaScript has no
+    * `java.time`.
     */
   def utc(year: Int, month: Int, day: Int): FiniteDuration =
     val shifted = if month <= 2 then year - 1 else year

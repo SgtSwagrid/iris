@@ -58,7 +58,8 @@ private[iris] object OpenAiApi extends ProviderApi:
     * The rates of GPT-5.6 and later, which charge a quarter more than input for
     * writing the cache, for the thirty minutes it keeps unless told otherwise,
     * and for a prompt longer than 272K tokens twice as much for input and half
-    * as much again for output.
+    * as much again for output. OpenAI does not say whether cached tokens count
+    * towards the 272K, so they are taken to, as [[Rates.Above]] says.
     */
   private def writing
     (

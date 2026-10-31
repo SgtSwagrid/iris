@@ -80,7 +80,9 @@ object Rates:
 
   /**
     * Rates for a request whose prompt is longer than some number of tokens,
-    * which apply to the whole of it.
+    * which apply to the whole of it. The prompt is every token of the request,
+    * read from the cache or not, as Anthropic says it counts it: OpenAI and
+    * Google do not say whether they count cached tokens.
     *
     * @param tokens
     *   The number of tokens of the prompt beyond which these rates apply.

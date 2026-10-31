@@ -31,7 +31,12 @@ private[iris] object GeminiApi extends ProviderApi:
   override val answers: Decoder[Either[LlmError, Answer[Nothing]]] =
     Decoder[Response].map(_.toAnswer)
 
-  /** As https://ai.google.dev/gemini-api/docs/pricing gives them. */
+  /**
+    * As https://ai.google.dev/gemini-api/docs/pricing gives them. Google names
+    * no time zone for its price changes, so they are taken to come at midnight
+    * UTC, nor says whether cached tokens count towards Gemini 2.5 Pro's 200K,
+    * so they are taken to, as [[Rates.Above]] says.
+    */
   override def rates(model: LlmModel, at: FiniteDuration): Option[Rates] =
     model match
       case LlmModel.Gemini4Argon => Some(

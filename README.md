@@ -238,8 +238,8 @@ Each `Answer` also says what it `cost`, in US dollars, as a
 an ask's attempts as its usage is. Rates are per million tokens, one for each of `Usage`'s counts,
 as the provider charges on its standard tier, and a model charging more for a long prompt has
 rates `above` a number of prompt tokens, which then apply to the whole request. A price change
-the provider has announced is listed from its day, so each reply is priced at the rates of the day
-it came. A stream's `Delta.End` says what its reply cost alike.
+the provider has announced is listed from midnight UTC on its day (Iris's assumption, as Google names
+no time zone), so each reply is priced at the rates in force when it arrives. A stream's `Delta.End` says what its reply cost alike.
 
 A model Iris does not list has no rates, and its cost is `None`, unless the configuration gives
 rates of its own, which also stand in for those listed, as for a proxy charging its own prices, or

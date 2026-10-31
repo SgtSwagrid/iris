@@ -84,7 +84,10 @@ longer.
 - Each `ProviderApi` lists its models' `Rates` (`rates(model, at)`), `Usd` per million tokens on the standard tier,
   copied by hand from its pricing page (no provider serves prices by API, so they are listed rather than fetched
   from a third party's catalogue), with any change the provider has announced from its day (`ProviderApi.utc`,
-  midnight UTC, by hand as JavaScript has no `java.time`). Every listed model must have rates (`RatesSuite`
+  midnight UTC, Iris's assumption as Google names no time zone, by hand as JavaScript has no `java.time`).
+  GPT-5.6 Sol's rates are a promotion "at least through November 21, 2026" with no later price given: a run of
+  `/update-iris` after that day re-checks them. A long-prompt threshold counts the whole prompt, cache included, as
+  Anthropic documents; OpenAI and Google do not say, and are taken to count alike. Every listed model must have rates (`RatesSuite`
   checks), so a new model needs its prices. A rate per `Usage` count: a count charged nothing apart is charged as
   its kind (cache writes as input on Gemini and OpenAI before GPT-5.6, audio as input but on Gemini models
   pricing it apart, thinking as output), and a long-prompt tier is `Rates.Above`, which prices the whole request
