@@ -266,6 +266,45 @@ Every provider prices in US dollars, so Iris converts no currency: a host billed
 converts at its own rate, which whoever bills it sets. Nor does a cost count tax, credits or a
 discount of your own.
 
+### Metering
+
+`client.metered(meter)` runs a function on what each request spent, as its reply comes: its
+`Usage` and its `cost`, `None` where Iris knows no rates for the model. It is called once for every
+attempt of an `ask`, on that attempt's reply before it is read, so an ask that fails after three
+attempts is metered three times, once for warming, and once for each `stream`, at its `Delta.End`.
+Counting costs nothing, so is never metered, nor is a request that fails with no reply, nor a stream
+stopped before its end, which reports no usage. A meter that fails fails its request, and the meters of
+requests sent at once may run at once, so a meter adding to a total of its own keeps it safe:
+
+```scala
+client.metered((_, cost) => cost.traverse_(spent => total.update(_ + spent)))
+```
+
+### Budgets
+
+A [`Budget`](src/main/scala/com/alecdorrington/iris/Budget.scala) limits what requests may cost
+together, in US dollars, as for a session: every client it `limits` spends from it, whatever its
+model or provider. A request is refused with `LlmError.OverBudget` once as much as the limit has
+been spent, before anything is sent, a stream before it starts, and is charged what its reply cost when the reply comes. Every
+attempt of an `ask` is charged, and so is warming, as `metered` meters them; counting tokens costs
+nothing, so goes on. Each round of an `ask` that runs tools is a request of its own, so a budget is
+what bounds a tool loop, which nothing else caps.
+
+```scala
+for
+  budget <- Budget[IO](Usd(BigDecimal(5)))
+  limited = budget.limits(client)
+  answer <- limited.ask[String](chat)
+  left   <- budget.remaining
+yield (answer, left)
+```
+
+A reply's cost is known only once it comes, so requests already sent when the limit is reached
+are charged in full, and may take the spending past it: a stream running then goes on to its end. A
+stream stopped before its end is charged nothing, though the provider may charge for what it wrote. A budget needs prices: a reply with no
+cost, from a model Iris does not list whose configuration gives no rates, fails its request with
+`LlmError.Unpriced`. A budget is never needed: a client without one spends without limit.
+
 ### Pictures and documents
 
 A message is a list of [`Part`](src/main/scala/com/alecdorrington/iris/Chat.scala)s, so text may travel beside
@@ -560,6 +599,7 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
 - A `Reply` has a `cost`, an `Option[Usd]`, after `usage`, and `Delta.End` has one too, last.
 - `LlmClient.apply` needs a `Clock` of its effect, which prices each reply as it comes, as `IO` and
   `SyncIO` have.
+- `LlmError` has two new cases, `OverBudget` and `Unpriced`, which a match over every case must take.
 
 ### Upgrading from 0.3
 
