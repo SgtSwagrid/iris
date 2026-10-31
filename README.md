@@ -372,8 +372,42 @@ model as JSON, as it would have to be run; say a list of its elements.
 
 ### Tools
 
-Offer the model tools it may ask to have run, and it will say so in its reply's `toolCalls`, with no `value`.
-Iris never runs a tool itself; what one does, and whether it is allowed to, is yours to decide.
+Give `ask` tools it may run, with what running each does, and it offers them to the model, runs any it asks
+for, tells it their outputs, and asks it to go on, as often as it asks, before giving the answer. What a
+tool does, and whether it may, is yours to decide in `run`. A tool's arguments are a type with a
+`Schema`, which describes them to the model and reads them back; arguments that cannot be read are
+answered with why, for the model to call it again. A `run` that fails fails the ask with its error, the
+model not told, so turn any failure the model should hear of into output instead. A reply asking for tools
+does not count against `attempts`, and nothing counts how many such replies there are: an ask runs tools
+for as long as the model asks for them, each round a request, so bound what an ask may spend in all, as you
+would any request's cost, rather than how many rounds it takes. Without such a bound, a model that never
+stops asking for tools is asked again, and paid for, without end.
+
+```scala
+import com.alecdorrington.iris.RunnableTool
+
+case class Lookup(word: String)
+
+val dictionary = RunnableTool.of[IO, Lookup]("dictionary", "Looks up a word.")(lookup =>
+  IO(definitions(lookup.word)))
+
+client.ask[Review](chat, tools = List(dictionary))
+```
+
+Where the answer is itself a stream, as `Stream[IO, Word]`, and tools are given, the model gives its
+elements through a tool of its own, `emit`, one call each, and may call the others between them: each
+element reaches the stream as soon as its call has, in order, and the stream goes on after each tool has
+run. An element that cannot be read is answered with why, and the model emits it again, and those after it,
+up to `attempts` times for each element. A model writing its elements as a JSON array instead has them read
+from its reply once it ends, and is asked again where they cannot be. A reply cut off at the token limit,
+or stopped, ends the stream with `LlmError.Unreadable` after the elements it gave, as a failing `run` ends
+it with its error. Taking only some of the elements does not stop the model writing the rest, nor the tools
+it asks for running: `answer.cancel` does. Tools for you to run, in `ReplyOptions.tools`, cannot be offered
+beside such a stream, whose answer, given already, could not end at their calls. Nested streams are
+streamed this way only without tools.
+
+Or offer the model tools for you to run yourself, through `ReplyOptions.tools`, and it will say so in its
+reply's `toolCalls`, with no `value`: append the reply and each tool's result, and ask again.
 
 ```scala
 import com.alecdorrington.iris.{Part, Tool}

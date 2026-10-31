@@ -3,9 +3,11 @@ package com.alecdorrington.iris
 import io.circe.Json
 
 /**
-  * A tool the model may ask to have run, offered through
-  * [[ReplyOptions.tools]]. The model asks in [[Reply.toolCalls]], and the host
-  * answers with a [[Part.ToolResult]]. Iris never runs a tool itself.
+  * A tool the model may ask to have run, as it is told of it: offered through
+  * [[ReplyOptions.tools]], for the host to run, where the model asks in
+  * [[Reply.toolCalls]] and the host answers with a [[Part.ToolResult]], or
+  * given to [[LlmClient.ask]] with what running it does, as a [[RunnableTool]],
+  * for the ask to run.
   *
   * @param name
   *   The name the model calls the tool by, unique among those offered.

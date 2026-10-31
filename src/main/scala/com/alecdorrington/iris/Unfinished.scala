@@ -390,6 +390,14 @@ private[iris] object Unfinished:
     */
   private val holes = DynamicVariable[List[(Json, Any)]](Nil)
 
+  /**
+    * A value of a schema whose JSON is a stream, read as the stream given, as a
+    * placeholder of one is.
+    */
+  def standIn(schema: Schema[?], stream: Any): Either[String, Any] =
+    val hole = Json.obj("stream" -> Json.fromInt(0))
+    holding(List(hole -> stream))(Question.decoded(schema, hole))
+
   /** Reads with the streams that placeholders stand for. */
   private def holding[A](filled: List[(Json, Any)])(read: => A): A = holes
     .withValue(filled)(read)

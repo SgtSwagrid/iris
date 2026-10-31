@@ -19,33 +19,70 @@ private[iris] object Question:
   /**
     * Asks the model through a client's `send` until its reply can be read or
     * asks for a tool, telling it what was wrong with each that could not, so
-    * long as asking again could help. A chat no provider would answer is sent
-    * uninstructed, so that the provider refuses it before any request.
+    * long as asking again could help, and running the tools in the box, where
+    * it asks for those alone, before asking it to go on. A chat no provider
+    * would answer is sent uninstructed, so that the provider refuses it before
+    * any request.
     */
   def ask[F[_] : MonadThrow, A : Schema as A]
     (
       send: Chat => F[Reply],
       chat: Chat,
       attempts: Int,
+      tools: Toolbox[F] = Toolbox[F](Nil),
     )
     : F[Answer[F, A]] =
-    // Sends the chat, after the replies so far, and reads what comes back.
-    def attempt(chat: Chat, replies: Vector[Reply]): F[Answer[F, A]] = send(
-      chat,
-    ).flatMap(reply =>
-      verdict(A, chat, replies :+ reply, attempts) match
+    // Sends the chat, after the replies so far, `tried` of them read.
+    def attempt
+      (
+        chat: Chat,
+        replies: Vector[Reply],
+        tried: Int,
+      )
+      : F[Answer[F, A]] = send(chat).flatMap(reply =>
+      verdict(
+        A,
+        chat,
+        replies :+ reply,
+        attempts,
+        tried + 1,
+        tools,
+      ) match
         case Verdict.Answered(value, whole) => Answer(
             value,
             whole.pure[F],
             MonadThrow[F].unit,
           ).pure[F]
-        case Verdict.Again(next)   => attempt(next, replies :+ reply)
+        case Verdict.Run(calls) => tools
+            .ran(calls)
+            .flatMap(results =>
+              attempt(
+                onwards(chat, reply, results),
+                replies :+ reply,
+                tried,
+              ),
+            )
+        case Verdict.Again(next)   => attempt(next, replies :+ reply, tried + 1)
         case Verdict.Failed(error) => error.raiseError,
     )
     counted(attempts).fold(
       _.raiseError,
-      _ => attempt(opening(chat, A), Vector.empty),
+      _ =>
+        attempt(
+          opening(chat, instructions(A)),
+          Vector.empty,
+          0,
+        ),
     )
+
+  /** The chat after a reply asking for tools, and what they gave. */
+  def onwards
+    (
+      chat: Chat,
+      reply: Reply,
+      results: List[Part.ToolResult],
+    )
+    : Chat = chat.assistant(reply).user(results*)
 
   /** What the model is told of the form its reply must take. */
   def instructions(schema: Schema[?]): String =
@@ -66,14 +103,15 @@ private[iris] object Question:
     * The chat to send first: instructed, unless no provider would answer it, so
     * that the provider refuses it before any request.
     */
-  def opening(chat: Chat, schema: Schema[?]): Chat = chat
+  def opening(chat: Chat, instructions: String): Chat = chat
     .unanswerable
-    .fold(instructed(chat, instructions(schema)))(_ => chat)
+    .fold(instructed(chat, instructions))(_ => chat)
 
   /**
-    * What becomes of an ask once its latest reply has come: its answer, none
-    * where the model asked for tools, a failure where asking again could not
-    * help, or another attempt, told what was wrong.
+    * What becomes of an ask once its latest reply has come, the `tried`th read
+    * as an answer: the tools it asks for run, where it asks for those in the
+    * box alone, its answer, none where it asked for others, a failure where
+    * asking again could not help, or another attempt, told what was wrong.
     */
   def verdict[A]
     (
@@ -81,16 +119,20 @@ private[iris] object Question:
       chat: Chat,
       replies: Vector[Reply],
       attempts: Int,
+      tried: Int,
+      tools: Toolbox[?],
     )
     : Verdict[A] =
     val reply = replies.last
-    if calledTools(reply) then Verdict.Answered(None, summed(replies))
+    if calledTools(reply) then
+      if tools.runs(reply.toolCalls) then Verdict.Run(reply.toolCalls)
+      else Verdict.Answered(None, summed(replies))
     else
       hopeless(reply) match
         case Some(fatal) => Verdict.Failed(unreadable(replies, fatal))
         case None        => read(schema, reply).leftMap(stopped(reply, _)) match
             case Right(value) => Verdict.Answered(Some(value), summed(replies))
-            case Left(why) if replies.size < attempts =>
+            case Left(why) if tried < attempts =>
               Verdict.Again(corrected(chat, reply, why))
             case Left(why) => Verdict.Failed(unreadable(replies, why))
 
@@ -99,6 +141,9 @@ private[iris] object Question:
 
     /** The value, where the model gave one, and the reply it was read from. */
     case Answered(value: Option[A], reply: Reply)
+
+    /** The tools asked for, to run before asking the model to go on. */
+    case Run(calls: List[Part.ToolCall])
 
     /** Another attempt, at the chat told what was wrong. */
     case Again(chat: Chat)
