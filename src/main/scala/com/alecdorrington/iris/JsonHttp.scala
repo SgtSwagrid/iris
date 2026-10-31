@@ -32,6 +32,24 @@ private[iris] object JsonHttp:
       .map(LlmError.Unsendable(provider.displayName, _))
       .toLeft(())
 
+  /** Refuses a chat holding media of a kind the provider does not take. */
+  def viewable
+    (
+      provider: LlmProvider,
+      chat: Chat,
+      taken: Set[MediaType],
+    )
+    : Either[LlmError, Unit] = chat
+    .messages
+    .flatMap(_.content)
+    .collectFirst:
+      case Part.Media(mediaType, _) if !taken.contains(mediaType) =>
+        LlmError.Unsupported(
+          provider.displayName,
+          s"sending ${ mediaType.name } in a chat",
+        )
+    .toLeft(())
+
   /**
     * A JSON object of the fields, leaving out null ones. Nulls nested inside a
     * field, as in a tool's schema, are values and are kept.

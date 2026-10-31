@@ -243,14 +243,21 @@ breakpoints may lie between them; a picture, a document or a tool call between t
 already keeps them apart, and they are sent as they are.
 
 ```scala
-import com.alecdorrington.iris.Part
+import com.alecdorrington.iris.{MediaType, Part}
 
-chat.user("What is in this picture?", Part.Media("image/png", base64))
+chat.user("What is in this picture?", Part.Media(MediaType.Png, bytes)) // or its Base64, as a String
 ```
 
-Anthropic and Gemini take both pictures and documents. OpenAI's chat completions take
-pictures only, and a document there fails with `LlmError.Unsupported` rather than being
-dropped or sent as something it is not.
+Media is of a [`MediaType`](src/main/scala/com/alecdorrington/iris/MediaType.scala): `Png`, `Jpeg`, `Gif`,
+`Webp` or `Pdf`, or any other, such as `audio/mp3`, named by `MediaType.of`. Each provider is sent only what
+it takes, and anything else fails with `LlmError.Unsupported` before any request, rather than being dropped
+or sent as something it is not:
+
+| Provider  | Takes                                                                      |
+|-----------|----------------------------------------------------------------------------|
+| Anthropic | `Png`, `Jpeg`, `Gif` (its first frame) and `Webp` pictures, and `Pdf`       |
+| OpenAI    | `Png`, `Jpeg`, `Gif` (not animated) and `Webp` pictures                     |
+| Gemini    | anything, which it judges itself: it lists no `Gif`, but audio and video    |
 
 ### Streaming
 
@@ -392,6 +399,10 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
 - `Chat.of`, a chat's `user` and `assistant` messages and `Message` take values of any kinds together, so
   `chat.user(Part.of("Review this."), Part.of(draft))` is now `chat.user("Review this.", draft)`. A spliced
   list must be of parts: where you spliced other values, write `chat.user(values.map(Part.of)*)`.
+- `Part.Media` takes a `MediaType`, where it took a string: write `Part.Media(MediaType.Png, data)`, or
+  `MediaType.of(name)` for a name read at runtime, which is `None` where the name is no media type. It
+  also takes the content's bytes, encoding them itself. Anthropic now refuses media other than pictures
+  and PDFs before sending it, where its API refused it.
 
 ### Upgrading from 0.3
 
