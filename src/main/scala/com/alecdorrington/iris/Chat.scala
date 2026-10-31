@@ -1,6 +1,8 @@
 package com.alecdorrington.iris
 
 import io.circe.Json
+import scala.Conversion.into
+import scala.compiletime.summonInline
 
 /** The author of a [[Message]] in a [[Chat]]. */
 enum Role:
@@ -36,8 +38,9 @@ object Part:
 
   /**
     * Creates a part saying a value, as its [[Content]] says it: text as text,
-    * and a value with a schema or an encoder as JSON. Parts in a row make a
-    * message of several, as of an instruction and the value it is about.
+    * and a value with a schema or an encoder as JSON. A value given to a chat
+    * or message is said so already; this makes parts of a list of values to
+    * give it, as `chat.user(values.map(Part.of)*)`.
     *
     * @tparam A
     *   The type of the value.
@@ -49,6 +52,25 @@ object Part:
     *   A part saying the value.
     */
   def of[A : Content as A](value: A): Part = A.part(value)
+
+  /**
+    * Says a value as a part wherever a chat or message takes one, as its
+    * [[Content]] says it, so that values of different kinds mix in one message.
+    * A value whose type has no content is refused where it is given, saying
+    * what can be said.
+    *
+    * @tparam A
+    *   The type of the value.
+    *
+    * @return
+    *   The conversion of a value to the part saying it.
+    */
+  inline given fromContent[A]: Conversion[A, Part] =
+    converted(summonInline[Content[A]])
+
+  /** Converts by a content, so that no function is inlined where one is used. */
+  private def converted[A](content: Content[A]): Conversion[A, Part] =
+    content.part(_)
 
   /**
     * A picture, document or other media for the model to look at.
@@ -142,22 +164,20 @@ final case class Message(role: Role, content: List[Part]):
 object Message:
 
   /**
-    * Creates a message of one part, saying a value as its [[Content]] says it.
-    *
-    * @tparam A
-    *   The type of the value.
+    * Creates a message saying each value as its [[Content]] says it.
     *
     * @param role
     *   The author of the message.
     *
-    * @param value
-    *   The value: text, a part, or a value said as JSON.
+    * @param content
+    *   The values, in reading order: text, parts, or values said as JSON, of
+    *   any kinds together.
     *
     * @return
-    *   A message of one part.
+    *   A message of a part per value.
     */
-  def apply[A : Content as A](role: Role, value: A): Message =
-    Message(role, List(A.part(value)))
+  def apply(role: Role, content: into[Part]*): Message =
+    new Message(role, content.toList)
 
   /** What is sent between two text parts in a row. */
   private[iris] val paragraphBreak: String = "\n\n"
@@ -224,11 +244,8 @@ final case class Chat
   /**
     * Appends a user message saying each value as its [[Content]] says it: text
     * as text, a part as itself, such as the result of a tool the model called,
-    * and any other value as JSON. Values of different kinds are given as parts,
-    * by [[Part.of]].
-    *
-    * @tparam A
-    *   The type of the values.
+    * and any other value as JSON, of any kinds together. A list of parts is
+    * given as `parts*`, and one of other values as `values.map(Part.of)*`.
     *
     * @param content
     *   The values, in reading order.
@@ -236,24 +253,20 @@ final case class Chat
     * @return
     *   A copy of this chat ending with the message.
     */
-  def user[A : Content](content: A*): Chat =
-    appended(Chat.said(Role.User, content))
+  def user(content: into[Part]*): Chat = appended(Message(Role.User, content*))
 
   /**
     * Appends an assistant message saying each value as its [[Content]] says it,
     * as of an answer [[LlmClient.ask]] gave, to continue from.
     *
-    * @tparam A
-    *   The type of the values.
-    *
     * @param content
     *   The values, in reading order.
     *
     * @return
     *   A copy of this chat ending with the message.
     */
-  def assistant[A : Content](content: A*): Chat =
-    appended(Chat.said(Role.Assistant, content))
+  def assistant(content: into[Part]*): Chat =
+    appended(Message(Role.Assistant, content*))
 
   /**
     * Appends the model's reply, tool calls included.
@@ -327,21 +340,15 @@ final case class Chat
 object Chat:
 
   /**
-    * Creates a chat of one user message, as a single-turn prompt, saying a
-    * value as its [[Content]] says it. A system message is set with
-    * [[Chat.withSystem]].
+    * Creates a chat of one user message, as a single-turn prompt, saying each
+    * value as its [[Content]] says it, as [[Chat.user]] does. A system message
+    * is set with [[Chat.withSystem]].
     *
-    * @tparam A
-    *   The type of the value.
-    *
-    * @param user
-    *   What the user says: text, a part, or a value said as JSON.
+    * @param content
+    *   What the user says, in reading order: text, parts, or values said as
+    *   JSON, of any kinds together.
     *
     * @return
     *   A chat of one user message.
     */
-  def of[A : Content](user: A): Chat = Chat().user(user)
-
-  /** A message saying each value as its content says it. */
-  private def said[A : Content as A](role: Role, values: Seq[A]): Message =
-    Message(role, values.map(A.part).toList)
+  def of(content: into[Part]*): Chat = Chat().user(content*)

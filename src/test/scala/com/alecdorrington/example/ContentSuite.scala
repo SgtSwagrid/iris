@@ -1,12 +1,22 @@
 // Outside Iris's package, so that content resolves as it would for a user.
 package com.alecdorrington.example
 
-import com.alecdorrington.iris.{Chat, Message, Part, Role, Schema}
+import com.alecdorrington.iris.{Chat, Content, Message, Part, Role, Schema}
 import io.circe.{Encoder, Json}
 import munit.FunSuite
 
 /** A type with an encoder, but no schema, as it has no mirror to derive one. */
 final class Note(val text: String)
+
+/** A type with neither, so that it cannot be said. */
+final class Mute
+
+/** A picture of one's own, said by a content of its own. */
+final case class Scan(base64: String) derives Encoder.AsObject
+
+object Scan:
+
+  given Content[Scan] = scan => Part.Media("image/png", scan.base64)
 
 object Note:
 
@@ -113,9 +123,60 @@ class ContentSuite extends FunSuite:
       io.circe.Json.Null,
     )
 
-  test("values of different kinds together are told to be made parts"):
-    val errors = compileErrors("Chat().user(\"Look:\", 1.5)")
-    assert(errors.contains("Part.of"), errors)
+  test("values of different kinds are said together, each as its own type"):
+    assertEquals(
+      Chat().user("Look:", 1.5),
+      user(Part.Text("Look:"), Part.Text("1.5")),
+    )
+    assertEquals(
+      Chat.of(
+        "Review this person.",
+        ada,
+        Part.CacheBreakpoint,
+        "Be brief.",
+      ),
+      user(
+        Part.Text("Review this person."),
+        adaJson,
+        Part.CacheBreakpoint,
+        Part.Text("Be brief."),
+      ),
+    )
+    assertEquals(
+      Message(Role.User, "Review this person.", ada),
+      Message(
+        Role.User,
+        List(
+          Part.Text("Review this person."),
+          adaJson,
+        ),
+      ),
+    )
+
+  test("a value with no content is refused where it is given"):
+    val errors = compileErrors("Chat().user(\"Look:\", new Mute)")
+    assert(
+      errors.contains("Mute cannot be said to the model"),
+      errors,
+    )
+
+  test("a content of a type's own outranks its encoder"):
+    assertEquals(
+      Chat().user("What is this?", Scan("iVBORw0KGgo=")),
+      user(
+        Part.Text("What is this?"),
+        Part.Media("image/png", "iVBORw0KGgo="),
+      ),
+    )
+
+  test("a list of values is said as parts made of each"):
+    assertEquals(
+      Chat().user(List("First.", "Second.").map(Part.of)*),
+      user(
+        Part.Text("First."),
+        Part.Text("Second."),
+      ),
+    )
 
   test("a value of a union is said as json, unless text may be one"):
     assertEquals(
@@ -123,19 +184,7 @@ class ContentSuite extends FunSuite:
       Part.Text("""{"Boolean":true}"""),
     )
     val errors = compileErrors("Part.of[String | Int](1)")
-    assert(errors.contains("Part.of"), errors)
-
-  test("values of different kinds are said as parts of one message"):
-    assertEquals(
-      Chat().user(
-        Part.of("Review this person."),
-        Part.of(ada),
-      ),
-      user(
-        Part.Text("Review this person."),
-        adaJson,
-      ),
-    )
+    assert(errors.contains("union"), errors)
 
   test("several values of one kind are said as parts of one message"):
     assertEquals(

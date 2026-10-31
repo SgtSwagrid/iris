@@ -6,18 +6,30 @@ import scala.util.NotGiven
 
 /**
   * What may be said to the model: how a value is written as a part of a
-  * message, wherever a [[Chat]] or [[Message]] takes one.
+  * message, wherever a [[Chat]] or [[Message]] takes one. Values of different
+  * kinds mix freely there, each said as its own type's content:
+  *
+  * {{{
+  * chat.user("Review this draft.", draft, Part.CacheBreakpoint, "Be brief.")
+  * }}}
   *
   * A `String` is said as text, and a [[Part]] as itself. A value of a type with
   * a [[Schema]] is said as JSON as that writes it, so that it is written as the
   * schema the model may be told describes it, and a value of another type with
-  * a circe `Encoder` as that writes it. No other value can be said.
+  * a circe `Encoder` as that writes it. A type given a content of its own is
+  * said as that says it, as a picture of one's own may be:
+  *
+  * {{{
+  * given Content[Scan] = scan => Part.Media("image/png", scan.base64)
+  * }}}
+  *
+  * No other value can be said.
   *
   * @tparam A
   *   The type of the value.
   */
 @implicitNotFound(
-  "${A} cannot be said to the model: say a String, a Part, or a value with a Schema or a circe Encoder. Values of different kinds go in one message as parts, made with Part.of.",
+  "${A} cannot be said to the model: say a String, a Part, or a value with a Schema, a circe Encoder or a Content of its own. Text is never said as part of a union, such as the String | Double of a list of text and numbers: say each value where its own type is known.",
 )
 trait Content[A]:
 
@@ -52,7 +64,7 @@ object Content:
     * A value with a schema, said as JSON, for every type but parts, which are
     * [[part]], and those text may be, which are [[text]] where `String` and
     * otherwise none, so that text inferred with other values into a union, as
-    * `String | Double`, is never said as JSON, but asked for as parts.
+    * `String | Double`, is never said as JSON, but refused.
     *
     * @tparam A
     *   The type of the value.
