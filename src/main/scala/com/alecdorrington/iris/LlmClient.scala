@@ -1,7 +1,7 @@
 package com.alecdorrington.iris
 
 import cats.{~>, MonadThrow}
-import cats.effect.{Async, Resource}
+import cats.effect.{Async, Clock, Resource}
 import cats.syntax.traverse.*
 import fs2.Stream
 import sttp.capabilities.fs2.Fs2Streams
@@ -161,7 +161,7 @@ trait LlmClient[F[_]]:
       Stream.emits(List.concat(
         Option.when(reply.text.nonEmpty)(Delta.Text(reply.text)),
         reply.toolCalls.map(Delta.ToolCall(_)),
-        List(Delta.End(reply.stopReason, reply.usage)),
+        List(Delta.End(reply.stopReason, reply.usage, reply.cost)),
       )),
     )
 
@@ -282,7 +282,7 @@ object LlmClient:
     * that would stream arrives whole instead, once it ends.
     *
     * @tparam F
-    *   The effect type.
+    *   The effect type, whose clock prices each reply as it comes.
     *
     * @param config
     *   The model, key and defaults to use.
@@ -295,7 +295,7 @@ object LlmClient:
     * @return
     *   A client for the configured provider.
     */
-  def apply[F[_] : MonadThrow]
+  def apply[F[_] : MonadThrow : Clock]
     (config: LlmConfig, backend: Backend[F])
     : LlmClient[F] = JsonClient(
     ProviderApi.of(config.provider),

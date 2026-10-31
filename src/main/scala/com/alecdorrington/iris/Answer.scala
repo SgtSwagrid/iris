@@ -51,6 +51,12 @@ final case class Answer[F[_], +A]
   *   The token counts of the reply, or of every reply an answer was asked for
   *   in, together.
   *
+  * @param cost
+  *   What the reply cost, or every reply an answer was asked for in, together,
+  *   each priced as it came at the [[Rates]] of the configuration or else of
+  *   its model, or `None` where any has none, as for a model Iris does not
+  *   list.
+  *
   * @param toolCalls
   *   The tools the model asks to have run before it goes on, if any.
   *
@@ -62,6 +68,7 @@ final case class Reply
     text: String,
     stopReason: StopReason = StopReason.Completed,
     usage: Usage = Usage(),
+    cost: Option[Usd] = None,
     toolCalls: List[Part.ToolCall] = List.empty,
     attempts: Int = 1,
   )

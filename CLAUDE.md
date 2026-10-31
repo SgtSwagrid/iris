@@ -86,11 +86,30 @@ longer.
   rates, but Iris uses Chat Completions without `prompt_cache_options`, so one write count is enough); Gemini's
   prompt holds its cache, and `thoughtsTokenCount` lies outside `candidatesTokenCount`.
   Gemini leaves out every count of `0` (protobuf's JSON), so a count left out is `0`, never unknown, and a reply
-  with no usage at all has `Usage()`: `Answer.usage` and `Delta.End.usage` are never optional (the user chose zeros
+  with no usage at all has `Usage()`: `Reply.usage` and `Delta.End.usage` are never optional (the user chose zeros
   over `None`). `inputTokens`, `cachedTokens` and `outputTokens` are totals of the counts, the whole prompt, the part
   of it read from the cache, and the whole reply. Streams count too: Anthropic's start counts the request and its
   stop the reply (taking what it leaves out from the start), and OpenAI's usage comes in a chunk of its own after
   `finish_reason`, so its `Delta.End` comes when the stream does.
+- Each `ProviderApi` lists its models' `Rates` (`rates(model, at)`), `Usd` per million tokens on the standard tier,
+  copied by hand from its pricing page (no provider serves prices by API, so they are listed rather than fetched
+  from a third party's catalogue), with any change the provider has announced from its day (`ProviderApi.utc`,
+  midnight UTC, Iris's assumption as Google names no time zone, by hand as JavaScript has no `java.time`).
+  GPT-5.6 Sol's rates are a promotion "at least through November 21, 2026" with no later price given: a run of
+  `/update-iris` after that day re-checks them. A long-prompt threshold counts the whole prompt, cache included, as
+  Anthropic documents; OpenAI and Google do not say, and are taken to count alike. Every listed model must have rates (`RatesSuite`
+  checks), so a new model needs its prices. A rate per `Usage` count: a count charged nothing apart is charged as
+  its kind (cache writes as input on Gemini and OpenAI before GPT-5.6, audio as input but on Gemini models
+  pricing it apart, thinking as output), and a long-prompt tier is `Rates.Above`, which prices the whole request
+  once its `inputTokens` exceed it (Claude Haiku 5.5 over 100K, GPT-5.6 and later over 272K, Gemini 2.5 Pro over
+  200K). Figures go through `ProviderApi.usd` and derived ones are worked out in `BigDecimal`, never `Double`.
+  `JsonClient` and `SseClient` price each reply as it comes, by the effect's `Clock`, at `LlmConfig.rates`, else
+  those listed, so `Reply.cost` and `Delta.End.cost` are per request, summed over an ask only where every attempt
+  has one, and `None` for an `Other` model with no rates configured. Iris prices nothing it does not send: batch,
+  priority or fast mode, data residency, server tools. `/update-iris` keeps the rates current.
+  Money is a `Usd` (an `amount: BigDecimal`), never a bare number, and Iris converts no currency, as every provider
+  prices in dollars: a host billed in another converts at its own rate (the user chose this over a general money
+  type, or conversion within Iris).
 - Providers run adjacent text blocks together (Anthropic was measured to: two blocks count exactly as their
   texts concatenated), so every `ProviderApi` serialises a message's parts through `Message.separated`, which opens
   with a blank line each text part following another with only breakpoints (or empty text) between them. A part's

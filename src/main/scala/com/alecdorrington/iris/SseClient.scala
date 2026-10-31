@@ -24,11 +24,26 @@ private[iris] final class SseClient[F[_] : Async]
     backend: StreamBackend[F, Fs2Streams[F]],
   ):
 
-  def stream(chat: Chat, options: ReplyOptions): Stream[F, Delta] = Stream
-    .eval(Async[F].fromEither(request(chat, options)))
-    .flatMap(sent)
-    .through(Sse.events)
-    .through(api.reply[F])
+  def stream(chat: Chat, options: ReplyOptions): Stream[F, Delta] =
+    Stream
+      .eval(Async[F].fromEither(request(chat, options)))
+      .flatMap(sent)
+      .through(Sse.events)
+      .through(api.reply[F])
+      .evalMap(priced)
+
+  /** The reply's end with what it cost, at the rates of the moment it came. */
+  private def priced(delta: Delta): F[Delta] = delta match
+    case Delta.End(stopReason, usage, _) => Async[F]
+        .realTime
+        .map(now =>
+          Delta.End(
+            stopReason,
+            usage,
+            api.cost(config, usage, now),
+          ),
+        )
+    case text => Async[F].pure(text)
 
   private def request
     (chat: Chat, options: ReplyOptions)

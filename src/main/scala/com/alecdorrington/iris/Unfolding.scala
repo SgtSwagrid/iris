@@ -112,6 +112,7 @@ private[iris] object Unfolding:
                 text = unfinished.text,
                 stopReason = ending.fold(StopReason.Unknown)(_._2.stopReason),
                 usage = ending.fold(Usage())(_._2.usage),
+                cost = ending.flatMap(_._2.cost),
                 toolCalls = ending.fold(Nil)(_._1.toList),
               ),
               ending.isDefined,

@@ -67,6 +67,29 @@ class StallSuite extends FunSuite:
       ),
     )
 
+  test("a streamed reply ends with what it cost when it came"):
+    serving(
+      """data: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":1}}}
+        |
+        |data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}
+        |
+        |""".stripMargin,
+      stalls = false,
+    )(configured =>
+      assertEquals(
+        LlmClient
+          .resource[IO](configured)
+          .use(_.stream(Chat.of("Hello")).compile.toList)
+          .unsafeRunTimed(30.seconds),
+        // Claude Haiku 4.5's $1 and $5 per million tokens.
+        Some(List(Delta.End(
+          StopReason.Completed,
+          Usage(uncachedTokens = 3, visibleTokens = 2),
+          Some(Usd(BigDecimal("0.000013"))),
+        ))),
+      ),
+    )
+
   test("a reply that stalls once begun times out as configured"):
     serving(
       """{"id":"msg_1","content":[""",

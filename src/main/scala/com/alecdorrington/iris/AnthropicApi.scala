@@ -3,6 +3,7 @@ package com.alecdorrington.iris
 import fs2.{RaiseThrowable, Stream}
 import io.circe.{Decoder, Json}
 import io.circe.syntax.*
+import scala.concurrent.duration.FiniteDuration
 import sttp.model.{Header, Uri}
 
 /**
@@ -50,6 +51,39 @@ private[iris] object AnthropicApi extends ProviderApi:
 
   /** Anthropic writes the cache without replying when allowed no tokens. */
   override val leastReply: Int = 0
+
+  /** As https://platform.claude.com/docs/en/about-claude/pricing gives them. */
+  override def rates(model: LlmModel, at: FiniteDuration): Option[Rates] =
+    model match
+      case LlmModel.ClaudeFable5_1 | LlmModel.ClaudeMythos5_1 =>
+        Some(priced(10, 0.25, 50))
+      case LlmModel.ClaudeFable5 | LlmModel.ClaudeMythos5 =>
+        Some(priced(10, 1, 50))
+      case LlmModel.ClaudeOpus5_5 => Some(priced(4, 0.20, 20))
+      case LlmModel.ClaudeOpus5 | LlmModel.ClaudeOpus4_8 | LlmModel
+          .ClaudeOpus4_7 | LlmModel.ClaudeOpus4_6 => Some(priced(5, 0.50, 25))
+      case LlmModel.ClaudeSonnet5_5 => Some(priced(2, 0.10, 10))
+      case LlmModel.ClaudeSonnet5   => Some(priced(2, 0.20, 10))
+      case LlmModel.ClaudeSonnet4_6 => Some(priced(3, 0.30, 15))
+      case LlmModel.ClaudeHaiku5_5 => Some(priced(0.10, 0.01, 0.50).copy(above =
+          Some(Rates.Above(100_000, priced(0.50, 0.05, 2.50))),
+        ))
+      case LlmModel.ClaudeHaiku4_5 => Some(priced(1, 0.10, 5))
+      case _                       => None
+
+  /**
+    * Rates by input, cache hits and output, writing the cache costing a quarter
+    * more than input, for the five minutes Iris caches for.
+    */
+  private def priced(input: Double, hit: Double, output: Double): Rates = Rates(
+    uncached = ProviderApi.usd(input),
+    cacheRead = ProviderApi.usd(hit),
+    cacheWrite = ProviderApi.usd(input) * BigDecimal(1.25),
+    uncachedAudio = ProviderApi.usd(input),
+    cacheReadAudio = ProviderApi.usd(hit),
+    visible = ProviderApi.usd(output),
+    thinking = ProviderApi.usd(output),
+  )
 
   override def counting
     (

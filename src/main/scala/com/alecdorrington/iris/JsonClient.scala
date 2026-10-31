@@ -1,6 +1,7 @@
 package com.alecdorrington.iris
 
 import cats.MonadThrow
+import cats.effect.Clock
 import cats.syntax.all.*
 import fs2.Stream
 import io.circe.Decoder
@@ -12,7 +13,7 @@ import sttp.model.Uri
   * streaming through an [[SseClient]] where its backend can, and otherwise
   * giving each reply whole.
   */
-private[iris] final class JsonClient[F[_] : MonadThrow]
+private[iris] final class JsonClient[F[_] : MonadThrow : Clock]
   (
     api: ProviderApi,
     config: LlmConfig,
@@ -35,6 +36,11 @@ private[iris] final class JsonClient[F[_] : MonadThrow]
         )(using api.replies),
       )
       .flatMap(MonadThrow[F].fromEither(_))
+      .flatMap(reply =>
+        Clock[F]
+          .realTime
+          .map(now => reply.copy(cost = api.cost(config, reply.usage, now))),
+      )
 
   override def count(chat: Chat, options: ReplyOptions): F[Int] = MonadThrow[F]
     .fromEither(api.counting(config, chat, options))

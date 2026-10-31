@@ -119,11 +119,15 @@ private[iris] object Question:
     (reply.stopReason == StopReason.Completed ||
     reply.stopReason == StopReason.StopSequence)
 
-  /** The last reply, counting every attempt: its usage is theirs together. */
+  /**
+    * The last reply, counting every attempt: its usage is theirs together, and
+    * its cost too, where each has one.
+    */
   def summed(replies: Vector[Reply]): Reply = replies
     .last
     .copy(
       usage = replies.map(_.usage).reduce(_ + _),
+      cost = replies.traverse(_.cost).map(_.reduce(_ + _)),
       attempts = replies.size,
     )
 

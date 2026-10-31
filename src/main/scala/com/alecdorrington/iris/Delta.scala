@@ -33,8 +33,16 @@ enum Delta:
     *
     * @param usage
     *   The token counts of the whole reply.
+    *
+    * @param cost
+    *   What the reply cost, as [[Reply.cost]] says.
     */
-  case End(stopReason: StopReason, usage: Usage)
+  case End
+    (
+      stopReason: StopReason,
+      usage: Usage,
+      cost: Option[Usd] = None,
+    )
 
 /**
   * A tool call whose arguments arrive in fragments of JSON, as Anthropic and
