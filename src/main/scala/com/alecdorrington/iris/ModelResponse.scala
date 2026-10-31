@@ -64,8 +64,8 @@ final case class ValidatedResponse[F[_], +A]
 
 /**
   * One response of the model's, as the provider gave it, before any value is
-  * read from it: what a client's `send` and [[ModelClient.warmCache]] give,
-  * and each of the responses a [[ValidatedResponse]] or
+  * read from it: what a client's `send` and [[ModelClient.warmCache]] give, and
+  * each of the responses a [[ValidatedResponse]] or
   * [[ModelError.UnreadableResponse]] keeps.
   *
   * @param text
