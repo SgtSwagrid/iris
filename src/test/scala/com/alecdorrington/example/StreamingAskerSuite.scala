@@ -980,6 +980,54 @@ class StreamingAskerSuite extends FunSuite:
           case other => fail(s"Not told of each: $other"),
     )
 
+  /** Where each chat sent holds a breakpoint: its message, and its part. */
+  private def breakpoints(chats: List[Chat]): List[List[(Int, Int)]] = chats
+    .map(chat =>
+      for
+        (message, at) <- chat.messages.zipWithIndex
+        (part, index) <- message.parts.zipWithIndex
+        if part == MessagePart.CacheBreakpoint
+      yield at -> index,
+    )
+
+  test("each request after a round of tools closes with a breakpoint alone"):
+    run(
+      for
+        asked       <- Ref.of[IO, List[String]](Nil)
+        (llm, sent) <- streamer(
+          Stream(emit("a"), look("b")) ++ toolStop,
+          Stream(emit("b")) ++ toolStop,
+          stop,
+        )
+        words           <- emitted(llm).flatMap(_.value.get.compile.toList)
+        (whole, wholly) <- streamer(
+          Stream(look("Ada")) ++ toolStop,
+          written("""{"name":"Ada","age":36}"""),
+        )
+        person <- whole
+          .ask[Person](
+            Chat.userSays("Invent a person."),
+            tools = List(dictionary(asked)),
+          )
+          .map(_.value)
+        streamed <- sent
+        read     <- wholly
+      yield
+        assertEquals(
+          (words, person),
+          (List(Word("a"), Word("b")), Some(Person("Ada", 36, None))),
+        )
+        // After the results of each round: the first has two, the next one.
+        assertEquals(
+          breakpoints(streamed),
+          List(Nil, List(2 -> 2), List(4 -> 1)),
+        )
+        assertEquals(
+          breakpoints(read),
+          List(Nil, List(2 -> 1)),
+        ),
+    )
+
   test("calls sharing an id are each answered, in order"):
     run(
       for

@@ -547,6 +547,87 @@ class AskSuite extends FunSuite:
       Right(Some("Snowing in Zug.")),
     )
 
+  /** Where each block marked for the cache lies: its message, and itself. */
+  private def marks(body: Json): List[(Int, Int)] =
+    for
+      (message, at) <- body
+        .hcursor
+        .get[List[Json]]("messages")
+        .toOption
+        .toList
+        .flatten
+        .zipWithIndex
+      (block, index) <- message
+        .hcursor
+        .get[List[Json]]("content")
+        .toOption
+        .toList
+        .flatten
+        .zipWithIndex if block.hcursor.downField("cache_control").succeeded
+    yield at -> index
+
+  test("each request after a round of tools closes with a breakpoint alone"):
+    val look = RunnableTool[SyncIO](
+      Tool("look", "Looks a word up.", Json.obj()),
+      _ => SyncIO.pure("Found."),
+    )
+    val calling = Json
+      .obj(
+        "content" -> Json.arr(Json.obj(
+          "type"  -> "tool_use".asJson,
+          "id"    -> "call_1".asJson,
+          "name"  -> "look".asJson,
+          "input" -> Json.obj(),
+        )),
+        "stop_reason" -> "tool_use".asJson,
+      )
+      .noSpaces
+    // The host's breakpoints mark the first blocks, then the newest end of
+    // the rounds and what follows them, the round's results and then why its
+    // reply could not be read, where Anthropic has room.
+    List(1, AnthropicApi.maxBreakpoints).foreach: own =>
+      val prompt = Chat.userSays(
+        (1 to own)
+          .toList
+          .flatMap(n =>
+            List(
+              MessagePart.Text(s"Part $n."),
+              MessagePart.CacheBreakpoint,
+            ),
+          ) :+ MessagePart.Text(asking)*,
+      )
+      val host                              = (0 until own).toList.map(0 -> _)
+      def ending(at: Int): List[(Int, Int)] = Option
+        .when(own < AnthropicApi.maxBreakpoints)(at -> 0)
+        .toList
+      val asked =
+        for
+          bodies <- Ref.of[SyncIO, List[Json]](Nil)
+          client = ModelClient[SyncIO](
+            config,
+            BackendStub(CatsMonadError[SyncIO]())
+              .whenAnyRequest
+              .thenRespondF(request =>
+                request.body match
+                  case StringBody(sent, _, _) =>
+                    val body    = json(sent)
+                    val written = body.hcursor.get[List[Json]]("messages") match
+                      case Right(List(_))       => calling
+                      case Right(List(_, _, _)) => said("Ada, 36.")
+                      case _                    => said(adaJson)
+                    bodies.update(_ :+ body).as(ResponseStub.adjust(written))
+                  case _ => SyncIO.raiseError(Exception("No JSON was sent.")),
+              ),
+          )
+          answer <- client.askWhole[Person](prompt, tools = List(look))
+          sent   <- bodies.get
+        yield answer._1 -> sent.map(marks)
+      assertEquals(
+        asked.unsafeRunSync(),
+        (Some(ada), List(host, host ++ ending(2), host ++ ending(4))),
+        own,
+      )
+
   /** A client of a provider answering every request with the body. */
   private def answering(model: Model, body: String): ModelClient[SyncIO] =
     ModelClient[SyncIO](

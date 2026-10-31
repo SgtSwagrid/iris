@@ -459,6 +459,19 @@ in `ModelRequest.Options.tools`, cannot be offered beside such a stream, whose a
 not end at their calls, nor tools named `emit` or `done`. Nested streams are streamed this way only without
 tools.
 
+Each round sends the whole chat again, the rounds before it included, so each request after a round
+closes with a `MessagePart.CacheBreakpoint` of the ask's own: it reads every earlier round from the cache
+and writes only its own, where the provider caches only what it is told to (Anthropic). The newest end
+alone is marked, after your own breakpoints, and where yours already mark the four blocks Anthropic allows,
+the rounds are left unmarked rather than crowd one of yours out.
+
+A write costs a quarter more than reading afresh, and covers all after the last prefix already cached: the
+first request after a round writes all after your last breakpoint, the whole prompt where you have none, and
+the last request's write is never read. So an ask that runs tools only once pays a quarter more for what its
+second request writes than it would uncached; more rounds repay that many times over. End what every ask shares,
+such as the instructions and any documents, with a breakpoint of your own, so that only the rounds are ever
+written.
+
 Or offer the model tools for you to run yourself, through `ModelRequest.Options.tools`, and it will say so in its
 reply's `toolCalls`, with no `value`: append the reply and each tool's result, and ask again.
 
@@ -527,8 +540,9 @@ not, as when the last breakpoint opens a message to cache only what came before 
 by the least a user can say.
 
 Anthropic caches only what it is told to, and a breakpoint marks the block before it, at most four
-blocks in one chat (breakpoints in a row mark one). OpenAI and Gemini cache long prefixes of their
-own accord and are sent nothing.
+blocks in one chat (breakpoints in a row mark one), but breakpoints closing a chat, as an ask running
+tools puts after each round, mark its last block only where the others leave room. OpenAI and Gemini
+cache long prefixes of their own accord and are sent nothing.
 Each provider keeps a cache per model, and caches nothing shorter than its own minimum.
 
 ### Errors
