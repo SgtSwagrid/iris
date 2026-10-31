@@ -72,7 +72,9 @@ longer.
   charges them (never `mapK`, which wraps each pull of a stream and so can hold no check across one). It refuses a
   request, or a stream before it starts, once the limit is spent (`LlmError.OverBudget`), then charges each reply's
   `cost`, so requests in flight, a running stream among them, may take it past the limit (the user chose this soft
-  limit); a reply with no cost fails (`LlmError.Unpriced`). `count` costs nothing and is never refused. Each tool
+  limit, which in-flight requests may overshoot, never reset); a reply with no cost fails (`LlmError.Unpriced`)
+  after the provider has charged for it, which is documented, not prevented (the user chose this over a flag
+  saying whether a client can price, by which `limits` would refuse up front). `count` costs nothing and is never refused. Each tool
   round and `emit` round of an ask is a request of its own, through `send` or `stream`, so is metered and checked:
   a `Budget` is what bounds the tool loop below, which nothing else caps. Clients themselves stay stateless.
   It runs a tool only where the host hands `ask` one with its implementation (`RunnableTool`), which the user

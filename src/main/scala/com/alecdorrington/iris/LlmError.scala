@@ -115,7 +115,8 @@ enum LlmError(message: String) extends Exception(message):
 
   /**
     * A reply a [[Budget]] could not charge, as it has no cost: from a model
-    * Iris does not list, whose configuration gives no rates.
+    * Iris does not list, whose configuration gives no rates. The provider has
+    * charged for the request by then, and its reply is lost.
     */
   case Unpriced
     extends LlmError(

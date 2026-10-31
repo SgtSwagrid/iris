@@ -300,10 +300,17 @@ yield (answer, left)
 ```
 
 A reply's cost is known only once it comes, so requests already sent when the limit is reached
-are charged in full, and may take the spending past it: a stream running then goes on to its end. A
-stream stopped before its end is charged nothing, though the provider may charge for what it wrote. A budget needs prices: a reply with no
-cost, from a model Iris does not list whose configuration gives no rates, fails its request with
-`LlmError.Unpriced`. A budget is never needed: a client without one spends without limit.
+are charged in full, and may take the spending past it: by as many requests as are in flight at
+once, so a host sending six at a time may pass it by up to six replies' cost. A stream running then
+goes on to its end, and one stopped before its end is charged nothing, though the provider may
+charge for what it wrote. What is spent never resets: a budget for each day, or each month, is a new
+`Budget` for each.
+
+A budget needs prices: a reply with no cost, from a model Iris does not list whose configuration
+gives no rates, fails its request with `LlmError.Unpriced`. By then the provider has charged for
+it and the reply is lost, as is every later one from that model, so give such a model `rates` in
+its `LlmConfig` before limiting it. A budget is never needed: a client without one spends without
+limit.
 
 ### Pictures and documents
 

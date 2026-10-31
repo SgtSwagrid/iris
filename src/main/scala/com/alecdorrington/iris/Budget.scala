@@ -11,14 +11,18 @@ import fs2.Stream
   * whatever its model or provider. A request is refused once as much as the
   * limit has been spent, and is charged what its reply cost when the reply
   * comes. Its cost is known only then, so requests already sent when the limit
-  * is reached are charged in full, and may take the spending past it: a stream
-  * running then among them, which goes on to its end. A stream stopped before
-  * its end reports no usage, so is charged nothing, though the provider may
-  * charge for what it wrote.
+  * is reached are charged in full, and may take the spending past it, by as
+  * many requests as are in flight at once: a stream running then among them,
+  * which goes on to its end. A stream stopped before its end reports no usage,
+  * so is charged nothing, though the provider may charge for what it wrote.
+  * What is spent never resets, so a budget for each day, say, is a new budget
+  * each day.
   *
   * A budget needs prices: a reply with no [[Reply.cost]], as from a model Iris
   * does not list whose configuration gives no [[LlmConfig.rates]], fails its
-  * request with [[LlmError.Unpriced]].
+  * request with [[LlmError.Unpriced]]. By then the provider has charged for it,
+  * and the reply is lost, as is every later one from that model, so give such a
+  * model rates before limiting it.
   *
   * {{{
   * Budget[IO](Usd(BigDecimal(5))).map(budget => budget.limits(client))
