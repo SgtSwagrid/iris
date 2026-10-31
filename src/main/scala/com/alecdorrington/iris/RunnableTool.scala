@@ -85,11 +85,10 @@ private[iris] final case class Toolbox[F[_]](tools: List[RunnableTool[F]]):
   def ran
     (calls: List[Part.ToolCall])
     (using Applicative[F])
-    : F[List[Part.ToolResult]] = calls.traverse(call =>
-    tools
-      .find(_.tool.name == call.tool)
-      .fold(s"No tool is named `${ call.tool }`.".pure[F])(_.run(
-        call.arguments,
-      ))
-      .map(Part.ToolResult(call.id, call.tool, _)),
-  )
+    : F[List[Part.ToolResult]] = calls.traverse(run)
+
+  /** The result of a call of a tool in this box. */
+  def run(call: Part.ToolCall)(using Applicative[F]): F[Part.ToolResult] = tools
+    .find(_.tool.name == call.tool)
+    .fold(s"No tool is named `${ call.tool }`.".pure[F])(_.run(call.arguments))
+    .map(Part.ToolResult(call.id, call.tool, _))

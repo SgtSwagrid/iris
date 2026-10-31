@@ -226,7 +226,7 @@ private[iris] object Question:
     * as of a draft followed by an answer. A fence within a JSON string is part
     * of it.
     */
-  def parsed(text: String): Either[String, Json] =
+  private def parsed(text: String): Either[String, Json] =
     (text.trim :: fenced(text).toList)
       .map(parse)
       .collectFirst { case Right(json) => json }

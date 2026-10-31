@@ -97,7 +97,8 @@ trait LlmClient[F[_]]:
     *   The most replies to ask for before an answer is given, three unless
     *   given, which must be at least one, as the effect otherwise fails with an
     *   `IllegalArgumentException`; a reply asking for tools that are run does
-    *   not count.
+    *   not count. Given through `emit`, the most times in a row an element may
+    *   be emitted unreadable.
     *
     * @param tools
     *   The tools to offer the model and run wherever it asks for them, beside
@@ -105,7 +106,14 @@ trait LlmClient[F[_]]:
     *   for these alone is followed by their outputs, and the model asked to go
     *   on, as often as it asks. Given tools, an answer that is itself a
     *   `fs2.Stream` is given element by element through a tool of its own,
-    *   `emit`, so that the model may run the others between elements.
+    *   `emit`, so that the model may run the others between elements, beside
+    *   which no tool may be offered for the host to run, as the effect
+    *   otherwise fails with an `IllegalArgumentException`. A tool whose `run`
+    *   fails fails the ask, or the stream and [[Answer.reply]] where its answer
+    *   was given, the model not told. Tools are run for as long as the model
+    *   asks for them, each round a request whose cost is the host's to bound,
+    *   as for any request's: unbounded, a model that never stops asking for
+    *   them is asked again without end.
     *
     * @return
     *   An effect producing the answer, as soon as it can be given. It fails
