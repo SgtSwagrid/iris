@@ -34,16 +34,17 @@ private[iris] object Unfolding:
       Deferred[F, Either[Throwable, Reply]],
     ).mapN(Asking(stream(_, options), A, attempts, _, _, _))
       .flatMap(asking =>
-        asking
-          .read(Question.opening(chat, A))
-          .start
-          .flatMap(reading =>
+        // Started and watched at once, so that no cancel falls between.
+        Async[F]
+          .uncancelable(poll =>
             asking
-              .value
-              .get
-              .rethrow
-              .onCancel(reading.cancel)
-              .map(Answer(_, asking.reply.get.rethrow)),
+              .read(Question.opening(chat, A))
+              .start
+              .flatMap(reading =>
+                poll(asking.value.get.rethrow)
+                  .onCancel(reading.cancel)
+                  .map(Answer(_, asking.reply.get.rethrow, reading.cancel)),
+              ),
           ),
       )
 
@@ -85,7 +86,7 @@ private[iris] object Unfolding:
     def read(chat: Chat): F[Unit] = attempt(chat, Vector.empty)
       .handleErrorWith(failed(_).uncancelable)
       .onCancel(failed(
-        IllegalStateException("The ask was cancelled before its reply ended."),
+        IllegalStateException("The answer was cancelled before its reply ended."),
       ))
 
     /** Reads the reply to the chat, after the replies so far. */
@@ -163,21 +164,30 @@ private[iris] object Unfolding:
               "Its stream ended before it said it was over.",
             )
             .raiseError
-        case Some(_) if unfinished.whole =>
-          reply.complete(Right(Question.summed(replies))).void
-        case Some(_) => Question
-            .unreadable(
-              replies,
-              Question
-                .hopeless(replies.last)
-                .getOrElse("It ended before its JSON did."),
-            )
-            .raiseError
+        case Some(_) => fault(replies, unfinished.whole) match
+            case None => reply.complete(Right(Question.summed(replies))).void
+            case Some(why) => Question.unreadable(replies, why).raiseError
         case None => Question.verdict(schema, chat, replies, attempts) match
             case Question.Verdict.Answered(read, whole) =>
               value.complete(Right(read)) *> reply.complete(Right(whole)).void
             case Question.Verdict.Again(next)   => attempt(next, replies)
             case Question.Verdict.Failed(error) => error.raiseError
+
+    /**
+      * Why the reply an answer was given from cannot end it, where it cannot,
+      * as [[Question.verdict]] would say of it whole: it asked for a tool, as
+      * no answer may once given, or is cut off, stopped or empty, or its JSON
+      * did not end.
+      */
+    private def fault(replies: Vector[Reply], whole: Boolean): Option[String] =
+      val last = replies.last
+      Option
+        .when(Question.calledTools(last))(
+          if whole then "It asked for a tool once its answer was given."
+          else "It asked for a tool partway through its answer.",
+        )
+        .orElse(Question.hopeless(last))
+        .orElse(Option.unless(whole)("It ended before its JSON did."))
 
     /** Fails whatever is still to be read of the answer. */
     private def failed(error: Throwable): F[Unit] =

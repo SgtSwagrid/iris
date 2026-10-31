@@ -24,7 +24,8 @@ through an `SseClient` where the backend can stream) the one every other makes; 
 wrappers override them (`LlmClient.Forwarding`, `mapK`). `stream` defaults to `send`'s reply whole, so a client over
 a backend that cannot stream (`LlmClient(config, backend: Backend[F])`, as the SyncIO tests build), or one a host
 writes with `send` alone, still answers a type holding a stream, all at once. `ask` needs `Async`, as it reads a
-streamed reply in a fiber of its own (unscoped: read to its end once the answer is given, by the user's choice);
+streamed reply in a fiber of its own (unscoped, by the user's choice: read to its end once the answer is given,
+unless `Answer.cancel`, which the user asked for, cancels that fiber);
 tests in `SyncIO` ask through `Fixtures.askWhole`, which is `Question.ask` over `send`. Each `LlmProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
 `JsonHttp`), which tells the one `JsonClient` and the one `SseClient` all they need to know of it: its endpoints,
 request bodies, credentials, the chats it refuses, how its replies read, and how it counts tokens. Anything
@@ -62,7 +63,7 @@ longer.
 - A set but unrecognised `LLM_PROVIDER` or `LLM_MODEL` means unconfigured (`None`), never a fall back to key inference.
 - The library does no throttling, retrying or logging of its own; those are the host's to wrap around a client.
   The one exception is `ask`, which asks again after a reply it cannot read, never after a failed request.
-  Nor does it run a tool it is asked for: `ReplyOptions.tools` offers them and `Answer.toolCalls`
+  Nor does it run a tool it is asked for: `ReplyOptions.tools` offers them and `Reply.toolCalls`
   reports what was asked, but what a tool does, and whether it may, is the host's.
 - A `Part.CacheBreakpoint` ends a prefix worth caching and says nothing to the model. Anthropic is told of one by
   `cache_control` on the block before it (in its message, else the previous message's last, else the system message),
@@ -101,12 +102,12 @@ longer.
   `reasoning_effort` (`Max` as `max`, or as `high` on the models in `OpenAiApi.cappedAtHigh`, such as `gpt-5`) and Gemini's `generationConfig.thinkingConfig.thinkingBudget`
   (fixed amounts within every thinking Gemini model's range). Iris never chooses one, and a model that cannot take one
   refuses the request; retrying at a lower effort is the host's to do.
-- `LlmClient.ask[A : Schema]` reads every type one way, `String` included, and always gives an `Answer[A]`:
-  the last reply's text, stop reason and tool calls, the usage of every attempt summed, the attempts, and
-  `value: Option[A]`, `None` where the model asked for a tool. Never read one type differently from another, as
+- `LlmClient.ask[A : Schema]` reads every type one way, `String` included, and always gives an `Answer[F, A]`:
+  `value: Option[A]`, `None` where the model asked for a tool, and `reply`, the last reply's text, stop reason
+  and tool calls, the usage of every attempt summed, and the attempts. Tool calls count only under `ToolCall`,
+  `Completed` or `StopSequence` (`Question.calledTools`), never under a refusal or the token limit. Never read one type differently from another, as
   the removed `Answer` type class once did, nor give some types a different result: the user wants every ask
-  uniform. The provider's own reply is an `Answer[Nothing]`
-  (`Answer` is covariant), which `send`, `warm` and `Unreadable` give. `ask` is built on `send` alone,
+  uniform. The provider's own reply is a `Reply`, which `send`, `warm` and `Unreadable` give. `ask` is built on `send` alone,
   provider-agnostic, and passes `Question.ask` the client's `send` as a function, as `send` is protected: the schema is asked for in words closing the
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
   native structured output. It stays after any breakpoint, so is never cached, by the user's choice on the
@@ -212,7 +213,10 @@ longer.
   required streams after the last begun are handed over before they begin (`Frame.coming`), so that every trailing
   stream of a value is live. A value is handed over before it is whole only while a member it is writing is open and
   read already (`Unfinished.open`): until a stream begins, a reply that cannot be read can still be asked again, and
-  a union whose case is whole waits to be whole itself. Once a value is handed over (`Frame.taken`), a member it
+  a union whose case is whole waits to be whole itself. So how a reply's parts arrive can decide whether a value is
+  given early (a stream opening and closing within one part is never seen open); tests that mean a stream to be
+  seen open feed it a character at a time. A given answer's reply is checked at its end as `verdict` checks one
+  (`Unfolding.fault`): tool calls, a stop, the token limit or unended JSON fail it as `Unreadable`. Once a value is handed over (`Frame.taken`), a member it
   knows arriving later, or a reserved stream never begun, fails the reply rather than be lost. `Unfinished` follows only brackets, strings,
   escapes, commas and colons
   (circe parses each value once whole, and the schema's own decoder reads it, so every value is decoded by the

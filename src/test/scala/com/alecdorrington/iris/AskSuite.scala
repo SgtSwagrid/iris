@@ -276,6 +276,13 @@ class AskSuite extends FunSuite:
      "function":{"name":"weather","arguments":"{}"}}]},
     "finish_reason":"stop"}]}"""
 
+  test("calls in a reply the provider stopped are no calls, but a stop"):
+    failsAtOnceAs[Person](
+      """{"content":[{"type":"tool_use","id":"call_1","name":"weather",
+        "input":{}}],"stop_reason":"refusal"}""",
+      "It stopped, as `refusal`.",
+    )
+
   test("a reply asking for a tool is given at once, with no answer"):
     List(
       (

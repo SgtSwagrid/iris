@@ -22,8 +22,19 @@ package com.alecdorrington.iris
   *   fails as the value's streams not yet ended do: with
   *   [[LlmError.Unreadable]] where what the model wrote cannot be read, and as
   *   the request fails where that fails partway.
+  *
+  * @param cancel
+  *   Stops reading the reply, where it is still being read once its value was
+  *   given, as it is for a type holding a stream: its streams not yet ended,
+  *   and its reply, then fail with an `IllegalStateException`. Otherwise it
+  *   does nothing, as does a cancel once the reply has ended.
   */
-final case class Answer[F[_], +A](value: Option[A], reply: F[Reply])
+final case class Answer[F[_], +A]
+  (
+    value: Option[A],
+    reply: F[Reply],
+    cancel: F[Unit],
+  )
 
 /**
   * A reply of the model's as the provider gave it, before any value is read

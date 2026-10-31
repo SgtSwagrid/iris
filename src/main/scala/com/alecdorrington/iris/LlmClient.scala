@@ -75,9 +75,13 @@ trait LlmClient[F[_]]:
     * is given, it is never asked for again: whatever fails afterwards fails
     * each of its streams not yet ended, after the elements they have delivered,
     * and [[Answer.reply]], with [[LlmError.Unreadable]] where the reply cannot
-    * be read to its end, as one cut off at the token limit, and as the request
-    * fails where that fails partway, as one timing out. A streamed reply is
-    * read to its end even where nothing reads its streams.
+    * be read to its end, as one cut off at the token limit, stopped, or asking
+    * for a tool, as a whole reply would, and as the request fails where that
+    * fails partway, as one timing out. A streamed reply is read to its end even
+    * where nothing reads its streams, unless [[Answer.cancel]] stops it, and
+    * its failure reaches only its streams and [[Answer.reply]]. A
+    * value is given early only while one of its streams is seen open, so how a
+    * reply's parts arrive may decide whether it is.
     *
     * @tparam A
     *   The type of the answer, whose streams are of this client's effect.

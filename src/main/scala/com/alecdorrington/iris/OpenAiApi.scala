@@ -1,7 +1,7 @@
 package com.alecdorrington.iris
 
 import cats.syntax.all.*
-import fs2.Stream
+import fs2.{RaiseThrowable, Stream}
 import io.circe.{Decoder, Json}
 import io.circe.parser.parse
 import io.circe.syntax.*
@@ -39,12 +39,15 @@ private[iris] object OpenAiApi extends ProviderApi:
     * The reply a stream's events make up, which ends with the stream, as its
     * usage comes in an event of its own after the one saying why it stopped.
     */
-  override def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta] = events
+  override def reply[F[_] : RaiseThrowable]
+    (events: Stream[F, Json])
+    : Stream[F, Delta] = events
     .noneTerminate
     .zipWithScan1(Ending())((ending, event) => event.fold(ending)(ending.after))
     .flatMap:
       case (Some(event), _) => Stream.emits(said(event).toList)
-      case (None, ending)   => Stream.emits(ending.end)
+      case (None, ending)   =>
+        Stream.fromEither[F](ending.end).flatMap(Stream.emits)
 
   /** Refuses an empty chat, and one carrying media other than pictures. */
   override def acceptable
@@ -235,14 +238,23 @@ private[iris] object OpenAiApi extends ProviderApi:
           ),
         )
 
-    /** The tool calls and end of the reply, where it said why it stopped. */
-    def end: List[Delta] = reason
+    /**
+      * The tool calls and end of the reply, where it said why it stopped, or
+      * why a call is malformed.
+      */
+    def end: Either[LlmError, List[Delta]] = reason
       .toList
-      .flatMap(reason =>
-        calls.toList.sortBy(_._1).map(_._2.whole) :+ Delta.End(
-          stopReason(Some(reason)),
-          counts.fold(Usage())(_.toUsage),
-        ),
+      .flatTraverse(reason =>
+        calls
+          .toList
+          .sortBy(_._1)
+          .traverse(_._2.whole(provider))
+          .map(
+            _ :+ Delta.End(
+              stopReason(Some(reason)),
+              counts.fold(Usage())(_.toUsage),
+            ),
+          ),
       )
 
   final case class FunctionCall

@@ -209,6 +209,30 @@ data: [DONE]
       ),
     )
 
+  test("a streamed tool call whose arguments are no JSON is malformed"):
+    val cut =
+      """data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"weather","name":"weather","input":{}}}
+
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"ci"}}
+
+data: {"type":"content_block_stop","index":0}
+"""
+    assertEquals(
+      Stream
+        .emits(cut.getBytes("UTF-8"))
+        .covary[SyncIO]
+        .through(Sse.events)
+        .through(AnthropicApi.reply)
+        .compile
+        .toList
+        .attempt
+        .unsafeRunSync(),
+      Left(LlmError.Malformed(
+        "Anthropic",
+        "the arguments of a call of `weather` are not JSON",
+      )),
+    )
+
   /** The call each provider is asked for, as it is read. */
   private val weather = Part.ToolCall(
     "weather",

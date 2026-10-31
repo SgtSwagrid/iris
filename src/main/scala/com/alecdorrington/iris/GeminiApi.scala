@@ -1,6 +1,6 @@
 package com.alecdorrington.iris
 
-import fs2.Stream
+import fs2.{RaiseThrowable, Stream}
 import io.circe.{Decoder, Json}
 import io.circe.syntax.*
 import sttp.model.{Header, Uri}
@@ -126,7 +126,9 @@ private[iris] object GeminiApi extends ProviderApi:
     * The reply a stream's events make up. A reply that asked for a tool in any
     * event stopped for it, as Gemini gives no finish reason for that.
     */
-  override def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta] = events
+  override def reply[F[_] : RaiseThrowable]
+    (events: Stream[F, Json])
+    : Stream[F, Delta] = events
     .zipWithScan1(false)(_ || asks(_))
     .flatMap((event, asked) => Stream.emits(deltas(event, asked)))
 

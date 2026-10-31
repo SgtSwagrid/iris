@@ -64,7 +64,8 @@ own as [below](#typed-answers). Every type is asked for alike, and every ask giv
 [`Reply`](src/main/scala/com/alecdorrington/iris/Answer.scala) it was read from: its `text`, why the model stopped
 (`stopReason`), the token `usage` of every attempt, the `toolCalls` it made, and how many `attempts` it
 took. The reply is an effect as an answer may be given before its reply ends (see [Streaming](#streaming));
-for most types it has ended already. A single-turn prompt is a chat of one message, `Chat.of`:
+for most types it has ended already. Being an effect, it makes answers equal only where they are the same
+answer: compare their values and replies instead. A single-turn prompt is a chat of one message, `Chat.of`:
 
 ```scala
 import com.alecdorrington.iris.{Chat, LlmClient}
@@ -311,7 +312,10 @@ client.ask[Page](Chat.of(s"Translate: $text")).flatMap { answer =>
 
 The model is told the same JSON Schema either way, a stream being an array, so its reply is plain
 JSON; only its reading differs. The reply goes on being read in a fiber of its own once the answer is
-given, to its end, even where nothing reads its streams: cancelling the ask stops it only before then.
+given, to its end, even where nothing reads its streams, so its tokens are spent and its connection
+held to its end, unless `answer.cancel` stops it: its streams not yet ended, and its `reply`, then fail
+with an `IllegalStateException`. A failure of the reply reaches only its streams and `reply`, unseen
+where neither is read.
 A stream may be read as often as you like, each time from its first element, keeping every element as
 long as it is held, and streams may be nested, as a stream of pages each with a stream of words.
 `ask` needs `Async`, to read in a fiber.
@@ -324,7 +328,9 @@ examples: Stream[IO, String])` is given as `words` begins, and both stream as th
 other field after a stream, an optional one included, holds back the value it is in until the reply
 has written it, and with it any stream before it, which is then whole: put streams last. A field
 written after its value was given, as one written out of order, or a stream that never begins, fails
-the reply.
+the reply. A value is given early only while one of its streams is seen open, so how the reply's parts
+happen to arrive may decide whether it is: one whose stream opens and closes within a part is read
+whole, and asked for again if it cannot be read.
 
 A streamed reply's JSON is read from its start, or from within a code fence it opens with, and reading
 ends with it; what follows, which a reply read whole would be refused for, is not read. Until the
@@ -332,8 +338,9 @@ answer is given, a reply that cannot be read is answered and asked again, as for
 does not begin with its JSON, or a code fence holding it, is read only once whole. Once the answer is
 given it is never asked for again: what fails afterwards fails each of its streams not yet ended, after
 the elements they delivered already, and `reply`. A reply that cannot be read to its end, as one cut
-off at the token limit or with an element that cannot be read, fails with `LlmError.Unreadable`, and a
-request failing partway, as on a timeout, fails as it would anywhere. A stream cannot be said to the
+off at the token limit, stopped by the provider, asking for a tool, or with an element that cannot be
+read, fails with `LlmError.Unreadable`, as a whole reply would, and a request failing partway, as on a
+timeout, fails as it would anywhere. A stream cannot be said to the
 model as JSON, as it would have to be run; say a list of its elements.
 
 ### Tools
@@ -452,8 +459,8 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
 
 ### Upgrading from 0.4
 
-- `ask` gives an `Answer[F, A]`: its `value` as before, and its `reply`, an effect giving the reply's
-  `text`, `stopReason`, `usage`, `toolCalls` and `attempts`. Read `answer.reply.map(_.usage)` where you read
+- `ask` gives an `Answer[F, A]`: its `value` as before, its `reply`, an effect giving the reply's
+  `text`, `stopReason`, `usage`, `toolCalls` and `attempts`, and `cancel`, which stops a streamed reply. Read `answer.reply.map(_.usage)` where you read
   `answer.usage`, and append `reply` to a chat, where you appended the answer.
 - A reply as the provider gave it, an `Answer[Nothing]`, is a `Reply`: `send` and `warm` give one, a
   chat's `assistant` takes one, and `LlmError.Unreadable` keeps them, as `replies`.
@@ -492,7 +499,7 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
 ### Upgrading from 0.2
 
 - `client.send(chat, options)` is `client.ask[String](chat, options)`, an `Answer` whose `value` is the text,
-  beside the stop reason, usage and tool calls the old `Reply` had. The model is now told to reply
+  beside the stop reason, usage and tool calls 0.2's `Reply` had. The model is now told to reply
   with a JSON string, as for any type, which changes what a reply is:
   - `.text` is the JSON the model wrote, quoted and escaped; read `.value` for the text itself.
   - A reply cut off at the token limit, stopped by the provider, as on a refusal, or blank now fails with
@@ -503,7 +510,7 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
   - A prompt asking for JSON of its own asks for that type instead, rather than for `String`, whose schema
     would contradict the prompt.
   - Stop sequences match the JSON the model writes, as *Tuning and metadata* says.
-- `Reply` is now `Answer`, and generic: name it as `Answer[?]`, or `Answer[Nothing]` for a reply as the provider
+- 0.2's `Reply` is now `Answer`, and generic: name it as `Answer[?]`, or `Answer[Nothing]` for a reply as the provider
   gave it, and match it by its six fields, `value` and `attempts` the last.
 - `Prompt(text)` is `Chat.of(text)`, and `Prompt(text, Some(system))` is `Chat.of(text).withSystem(system)`.
   `ask`, `count` and `stream` take that chat where they took a prompt. A chat in which the user says nothing

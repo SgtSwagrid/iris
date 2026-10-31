@@ -1,6 +1,6 @@
 package com.alecdorrington.iris
 
-import fs2.Stream
+import fs2.{RaiseThrowable, Stream}
 import io.circe.{Decoder, Json}
 import io.circe.syntax.*
 import sttp.model.{Header, Uri}
@@ -41,9 +41,12 @@ private[iris] object AnthropicApi extends ProviderApi:
     * and the stop reason's the reply, so the counts of the first are kept until
     * then, as is each tool call until its block ends.
     */
-  override def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta] = events
+  override def reply[F[_] : RaiseThrowable]
+    (events: Stream[F, Json])
+    : Stream[F, Delta] = events
     .mapAccumulate(Streamed())(_.read(_))
     .flatMap((_, deltas) => Stream.emits(deltas))
+    .rethrow
 
   /** Anthropic writes the cache without replying when allowed no tokens. */
   override val leastReply: Int = 0
@@ -296,8 +299,8 @@ private[iris] object AnthropicApi extends ProviderApi:
       calls: Map[Int, Calling] = Map.empty,
     ):
 
-    /** This, after an event, and the deltas the event makes. */
-    def read(event: Json): (Streamed, List[Delta]) =
+    /** This, after an event, and the deltas the event makes, or why not. */
+    def read(event: Json): (Streamed, List[Either[LlmError, Delta]]) =
       val cursor = event.hcursor
       val index  = cursor.get[Int]("index").toOption
       cursor.get[String]("type").toOption match
@@ -321,11 +324,16 @@ private[iris] object AnthropicApi extends ProviderApi:
               copy(calls = calls.updatedWith(at)(_.map(_.more(fragment)))) ->
                 Nil
             case None => this ->
-                delta.get[String]("text").toOption.map(Delta.Text(_)).toList
+                delta
+                  .get[String]("text")
+                  .toOption
+                  .map(text => Right(Delta.Text(text)))
+                  .toList
         case Some("content_block_stop") => index.fold(this -> Nil)(at =>
-            copy(calls = calls - at) -> calls.get(at).map(_.whole).toList,
+            copy(calls = calls - at) ->
+              calls.get(at).map(_.whole(provider)).toList,
           )
-        case Some("message_delta") => this -> List(Delta.End(
+        case Some("message_delta") => this -> List(Right(Delta.End(
             stopReason(
               cursor.downField("delta").get[String]("stop_reason").toOption,
             ),
@@ -334,7 +342,7 @@ private[iris] object AnthropicApi extends ProviderApi:
               .getOrElse(TokenCounts.unreported)
               .over(start)
               .toUsage,
-          ))
+          )))
         case _ => this -> Nil
 
   final case class Block

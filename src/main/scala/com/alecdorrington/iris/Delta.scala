@@ -49,9 +49,17 @@ private[iris] final case class Calling
 
   def more(fragment: String): Calling = copy(arguments = arguments + fragment)
 
-  /** The whole call, its arguments an empty object where none were given. */
-  def whole: Delta = Delta.ToolCall(Part.ToolCall(
-    id,
-    tool,
-    parse(arguments).getOrElse(Json.obj()),
-  ))
+  /**
+    * The whole call, its arguments an empty object where none were given, or
+    * why it is malformed, where they are no JSON, as a call cut short is not.
+    */
+  def whole(provider: LlmProvider): Either[LlmError, Delta] =
+    (if arguments.isEmpty then Right(Json.obj()) else parse(arguments))
+      .left
+      .map(_ =>
+        LlmError.Malformed(
+          provider.displayName,
+          s"the arguments of a call of `$tool` are not JSON",
+        ),
+      )
+      .map(json => Delta.ToolCall(Part.ToolCall(id, tool, json)))

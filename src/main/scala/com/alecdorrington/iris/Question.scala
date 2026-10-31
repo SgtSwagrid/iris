@@ -34,8 +34,8 @@ private[iris] object Question:
       chat,
     ).flatMap(reply =>
       verdict(A, chat, replies :+ reply, attempts) match
-        case Verdict.Answered(value, whole) => Answer(value, whole.pure[F])
-            .pure[F]
+        case Verdict.Answered(value, whole) =>
+          Answer(value, whole.pure[F], MonadThrow[F].unit).pure[F]
         case Verdict.Again(next)   => attempt(next, replies :+ reply)
         case Verdict.Failed(error) => error.raiseError,
     )
@@ -109,12 +109,15 @@ private[iris] object Question:
 
   /**
     * Whether a reply asks for tools, by its calls or why it stopped, as OpenAI
-    * says it stopped as usual for a call it was made to make. A call cut off at
-    * the token limit may be cut short, so is no call, but cut off.
+    * says it stopped as usual for a call it was made to make. Calls count only
+    * where it stopped as it would for them: one cut off at the token limit may
+    * be cut short, and one the provider stopped, as on a refusal, is no call.
     */
-  private def calledTools(reply: Reply): Boolean =
+  def calledTools(reply: Reply): Boolean =
     reply.stopReason == StopReason.ToolCall ||
-    reply.toolCalls.nonEmpty && reply.stopReason != StopReason.MaxTokens
+    reply.toolCalls.nonEmpty &&
+    (reply.stopReason == StopReason.Completed ||
+    reply.stopReason == StopReason.StopSequence)
 
   /** The last reply, counting every attempt: its usage is theirs together. */
   def summed(replies: Vector[Reply]): Reply = replies

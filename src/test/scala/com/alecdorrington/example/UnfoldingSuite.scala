@@ -1,7 +1,7 @@
 // Outside Iris's package, so that streams are derived as for a user.
 package com.alecdorrington.example
 
-import cats.effect.{Deferred, IO, Ref}
+import cats.effect.{Deferred, IO, Ref, Resource}
 import cats.effect.unsafe.implicits.global
 import cats.syntax.all.*
 import com.alecdorrington.iris.*
@@ -10,6 +10,8 @@ import io.circe.Json
 import munit.FunSuite
 import scala.concurrent.Future
 import scala.concurrent.duration.DurationInt
+import sttp.client4.impl.cats.CatsMonadAsyncError
+import sttp.client4.testing.{BackendStub, ResponseStub}
 
 final case class Word(text: String, gloss: Option[String] = None)
 
@@ -536,6 +538,140 @@ class UnfoldingSuite extends FunSuite:
         .ask[Page](Chat.of("Translate."))
         .flatMap(_.value.traverse(_.words.compile.toList))
         .map(words => assertEquals(words, Some(List(Word("a"), Word("b"))))),
+    )
+
+  test("a value is given early only while one of its streams is open"):
+    run(
+      for
+        // Misnamed, so no stream of it opens: read whole, and asked again.
+        (llm, sent) <- streamer(
+          written("""{"First":[1],"Second":[2]}"""),
+          written("""{"first":[1],"second":[2]}"""),
+        )
+        read <- llm
+          .ask[Two](Chat.of("Count."))
+          .flatMap(two =>
+            two
+              .value
+              .traverse(two => (two.first ++ two.second).compile.toList)
+              .product(two.reply.map(_.attempts)),
+          )
+        // A case whole before another begins waits, and reads as a whole reply.
+        (unions, _) <- streamer(
+          written("""{"Refused":{"why":"x"},"Listed":{"items":[1]}}"""),
+        )
+        listed <- unions
+          .ask[Listing](Chat.of("List."))
+          .flatMap(
+            _.value
+              .traverse {
+                case Listed(items) => items.compile.toList.map(Right(_))
+                case refused       => IO.pure(Left(refused))
+              },
+          )
+      yield
+        assertEquals(read, (Some(List(1, 2)), 2))
+        assertEquals(listed, Some(Right(List(1)))),
+    )
+
+  test("a given answer's reply is checked as a whole reply would be"):
+    val page = """{"title":"Hi","words":[{"text":"a"}]}"""
+    val look = Part.ToolCall("call_1", "look", Json.obj())
+    run(
+      List(
+        (
+          Stream(Delta.Text(page), Delta.ToolCall(look)) ++
+            Stream(Delta.End(StopReason.ToolCall, Usage())),
+          "once its answer was given",
+        ),
+        (
+          Stream(
+            Delta.Text(page.dropRight(1)),
+            Delta.ToolCall(look),
+          ) ++ Stream(Delta.End(StopReason.ToolCall, Usage())),
+          "partway through its answer",
+        ),
+        (written(page, 4, StopReason.MaxTokens), "token limit"),
+        (written(page, 4, StopReason.Other("refusal")), "refusal"),
+      ).traverse_((reply, why) =>
+        streamer(reply)
+          .flatMap((llm, _) =>
+            llm
+              .ask[Page](Chat.of("Translate."))
+              .flatMap(answer =>
+                (
+                  answer.value.traverse(_.words.compile.toList),
+                  answer.reply.attempt,
+                ).tupled,
+              ),
+          )
+          .map((words, reply) =>
+            assertEquals(words, Some(List(Word("a"))), why)
+            reply match
+              case Left(LlmError.Unreadable(_, detail, _)) =>
+                assert(detail.contains(why), detail)
+              case other => fail(s"Not unreadable ($why): $other"),
+          ),
+      ),
+    )
+
+  test("an ask cancelled before its answer is given stops reading"):
+    run(
+      for
+        begun <- Deferred[IO, Unit]
+        ended <- Deferred[IO, Boolean]
+        reply =
+          (part("Let me think.", 4) ++ Stream.exec(begun.complete(()).void) ++
+            Stream.never[IO]).onFinalizeCase(exit =>
+            ended.complete(exit == Resource.ExitCase.Canceled).void,
+          )
+        (llm, _)  <- streamer(reply)
+        asking    <- llm.ask[Page](Chat.of("Translate.")).start
+        _         <- begun.get
+        _         <- asking.cancel
+        cancelled <- ended.get
+      yield assert(cancelled),
+    )
+
+  test("a cancelled answer stops reading, failing what it had still to give"):
+    run(
+      for
+        ended <- Deferred[IO, Boolean]
+        reply = (part("""{"title":"Hi","words":[{"text":"a"},""", 4) ++
+          Stream.never[IO]).onFinalizeCase(exit =>
+          ended.complete(exit == Resource.ExitCase.Canceled).void,
+        )
+        (llm, _) <- streamer(reply)
+        answer   <- llm.ask[Page](Chat.of("Translate."))
+        _        <- answer.cancel
+        words    <- answer.value.get.words.attempt.compile.toList
+        whole    <- answer.reply.attempt
+        stopped  <- ended.get
+      yield
+        assert(stopped)
+        List(words.last, whole).foreach:
+          case Left(error: IllegalStateException) =>
+            assert(error.getMessage.contains("cancelled"), error)
+          case other => fail(s"Not cancelled: $other"),
+    )
+
+  test("a type holding no stream is asked of a client with one request"):
+    val anthropic = LlmClient[IO](
+      LlmConfig(LlmModel.ClaudeHaiku4_5, "key", 512),
+      BackendStub(CatsMonadAsyncError[IO]())
+        .whenAnyRequest
+        .thenRespond(ResponseStub.adjust(
+          """{"content":[{"type":"text","text":"{\"name\":\"Ada\",\"age\":36}"}],
+            "stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}""",
+        )),
+    )
+    run(
+      anthropic
+        .ask[Person](Chat.of("Invent a person."))
+        .flatMap(answer =>
+          answer.reply.map(answer.value -> _.usage.outputTokens),
+        )
+        .map(read => assertEquals(read, (Some(Person("Ada", 36, None)), 2))),
     )
 
   test("a stream is asked for as a list, and read from a whole reply as one"):
