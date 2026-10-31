@@ -2,6 +2,7 @@ package com.alecdorrington.iris
 
 import cats.syntax.all.*
 import com.alecdorrington.cadmus.Scaladoc
+import fs2.Stream
 import io.circe.{Decoder, DecodingFailure, Encoder, HCursor, Json, JsonObject}
 import io.circe.DecodingFailure.Reason
 import io.circe.syntax.*
@@ -42,7 +43,9 @@ import scala.util.NotGiven
   * under `Left` or `Right`, and a union under the name of its alternative, as
   * `{"Int":1}`, which a value's class must tell, but for a union of literal
   * types alone, which is one of their values. A tuple is an array of its
-  * elements. A recursive type refers to itself through definitions in the
+  * elements, and an fs2 `Stream` an array of its values, which
+  * [[LlmStreamer.ask]] delivers as the model writes them, but which cannot be
+  * said as JSON. A recursive type refers to itself through definitions in the
   * schema, each type told apart by its full name and type arguments, so that
   * `Tree[Int]` and `Tree[String]` are each defined.
   *
@@ -81,6 +84,7 @@ final class Schema[A] private (
   private[iris] val fieldless: Boolean = false,
   private[iris] val description: Option[String] = None,
   private[iris] val note: Option[String] = None,
+  arrives: => Arrival = Arrival.Whole,
 ):
 
   /**
@@ -89,6 +93,15 @@ final class Schema[A] private (
     * `outline` writes this schema's own JSON, given how to write each of them.
     */
   private[iris] lazy val parts: List[Schema[?]] = within
+
+  /** How a value is read while its JSON is still arriving, read when needed. */
+  private[iris] lazy val arrival: Arrival = arrives
+
+  /**
+    * Whether a value can be read before its JSON is whole, as one holding a
+    * stream may be, other than within a list or map.
+    */
+  private[iris] lazy val gradual: Boolean = Schema.unfolding(this, Set.empty)
 
   /** The JSON Schema of this type's values. */
   lazy val json: Json = Schema.rendered(this)
@@ -193,6 +206,7 @@ final class Schema[A] private (
     fieldless,
     described,
     noted,
+    arrival,
   )
 
 object Schema extends DerivedSchemas:
@@ -247,35 +261,67 @@ object Schema extends DerivedSchemas:
       ),
     List(A),
     optional = true,
+    arrives = A.arrival,
   )
 
   given [A : Schema as A]: Schema[List[A]] = listed(
     Encoder.encodeList(using A.encoder),
     Decoder.decodeList(using A.decoder),
-    "List",
+    applied("List", A),
     A,
   )
 
   given [A : Schema as A]: Schema[Vector[A]] = listed(
     Encoder.encodeVector(using A.encoder),
     Decoder.decodeVector(using A.decoder),
-    "Vector",
+    applied("Vector", A),
     A,
   )
 
   given [A : Schema as A]: Schema[Seq[A]] = listed(
     Encoder.encodeSeq(using A.encoder),
     Decoder.decodeSeq(using A.decoder),
-    "Seq",
+    applied("Seq", A),
     A,
   )
 
   given [A : Schema as A]: Schema[Set[A]] = listed(
     Encoder.encodeSet(using A.encoder),
     Decoder.decodeSet(using A.decoder),
-    "Set",
+    applied("Set", A),
     A,
     unique = true,
+  )
+
+  /**
+    * A stream of values, as an array of them. [[LlmStreamer.ask]] hands it over
+    * as soon as its array begins, each value then read as soon as the model has
+    * written it; a stream read from a reply already whole holds its values from
+    * the start. A stream cannot be said as JSON, as it would have to be run:
+    * say a list of its values instead.
+    *
+    * @tparam F
+    *   The effect type, which [[LlmStreamer.ask]] must share.
+    *
+    * @tparam A
+    *   The type of the values.
+    *
+    * @return
+    *   The schema of the stream.
+    */
+  given [F[_], A : Schema as A]: Schema[Stream[F, A]] = new Schema(
+    Encoder.instance(_ =>
+      throw UnsupportedOperationException(
+        "A Stream cannot be said as JSON, as it would have to be run: say a list of its values instead.",
+      ),
+    ),
+    Unfinished.filled(
+      Decoder.decodeList(using A.decoder).map[Stream[F, A]](Stream.emits),
+    ),
+    TypeName("fs2.Stream", "Stream").applied(List(A.name)),
+    arrayOf(A),
+    List(A),
+    arrives = Arrival.Streamed(A),
   )
 
   given [A : Schema as A]: Schema[Map[String, A]] = new Schema(
@@ -522,21 +568,26 @@ object Schema extends DerivedSchemas:
     (
       encoder: Encoder[C],
       decoder: Decoder[C],
-      name: String,
+      name: TypeName,
       item: Schema[?],
       unique: Boolean = false,
     )
     : Schema[C] = new Schema(
     encoder,
     decoder,
-    applied(name, item),
-    describe =>
-      JsonHttp.objectOf(
-        "type"        -> "array".asJson,
-        "items"       -> describe(item),
-        "uniqueItems" -> Option.when(unique)(true).asJson,
-      ),
+    name,
+    arrayOf(item, unique),
     List(item),
+  )
+
+  /** An array of items, each as the item's schema describes it. */
+  private def arrayOf
+    (item: Schema[?], unique: Boolean = false)
+    (describe: Schema[?] => Json)
+    : Json = JsonHttp.objectOf(
+    "type"        -> "array".asJson,
+    "items"       -> describe(item),
+    "uniqueItems" -> Option.when(unique)(true).asJson,
   )
 
   /** A case holding a value of another type, written as that value alone. */
@@ -553,6 +604,7 @@ object Schema extends DerivedSchemas:
     applied(name, inner),
     describe => describe(inner),
     List(inner),
+    arrives = inner.arrival,
   )
 
   private def tuple[T]
@@ -594,6 +646,13 @@ object Schema extends DerivedSchemas:
           "minItems"    -> schemas.size.asJson,
         ),
       schemas,
+      arrives = Arrival.Assembled(
+        {
+          case index: Int => schemas.lift(index)
+          case _          => None
+        },
+        (settled, _) => schemas.indices.forall(settled),
+      ),
     )
 
   /**
@@ -648,7 +707,30 @@ object Schema extends DerivedSchemas:
       definable = true,
       fieldless = labels.isEmpty,
       description = doc.flatMap(_.description),
+      arrives = Arrival.Assembled(
+        {
+          case label: String => fields.find(_.label == label).map(_.schema)
+          case _             => None
+        },
+        (settled, begun) => fields.tails.forall(settledIn(settled, begun)),
+      ),
     )
+
+  /**
+    * Whether the first of a record's fields, written in order, has settled, or
+    * been left out, as one that may be is where a later one has begun.
+    */
+  private def settledIn
+    (
+      settled: Set[String | Int],
+      begun: Set[String | Int],
+    )
+    (fields: List[Field])
+    : Boolean = fields match
+    case field :: later => settled(field.label) ||
+      !field.required &&
+      !begun(field.label) && later.exists(next => begun(next.label))
+    case Nil => true
 
   /**
     * A field of a case class.
@@ -741,6 +823,16 @@ object Schema extends DerivedSchemas:
       if bare then Nil else cases.map(_._2),
       definable = definable,
       description = description,
+      arrives =
+        if bare then Arrival.Whole
+        else
+          Arrival.Assembled(
+            {
+              case label: String => cases.find(_._1 == label).map(_._2)
+              case _             => None
+            },
+            (settled, _) => cases.exists((label, _) => settled(label)),
+          ),
     )
 
   /** The case a bare union names, read from an object of no fields. */
@@ -866,6 +958,18 @@ object Schema extends DerivedSchemas:
   /** The full name a derived type would be defined by, if it recurs. */
   private def definition(schema: Schema[?]): Option[String] =
     Option.when(schema.definable)(schema.name.full)
+
+  /**
+    * Whether a value can be read before its JSON is whole: it is a stream, or
+    * is read from its members, one of which can be, a type met again within
+    * itself having been looked into already.
+    */
+  private def unfolding(schema: Schema[?], within: Set[String]): Boolean =
+    schema.arrival match
+      case Arrival.Streamed(_)     => true
+      case Arrival.Assembled(_, _) => !definition(schema).exists(within) &&
+        schema.parts.exists(unfolding(_, within ++ definition(schema)))
+      case Arrival.Whole => false
 
   /** The types, by full name, met again within themselves. */
   private def recurring

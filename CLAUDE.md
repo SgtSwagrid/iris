@@ -184,13 +184,28 @@ longer.
   `ProviderApi.reply` reads the whole stream of events, remembering across them what it must (`zipWithScan1`):
   Gemini's whether a tool was asked for, as it may say so before it says it stopped, Anthropic's the counts it
   started with, and OpenAI's how it stopped until its usage comes.
+- `LlmStreamer.ask[A : Schema]` gives a `Resource` of an `Answering` (`value`, then the whole `answer`), handed over
+  as soon as all of `A` but its `fs2.Stream`s is read; each stream (not within a list or map, which are read whole)
+  is then fed as its elements close. The user chose live streams in the value over snapshots of a partial value,
+  knowing the costs: `Schema[Stream[F, A]]`'s encoder throws (a stream cannot be said without being run), nothing is
+  asked again once handed over (a later failure fails the unfinished streams and `answer` with `Unreadable`), and
+  `F` must be the streamer's (the cast is unchecked). The model is told a stream as an array, the same schema as a
+  `List`. Each schema's `Arrival` says how it is read early (`Whole`, `Streamed`, or `Assembled` from members, by
+  key or index, once `enough` have settled); a record's fields are taken to be written in order, so an optional one
+  absent before a begun one is left out. `Unfinished` follows only brackets, strings, escapes, commas and colons
+  (circe parses each value once whole, and the schema's own decoder reads it, so every value is decoded by the
+  same code as a whole reply), standing in for each open stream with a placeholder `Json` found by identity
+  through a `DynamicVariable` while decoding. A type with no stream is not read early, but at the end through
+  `Question.verdict`, as `ask` reads it. `Unfolding` drives it in a background fiber, with an unbounded `Channel`
+  per stream.
 - What differs between the platforms is in `Platform` alone, one per platform (`src/main/scalajvm`,
   `src/main/scalajs`): the backends `resource` makes (the JDK's HTTP client, or the Fetch API), and whether a
   request may come from a browser's page, for which `AnthropicApi` adds `anthropic-dangerous-direct-browser-access`.
   Everything else is shared, so use nothing the JS side lacks: no `java.util.Locale` (lower case by character, as
   `LlmProvider.parse` does), nor `java.time`. The tests run on both, so they run their effects in `SyncIO`,
-  never `IO.unsafeRunSync`, which JavaScript lacks; tests of one platform alone go in `src/test/scalajs` or
-  `src/test/scalajvm`.
+  never `IO.unsafeRunSync`, which JavaScript lacks, or, where they need concurrency (`UnfoldingSuite`), return
+  `IO`'s `unsafeToFuture` with a timeout, which munit awaits on both; tests of one platform alone go in
+  `src/test/scalajs` or `src/test/scalajvm`.
 - `LlmConfig.toString` redacts the API key, so hosts may log a configuration. Keep any new secret out of `toString`
   and out of `LlmError` messages likewise.
 

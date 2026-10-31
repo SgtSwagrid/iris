@@ -131,7 +131,9 @@ fields is written as the name of one, as `"Pleased"`, and any other as an object
 name, as `{"Circle":{"radius":1.5}}`, as an `Either` holds its value under `Left` or `Right`, and a union, as
 `Int | String`, holds its value under the name of its alternative, as `{"Int":1}`. A value is written as the
 alternative its class tells, so `List[Int] | List[String]` has none. A literal type is its value, and a union
-of literal types alone, as `"low" | "high"`, one of them. A tuple is an array of its elements. A recursive type, such as a tree, refers to itself by name, each type told
+of literal types alone, as `"low" | "high"`, one of them. A tuple is an array of its elements, and an
+fs2 `Stream` an array of its values, which a streamer delivers as they are written (see
+[Streaming](#streaming)). A recursive type, such as a tree, refers to itself by name, each type told
 apart by its full name and type arguments. Any other type converts to and from one that has a schema, and
 may refuse what it is given, as the model is then told. Say what it keeps to with `described`, so that the
 model knows before it answers; the words stay beside whatever else describes the type, its Scaladoc or the
@@ -274,6 +276,45 @@ Nothing is sent until the stream is run, and a failure reaches it as an `LlmErro
 would anywhere else. `Delta.End` carries the token counts where the provider reports them
 as it ends; Anthropic counts the input at the start instead, so `ask` remains the way to have
 both halves together.
+
+A streamer asks too, for any type, as a client does, but hands the answer over while the model is
+still writing it: as soon as everything in it but its streams is read. Any
+[fs2 `Stream`](https://fs2.io) within the type, other than within a list or map, then delivers each
+of its elements as soon as the model has written it whole, which suits showing a long answer a piece
+at a time:
+
+```scala
+import com.alecdorrington.iris.{Answering, LlmStreamer}
+import fs2.Stream
+
+case class Word(text: String, translation: String)
+case class Page(title: String, words: Stream[IO, Word])
+
+streamer.ask[Page](Chat.of(s"Translate: $text")).use { answering =>
+  answering.value.traverse_(page => page.words.evalMap(show).compile.drain) *>
+    answering.answer.map(_.usage)
+}
+```
+
+The model is told the same JSON Schema either way, a stream being an array, so its reply is plain
+JSON; only its reading differs. The answer is an
+[`Answering`](src/main/scala/com/alecdorrington/iris/Answering.scala): its `value`, with no value
+where the model asked for a tool, and the whole `answer` once the reply ends. Read it within `use`, as
+the reply goes on being read in a fiber of its own only until the resource is released. Each stream
+may be read once, and streams may be nested, as a stream of pages each with a stream of words. A type
+holding no stream is handed over once its reply ends, exactly as a client's `ask` gives it.
+
+The model writes a value's fields in order, so a value holding a stream is handed over once each of
+its fields is read, begun as a stream, or left out, which an optional field is taken to be once a
+later one begins. A field after a stream that is not a stream itself holds the value back until the
+reply has written it, by which time the stream is whole: put a value's streams last. Until the answer
+is handed over, a reply that cannot be read is answered and asked again, as a client asks; a reply
+that does not begin with its JSON, or a code fence holding it, is read only once whole. Once the answer
+is handed over it is never asked for again: a reply that cannot be read to its end, as one cut off at
+the token limit or with an element that cannot be read, fails each of its streams still being read,
+after the elements they delivered already, and `answer`, with `LlmError.Unreadable`. A stream cannot
+be said to the model as JSON, as it would have to be run; say a list of its elements. Tool calls are
+not streamed, so an answer asking for a tool has no `toolCalls` either.
 
 ### Tools
 
