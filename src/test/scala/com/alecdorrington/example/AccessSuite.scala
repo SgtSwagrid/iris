@@ -26,6 +26,6 @@ class AccessSuite extends FunSuite:
             chat: com.alecdorrington.iris.Chat,
             options: com.alecdorrington.iris.ReplyOptions,
           )
-          : cats.effect.SyncIO[com.alecdorrington.iris.Answer[Nothing]] =
+          : cats.effect.SyncIO[com.alecdorrington.iris.Reply] =
           super.send(chat, options)""")
     assertEquals(errors, "")

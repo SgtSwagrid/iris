@@ -1,6 +1,7 @@
 package com.alecdorrington.iris
 
-import fs2.Stream
+import cats.syntax.all.*
+import fs2.{RaiseThrowable, Stream}
 import io.circe.{Decoder, Json}
 import io.circe.parser.parse
 import io.circe.syntax.*
@@ -32,8 +33,8 @@ private[iris] object OpenAiApi extends ProviderApi:
   override def credentials(config: LlmConfig): Seq[Header] =
     Seq(Header.authorization("Bearer", config.apiKey))
 
-  override val answers: Decoder[Either[LlmError, Answer[Nothing]]] =
-    Decoder[Response].map(_.toAnswer)
+  override val replies: Decoder[Either[LlmError, Reply]] = Decoder[Response]
+    .map(_.toReply)
 
   /**
     * As https://developers.openai.com/api/docs/pricing gives them. GPT-5.6
@@ -120,12 +121,15 @@ private[iris] object OpenAiApi extends ProviderApi:
     * The reply a stream's events make up, which ends with the stream, as its
     * usage comes in an event of its own after the one saying why it stopped.
     */
-  override def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta] = events
+  override def reply[F[_] : RaiseThrowable]
+    (events: Stream[F, Json])
+    : Stream[F, Delta] = events
     .noneTerminate
     .zipWithScan1(Ending())((ending, event) => event.fold(ending)(ending.after))
     .flatMap:
       case (Some(event), _) => Stream.emits(said(event).toList)
-      case (None, ending)   => Stream.emits(ending.end.toList)
+      case (None, ending)   =>
+        Stream.fromEither[F](ending.end).flatMap(Stream.emits)
 
   /** Refuses an empty chat, and one carrying media other than pictures. */
   override def acceptable
@@ -269,13 +273,15 @@ private[iris] object OpenAiApi extends ProviderApi:
     .map(Delta.Text.apply)
 
   /**
-    * What a stream has said so far of how it ended: why it stopped, and its
-    * token counts, which come after.
+    * What a stream has said so far of how it ended: why it stopped, its token
+    * counts, which come after, and its tool calls, whose arguments arrive in
+    * fragments, by their indices.
     */
   final case class Ending
     (
       reason: Option[String] = None,
       counts: Option[TokenCounts] = None,
+      calls: Map[Int, Calling] = Map.empty,
     ):
 
     def after(event: Json): Ending =
@@ -287,15 +293,51 @@ private[iris] object OpenAiApi extends ProviderApi:
           .orElse(choice.get[String]("finish_reason").toOption)
           .orElse(reason),
         event.hcursor.get[TokenCounts]("usage").toOption.orElse(counts),
+        choice
+          .downField("delta")
+          .get[List[Json]]("tool_calls")
+          .getOrElse(Nil)
+          .foldLeft(calls)(called),
       )
 
-    /** The end of the reply, where it said why it stopped. */
-    def end: Option[Delta] = reason.map(reason =>
-      Delta.End(
-        stopReason(Some(reason)),
-        counts.fold(Usage())(_.toUsage),
-      ),
-    )
+    /** The calls, with a fragment of one. */
+    private def called(calls: Map[Int, Calling], fragment: Json) =
+      val cursor   = fragment.hcursor
+      val function = cursor.downField("function")
+      cursor
+        .get[Int]("index")
+        .toOption
+        .fold(calls)(index =>
+          calls.updatedWith(index)(call =>
+            call
+              .orElse(
+                (
+                  cursor.get[String]("id").toOption,
+                  function.get[String]("name").toOption,
+                ).mapN(Calling(_, _)),
+              )
+              .map(_.more(function.get[String]("arguments").getOrElse(""))),
+          ),
+        )
+
+    /**
+      * The tool calls and end of the reply, where it said why it stopped, or
+      * why a call is malformed.
+      */
+    def end: Either[LlmError, List[Delta]] = reason
+      .toList
+      .flatTraverse(reason =>
+        calls
+          .toList
+          .sortBy(_._1)
+          .traverse(_._2.whole(provider))
+          .map(
+            _ :+ Delta.End(
+              stopReason(Some(reason)),
+              counts.fold(Usage())(_.toUsage),
+            ),
+          ),
+      )
 
   final case class FunctionCall
     (name: String, arguments: Option[String])
@@ -407,14 +449,14 @@ private[iris] object OpenAiApi extends ProviderApi:
     )
     derives Decoder:
 
-    def toAnswer: Either[LlmError, Answer[Nothing]] = choices
+    def toReply: Either[LlmError, Reply] = choices
       .headOption
       .toRight(LlmError.Malformed(
         LlmProvider.OpenAi.displayName,
         "no choices",
       ))
       .map: choice =>
-        Answer(
+        Reply(
           text = choice.message.content.getOrElse(""),
           stopReason = stopReason(choice.finishReason),
           usage = usage.fold(Usage())(_.toUsage),

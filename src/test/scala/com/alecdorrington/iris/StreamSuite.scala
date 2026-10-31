@@ -145,6 +145,7 @@ data: {"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}],
       reply(late)(GeminiApi.reply),
       List(
         Delta.Text("Let me look."),
+        Delta.ToolCall(weather),
         Delta.End(
           StopReason.ToolCall,
           Usage(uncachedTokens = 7, visibleTokens = 3),
@@ -156,8 +157,88 @@ data: {"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}],
 """
     assertEquals(
       reply(together)(GeminiApi.reply),
-      List(Delta.End(StopReason.ToolCall, Usage())),
+      List(
+        Delta.ToolCall(weather),
+        Delta.End(StopReason.ToolCall, Usage()),
+      ),
     )
+
+  test("anthropic and openai stream a tool call whole, once its pieces end"):
+    val anthropic = """data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me look."}}
+
+data: {"type":"content_block_stop","index":0}
+
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"weather","name":"weather","input":{}}}
+
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"ci"}}
+
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"ty\":\"Zug\"}"}}
+
+data: {"type":"content_block_stop","index":1}
+
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
+"""
+    assertEquals(
+      reply(anthropic)(AnthropicApi.reply),
+      List(
+        Delta.Text("Let me look."),
+        Delta.ToolCall(weather),
+        Delta.End(StopReason.ToolCall, Usage()),
+      ),
+    )
+    val openAi = """data: {"choices":[{"delta":{"content":"Let me look."}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"weather","type":"function","function":{"name":"weather","arguments":""}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":"}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Zug\"}"}}]}}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+"""
+    assertEquals(
+      reply(openAi)(OpenAiApi.reply),
+      List(
+        Delta.Text("Let me look."),
+        Delta.ToolCall(weather),
+        Delta.End(StopReason.ToolCall, Usage()),
+      ),
+    )
+
+  test("a streamed tool call whose arguments are no JSON is malformed"):
+    val cut =
+      """data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"weather","name":"weather","input":{}}}
+
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"ci"}}
+
+data: {"type":"content_block_stop","index":0}
+"""
+    assertEquals(
+      Stream
+        .emits(cut.getBytes("UTF-8"))
+        .covary[SyncIO]
+        .through(Sse.events)
+        .through(AnthropicApi.reply)
+        .compile
+        .toList
+        .attempt
+        .unsafeRunSync(),
+      Left(LlmError.Malformed(
+        "Anthropic",
+        "the arguments of a call of `weather` are not JSON",
+      )),
+    )
+
+  /** The call each provider is asked for, as it is read. */
+  private val weather = Part.ToolCall(
+    "weather",
+    "weather",
+    Json.obj("city" -> Json.fromString("Zug")),
+  )
 
   test("a streaming request asks to be streamed, and openai for its usage"):
     val anthropic = json(AnthropicApi.body(

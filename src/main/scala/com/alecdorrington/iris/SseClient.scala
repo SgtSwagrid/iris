@@ -13,22 +13,23 @@ private[iris] type SseRequest[F[_]] = StreamRequest[
   Fs2Streams[F],
 ]
 
-/** An [[LlmStreamer]] for any provider, as its [[ProviderApi]] says. */
+/**
+  * The streaming of replies for an [[LlmClient]] whose backend can stream, for
+  * any provider, as its [[ProviderApi]] says.
+  */
 private[iris] final class SseClient[F[_] : Async]
   (
     api: ProviderApi,
     config: LlmConfig,
     backend: StreamBackend[F, Fs2Streams[F]],
-  )
-  extends LlmStreamer[F]:
+  ):
 
-  override def stream(chat: Chat, options: ReplyOptions): Stream[F, Delta] =
-    Stream
-      .eval(Async[F].fromEither(request(chat, options)))
-      .flatMap(sent)
-      .through(Sse.events)
-      .through(api.reply[F])
-      .evalMap(priced)
+  def stream(chat: Chat, options: ReplyOptions): Stream[F, Delta] = Stream
+    .eval(Async[F].fromEither(request(chat, options)))
+    .flatMap(sent)
+    .through(Sse.events)
+    .through(api.reply[F])
+    .evalMap(priced)
 
   /** The reply's end with what it cost, at the rates of the moment it came. */
   private def priced(delta: Delta): F[Delta] = delta match

@@ -27,12 +27,8 @@ class ClientSuite extends FunSuite:
       .thenRespond(ResponseStub.adjust(body, status, headers)),
   )
 
-  private def result
-    (client: LlmClient[SyncIO])
-    : Either[Throwable, Answer[Nothing]] = Sending(client)
-    .sent(prompt)
-    .attempt
-    .unsafeRunSync()
+  private def result(client: LlmClient[SyncIO]): Either[Throwable, Reply] =
+    Sending(client).sent(prompt).attempt.unsafeRunSync()
 
   test("a request no answer comes to in time is an error saying so"):
     val slow = LlmClient[SyncIO](
@@ -49,6 +45,26 @@ class ClientSuite extends FunSuite:
     assertEquals(
       result(slow),
       Left(LlmError.TimedOut("Anthropic", config.timeout)),
+    )
+
+  test("a client over a backend that cannot stream streams its reply whole"):
+    assertEquals(
+      client("""{"content":[{"type":"text","text":"Hi"},{"type":"tool_use",
+          "id":"call_1","name":"look","input":{}}],"stop_reason":"tool_use"}""")
+        .stream(prompt)
+        .compile
+        .toList
+        .unsafeRunSync(),
+      List(
+        Delta.Text("Hi"),
+        Delta.ToolCall(Part.ToolCall("call_1", "look", io.circe.Json.obj())),
+        // Priced as it came, at Claude Haiku 4.5's rates, though it reports none.
+        Delta.End(
+          StopReason.ToolCall,
+          Usage(),
+          Some(Usd(BigDecimal(0))),
+        ),
+      ),
     )
 
   test("an unsuccessful response is an error carrying its status and delay"):

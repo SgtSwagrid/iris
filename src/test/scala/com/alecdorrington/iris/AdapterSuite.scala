@@ -442,7 +442,7 @@ class AdapterSuite extends FunSuite:
                     "cache_creation_input_tokens":20,
                     "cache_read_input_tokens":30,
                     "output_tokens_details":{"thinking_tokens":10}}}""",
-        Answer(
+        Reply(
           "Hello!",
           StopReason.Completed,
           Usage(
@@ -462,7 +462,7 @@ class AdapterSuite extends FunSuite:
            "usage":{"prompt_tokens":40,"completion_tokens":12,
                     "prompt_tokens_details":{"cached_tokens":32},
                     "completion_tokens_details":{"reasoning_tokens":10}}}""",
-        Answer(
+        Reply(
           "Hello!",
           StopReason.MaxTokens,
           Usage(
@@ -482,7 +482,7 @@ class AdapterSuite extends FunSuite:
            "usageMetadata":{"promptTokenCount":40,"candidatesTokenCount":2,
                             "cachedContentTokenCount":32,
                             "thoughtsTokenCount":10}}""",
-        Answer(
+        Reply(
           "Hello!",
           StopReason.Completed,
           Usage(
@@ -557,7 +557,7 @@ class AdapterSuite extends FunSuite:
         OpenAiApi,
         """{"choices":[{"message":{"content":"Hi"},"finish_reason":"stop"}]}""",
       ),
-      Right(Answer("Hi", StopReason.Completed, Usage())),
+      Right(Reply("Hi", StopReason.Completed, Usage())),
     )
 
   test("gemini's audio is counted apart, read afresh or from the cache"):

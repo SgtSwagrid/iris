@@ -1,6 +1,6 @@
 package com.alecdorrington.iris
 
-import fs2.Stream
+import fs2.{RaiseThrowable, Stream}
 import io.circe.{Decoder, Json}
 import io.circe.syntax.*
 import scala.concurrent.duration.FiniteDuration
@@ -28,8 +28,8 @@ private[iris] object GeminiApi extends ProviderApi:
   override def credentials(config: LlmConfig): Seq[Header] =
     Seq(Header("x-goog-api-key", config.apiKey))
 
-  override val answers: Decoder[Either[LlmError, Answer[Nothing]]] =
-    Decoder[Response].map(_.toAnswer)
+  override val replies: Decoder[Either[LlmError, Reply]] = Decoder[Response]
+    .map(_.toReply)
 
   /**
     * As https://ai.google.dev/gemini-api/docs/pricing gives them. Google names
@@ -184,7 +184,9 @@ private[iris] object GeminiApi extends ProviderApi:
     * The reply a stream's events make up. A reply that asked for a tool in any
     * event stopped for it, as Gemini gives no finish reason for that.
     */
-  override def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta] = events
+  override def reply[F[_] : RaiseThrowable]
+    (events: Stream[F, Json])
+    : Stream[F, Delta] = events
     .zipWithScan1(false)(_ || asks(_))
     .flatMap((event, asked) => Stream.emits(deltas(event, asked)))
 
@@ -201,9 +203,11 @@ private[iris] object GeminiApi extends ProviderApi:
     .getOrElse(List.empty)
 
   private def deltas(event: Json, asked: Boolean): List[Delta] =
-    val said = carried(event).flatMap(_.text).mkString
+    val parts = carried(event)
+    val said  = parts.flatMap(_.text).mkString
     List.concat(
       Option.when(said.nonEmpty)(Delta.Text(said)),
+      parts.flatMap(_.functionCall).map(call => Delta.ToolCall(call.toPart)),
       event
         .hcursor
         .downField("candidates")
@@ -362,7 +366,7 @@ private[iris] object GeminiApi extends ProviderApi:
       * This response as a reply, failing without a candidate: a blocked prompt
       * gets `200` and none, which would pass for an empty reply.
       */
-    def toAnswer: Either[LlmError, Answer[Nothing]] = candidates
+    def toReply: Either[LlmError, Reply] = candidates
       .flatMap(_.headOption)
       .toRight(LlmError.Malformed(
         LlmProvider.Gemini.displayName,
@@ -370,7 +374,7 @@ private[iris] object GeminiApi extends ProviderApi:
       ))
       .map: candidate =>
         val calls = toolCalls(candidate)
-        Answer(
+        Reply(
           text = text(candidate),
           stopReason = stopped(calls.nonEmpty, candidate.finishReason),
           usage = usageMetadata.fold(Usage())(_.toUsage),

@@ -3,39 +3,44 @@ package com.alecdorrington.iris
 import cats.MonadThrow
 import cats.effect.Clock
 import cats.syntax.all.*
+import fs2.Stream
 import io.circe.Decoder
 import sttp.client4.*
 import sttp.model.Uri
 
-/** An [[LlmClient]] for any provider's JSON API, as its [[ProviderApi]] says. */
+/**
+  * An [[LlmClient]] for any provider's JSON API, as its [[ProviderApi]] says,
+  * streaming through an [[SseClient]] where its backend can, and otherwise
+  * giving each reply whole.
+  */
 private[iris] final class JsonClient[F[_] : MonadThrow : Clock]
   (
     api: ProviderApi,
     config: LlmConfig,
     backend: Backend[F],
+    streamer: Option[SseClient[F]],
   )
   extends LlmClient[F]:
 
-  override protected def send
-    (chat: Chat, options: ReplyOptions)
-    : F[Answer[Nothing]] = MonadThrow[F]
-    .fromEither(
-      api
-        .acceptable(config, chat, options)
-        .flatMap(_ => api.endpoint(config, options, false)),
-    )
-    .flatMap(endpoint =>
-      ask[Either[LlmError, Answer[Nothing]]](
-        endpoint,
-        api.body(config, chat, options),
-      )(using api.answers),
-    )
-    .flatMap(MonadThrow[F].fromEither(_))
-    .flatMap(reply =>
-      Clock[F]
-        .realTime
-        .map(now => reply.copy(cost = api.cost(config, reply.usage, now))),
-    )
+  override protected def send(chat: Chat, options: ReplyOptions): F[Reply] =
+    MonadThrow[F]
+      .fromEither(
+        api
+          .acceptable(config, chat, options)
+          .flatMap(_ => api.endpoint(config, options, false)),
+      )
+      .flatMap(endpoint =>
+        ask[Either[LlmError, Reply]](
+          endpoint,
+          api.body(config, chat, options),
+        )(using api.replies),
+      )
+      .flatMap(MonadThrow[F].fromEither(_))
+      .flatMap(reply =>
+        Clock[F]
+          .realTime
+          .map(now => reply.copy(cost = api.cost(config, reply.usage, now))),
+      )
 
   override def count(chat: Chat, options: ReplyOptions): F[Int] = MonadThrow[F]
     .fromEither(api.counting(config, chat, options))
@@ -43,12 +48,14 @@ private[iris] final class JsonClient[F[_] : MonadThrow : Clock]
       ask[Int](counting.endpoint, counting.body)(using counting.tokens),
     )
 
+  override def stream(chat: Chat, options: ReplyOptions): Stream[F, Delta] =
+    streamer.fold(super.stream(chat, options))(_.stream(chat, options))
+
   /** Warms with the shortest reply the provider allows. */
-  override def warm(chat: Chat, options: ReplyOptions): F[Answer[Nothing]] =
-    send(
-      chat.cacheable,
-      options.copy(maxTokens = Some(api.leastReply)),
-    )
+  override def warm(chat: Chat, options: ReplyOptions): F[Reply] = send(
+    chat.cacheable,
+    options.copy(maxTokens = Some(api.leastReply)),
+  )
 
   /**
     * Posts JSON with the provider's credentials, reading an `A` back, failing

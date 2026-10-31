@@ -1,6 +1,6 @@
 package com.alecdorrington.iris
 
-import fs2.Stream
+import fs2.{RaiseThrowable, Stream}
 import io.circe.{Decoder, Json}
 import io.circe.syntax.*
 import scala.concurrent.duration.FiniteDuration
@@ -34,26 +34,20 @@ private[iris] object AnthropicApi extends ProviderApi:
     ),
   )
 
-  override val answers: Decoder[Either[LlmError, Answer[Nothing]]] =
-    Decoder[Response].map(_.toAnswer)
+  override val replies: Decoder[Either[LlmError, Reply]] = Decoder[Response]
+    .map(_.toReply)
 
   /**
     * The reply a stream's events make up. Its first event counts the request,
     * and the stop reason's the reply, so the counts of the first are kept until
-    * then.
+    * then, as is each tool call until its block ends.
     */
-  override def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta] = events
-    .zipWithScan1(TokenCounts.unreported)(started)
-    .flatMap((event, start) => Stream.emits(deltas(event, start)))
-
-  private def started(counts: TokenCounts, event: Json): TokenCounts =
-    val cursor = event.hcursor
-    if cursor.get[String]("type").toOption.contains("message_start") then
-      cursor
-        .downField("message")
-        .get[TokenCounts]("usage")
-        .getOrElse(TokenCounts.unreported)
-    else counts
+  override def reply[F[_] : RaiseThrowable]
+    (events: Stream[F, Json])
+    : Stream[F, Delta] = events
+    .mapAccumulate(Streamed())(_.read(_))
+    .flatMap((_, deltas) => Stream.emits(deltas))
+    .rethrow
 
   /** Anthropic writes the cache without replying when allowed no tokens. */
   override val leastReply: Int = 0
@@ -329,26 +323,61 @@ private[iris] object AnthropicApi extends ProviderApi:
     * What one streamed event says, given the counts the stream started with,
     * which the stop reason's event may leave out.
     */
-  private def deltas(event: Json, start: TokenCounts): List[Delta] =
-    val cursor = event.hcursor
-    cursor.get[String]("type").toOption match
-      case Some("content_block_delta") => cursor
-          .downField("delta")
-          .get[String]("text")
-          .toOption
-          .map(Delta.Text.apply)
-          .toList
-      case Some("message_delta") => List(Delta.End(
-          stopReason(
-            cursor.downField("delta").get[String]("stop_reason").toOption,
-          ),
-          cursor
-            .get[TokenCounts]("usage")
-            .getOrElse(TokenCounts.unreported)
-            .over(start)
-            .toUsage,
-        ))
-      case _ => List.empty
+  /**
+    * What a stream has said so far that its later events need: the counts it
+    * started with, and the tool calls not yet ended, by their blocks' indices.
+    */
+  final case class Streamed
+    (
+      start: TokenCounts = TokenCounts.unreported,
+      calls: Map[Int, Calling] = Map.empty,
+    ):
+
+    /** This, after an event, and the deltas the event makes, or why not. */
+    def read(event: Json): (Streamed, List[Either[LlmError, Delta]]) =
+      val cursor = event.hcursor
+      val index  = cursor.get[Int]("index").toOption
+      cursor.get[String]("type").toOption match
+        case Some("message_start") => copy(start =
+            cursor
+              .downField("message")
+              .get[TokenCounts]("usage")
+              .getOrElse(TokenCounts.unreported),
+          ) -> Nil
+        case Some("content_block_start") => cursor
+            .downField("content_block")
+            .as[Block]
+            .toOption
+            .flatMap(_.calling)
+            .zip(index)
+            .fold(this)((call, at) => copy(calls = calls + (at -> call))) -> Nil
+        case Some("content_block_delta") =>
+          val delta = cursor.downField("delta")
+          delta.get[String]("partial_json").toOption.zip(index) match
+            case Some((fragment, at)) =>
+              copy(calls = calls.updatedWith(at)(_.map(_.more(fragment)))) ->
+                Nil
+            case None => this ->
+                delta
+                  .get[String]("text")
+                  .toOption
+                  .map(text => Right(Delta.Text(text)))
+                  .toList
+        case Some("content_block_stop") => index.fold(this -> Nil)(at =>
+            copy(calls = calls - at) ->
+              calls.get(at).map(_.whole(provider)).toList,
+          )
+        case Some("message_delta") => this -> List(Right(Delta.End(
+            stopReason(
+              cursor.downField("delta").get[String]("stop_reason").toOption,
+            ),
+            cursor
+              .get[TokenCounts]("usage")
+              .getOrElse(TokenCounts.unreported)
+              .over(start)
+              .toUsage,
+          )))
+        case _ => this -> Nil
 
   final case class Block
     (
@@ -367,6 +396,14 @@ private[iris] object AnthropicApi extends ProviderApi:
         id   <- id
         name <- name
       yield Part.ToolCall(id, name, input.getOrElse(Json.obj()))
+
+    /** The call a block begins, whose arguments are still to come. */
+    def calling: Option[Calling] =
+      for
+        _    <- Option.when(kind == "tool_use")(())
+        id   <- id
+        name <- name
+      yield Calling(id, name)
 
   object Block:
 
@@ -437,7 +474,7 @@ private[iris] object AnthropicApi extends ProviderApi:
     ):
 
     /** This response as a reply, which may be empty, as on a refusal. */
-    def toAnswer: Either[LlmError, Answer[Nothing]] = Right(Answer(
+    def toReply: Either[LlmError, Reply] = Right(Reply(
       text = content.flatMap(_.said).mkString,
       stopReason = AnthropicApi.stopReason(stopReason),
       usage = usage.fold(Usage())(_.toUsage),

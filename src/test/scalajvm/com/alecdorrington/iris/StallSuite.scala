@@ -77,7 +77,7 @@ class StallSuite extends FunSuite:
       stalls = false,
     )(configured =>
       assertEquals(
-        LlmStreamer
+        LlmClient
           .resource[IO](configured)
           .use(_.stream(Chat.of("Hello")).compile.toList)
           .unsafeRunTimed(30.seconds),
@@ -108,7 +108,7 @@ class StallSuite extends FunSuite:
       stalls = true,
     )(configured =>
       assertEquals(
-        LlmStreamer
+        LlmClient
           .resource[IO](configured)
           .use(_.stream(Chat.of("Hello")).attempt.compile.toList)
           .unsafeRunTimed(30.seconds),

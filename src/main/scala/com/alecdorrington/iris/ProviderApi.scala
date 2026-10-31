@@ -1,6 +1,6 @@
 package com.alecdorrington.iris
 
-import fs2.Stream
+import fs2.{RaiseThrowable, Stream}
 import io.circe.{Decoder, Json}
 import scala.annotation.unused
 import scala.concurrent.duration.*
@@ -35,11 +35,11 @@ private[iris] trait ProviderApi:
 
   def credentials(config: LlmConfig): Seq[Header]
 
-  /** One whole answer, as a reply or why it is none. */
-  def answers: Decoder[Either[LlmError, Answer[Nothing]]]
+  /** One whole reply, or why it is none. */
+  def replies: Decoder[Either[LlmError, Reply]]
 
   /** The reply a stream's events make up, read as they arrive. */
-  def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta]
+  def reply[F[_] : RaiseThrowable](events: Stream[F, Json]): Stream[F, Delta]
 
   /** Why this provider would refuse the chat, where it would. */
   def acceptable

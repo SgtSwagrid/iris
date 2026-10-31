@@ -15,8 +15,18 @@ This is Iris, a Scala 3 library giving one provider-agnostic interface to the AP
 adapters for Anthropic, OpenAI and Google Gemini, built on Cats Effect, sttp and Circe. It is still a prototype.
 
 It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js. `LlmClient` is the public interface: callers `ask` a `Chat`
-for an answer of any type with a `Schema`, `String` included, as a uniform `Answer[A]`, and `send` is the protected request every
-`ask` makes, which `JsonClient` implements and wrappers override (`LlmClient.Forwarding`, `mapK`). Each `LlmProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
+for an answer of any type with a `Schema`, `String` included, as a uniform `Answer[F, A]`: its `value` as soon as all
+but its streams is read, and its `reply`, an `F[Reply]`, once the reply ends (the user chose one `ask` with the
+reply's details lazy over a second, streamed ask). A `Reply` is a reply as the provider gave it (once
+`Answer[Nothing]`): what `send` and `warm` give and `LlmError.Unreadable` keeps. `send` is the protected request every
+ask of a type holding no stream makes (`Schema.gradual` false), and `stream` (text and tool calls as they arrive,
+through an `SseClient` where the backend can stream) the one every other makes; `JsonClient` implements both, and
+wrappers override them (`LlmClient.Forwarding`, `mapK`). `stream` defaults to `send`'s reply whole, so a client over
+a backend that cannot stream (`LlmClient(config, backend: Backend[F])`, as the SyncIO tests build), or one a host
+writes with `send` alone, still answers a type holding a stream, all at once. `ask` needs `Async`, as it reads a
+streamed reply in a fiber of its own (unscoped, by the user's choice: read to its end once the answer is given,
+unless `Answer.cancel`, which the user asked for, cancels that fiber);
+tests in `SyncIO` ask through `Fixtures.askWhole`, which is `Question.ask` over `send`. Each `LlmProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
 `JsonHttp`), which tells the one `JsonClient` and the one `SseClient` all they need to know of it: its endpoints,
 request bodies, credentials, the chats it refuses, how its replies read, and how it counts tokens. Anything
 provider-specific goes there, never in the clients. `LlmConfig` holds a model (and so its provider), key, token limit and an optional base URL, and
@@ -53,7 +63,7 @@ longer.
 - A set but unrecognised `LLM_PROVIDER` or `LLM_MODEL` means unconfigured (`None`), never a fall back to key inference.
 - The library does no throttling, retrying or logging of its own; those are the host's to wrap around a client.
   The one exception is `ask`, which asks again after a reply it cannot read, never after a failed request.
-  Nor does it run a tool it is asked for: `ReplyOptions.tools` offers them and `Answer.toolCalls`
+  Nor does it run a tool it is asked for: `ReplyOptions.tools` offers them and `Reply.toolCalls`
   reports what was asked, but what a tool does, and whether it may, is the host's.
 - A `Part.CacheBreakpoint` ends a prefix worth caching and says nothing to the model. Anthropic is told of one by
   `cache_control` on the block before it (in its message, else the previous message's last, else the system message),
@@ -76,7 +86,7 @@ longer.
   rates, but Iris uses Chat Completions without `prompt_cache_options`, so one write count is enough); Gemini's
   prompt holds its cache, and `thoughtsTokenCount` lies outside `candidatesTokenCount`.
   Gemini leaves out every count of `0` (protobuf's JSON), so a count left out is `0`, never unknown, and a reply
-  with no usage at all has `Usage()`: `Answer.usage` and `Delta.End.usage` are never optional (the user chose zeros
+  with no usage at all has `Usage()`: `Reply.usage` and `Delta.End.usage` are never optional (the user chose zeros
   over `None`). `inputTokens`, `cachedTokens` and `outputTokens` are totals of the counts, the whole prompt, the part
   of it read from the cache, and the whole reply. Streams count too: Anthropic's start counts the request and its
   stop the reply (taking what it leaves out from the start), and OpenAI's usage comes in a chunk of its own after
@@ -94,7 +104,7 @@ longer.
   once its `inputTokens` exceed it (Claude Haiku 5.5 over 100K, GPT-5.6 and later over 272K, Gemini 2.5 Pro over
   200K). Figures go through `ProviderApi.usd` and derived ones are worked out in `BigDecimal`, never `Double`.
   `JsonClient` and `SseClient` price each reply as it comes, by the effect's `Clock`, at `LlmConfig.rates`, else
-  those listed, so `Answer.cost` and `Delta.End.cost` are per request, summed over an ask only where every attempt
+  those listed, so `Reply.cost` and `Delta.End.cost` are per request, summed over an ask only where every attempt
   has one, and `None` for an `Other` model with no rates configured. Iris prices nothing it does not send: batch,
   priority or fast mode, data residency, server tools. `/update-iris` keeps the rates current.
   Money is a `Usd` (an `amount: BigDecimal`), never a bare number, and Iris converts no currency, as every provider
@@ -111,12 +121,12 @@ longer.
   `reasoning_effort` (`Max` as `max`, or as `high` on the models in `OpenAiApi.cappedAtHigh`, such as `gpt-5`) and Gemini's `generationConfig.thinkingConfig.thinkingBudget`
   (fixed amounts within every thinking Gemini model's range). Iris never chooses one, and a model that cannot take one
   refuses the request; retrying at a lower effort is the host's to do.
-- `LlmClient.ask[A : Schema]` reads every type one way, `String` included, and always gives an `Answer[A]`:
-  the last reply's text, stop reason and tool calls, the usage of every attempt summed, the attempts, and
-  `value: Option[A]`, `None` where the model asked for a tool. Never read one type differently from another, as
+- `LlmClient.ask[A : Schema]` reads every type one way, `String` included, and always gives an `Answer[F, A]`:
+  `value: Option[A]`, `None` where the model asked for a tool, and `reply`, the last reply's text, stop reason
+  and tool calls, the usage of every attempt summed, and the attempts. Tool calls count only under `ToolCall`,
+  `Completed` or `StopSequence` (`Question.calledTools`), never under a refusal or the token limit. Never read one type differently from another, as
   the removed `Answer` type class once did, nor give some types a different result: the user wants every ask
-  uniform. The provider's own reply is an `Answer[Nothing]`
-  (`Answer` is covariant), which `send`, `warm` and `Unreadable` give. `ask` is built on `send` alone,
+  uniform. The provider's own reply is a `Reply`, which `send`, `warm` and `Unreadable` give. `ask` is built on `send` alone,
   provider-agnostic, and passes `Question.ask` the client's `send` as a function, as `send` is protected: the schema is asked for in words closing the
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
   native structured output. It stays after any breakpoint, so is never cached, by the user's choice on the
@@ -205,18 +215,43 @@ longer.
   helpers only through accessors.
 - Unset optional fields are omitted one level deep, by `JsonHttp.objectOf`/`body`. Never deep-drop nulls: inside a
   tool's schema or a tool call's arguments, a null is a value.
-- `LlmStreamer` is a capability apart from `LlmClient`, since streaming needs a backend which can stream.
-  `SseClient` speaks the same `ProviderApi` as `JsonClient`, with the same request bodies (`streamed`). Each
+- `SseClient` speaks the same `ProviderApi` as `JsonClient`, with the same request bodies (`streamed`). Each
   `ProviderApi.reply` reads the whole stream of events, remembering across them what it must (`zipWithScan1`):
   Gemini's whether a tool was asked for, as it may say so before it says it stopped, Anthropic's the counts it
   started with, and OpenAI's how it stopped until its usage comes.
+- An ask of a type holding an `fs2.Stream` (`Unfolding`) gives its `Answer` as soon as all of `A` but its streams is
+  read; each stream (not within a list or map, which are read whole)
+  is then fed as its elements close. The user chose live streams in the value over snapshots of a partial value,
+  knowing the costs: `Schema[Stream[F, A]]`'s encoder throws (a stream cannot be said without being run), nothing is
+  asked again once handed over (a later failure fails the unfinished streams and `reply`: `Unreadable` for a reply,
+  a request's own error), and `F` must be the client's (the cast is unchecked). Tool calls stream as
+  `Delta.ToolCall`, each once whole (Anthropic's and OpenAI's argument fragments gathered by a `Calling`), so a streamed
+  ask takes tools as any does. The model is told a stream as an array, the same schema as a `List`. Each schema's `Arrival` says how it is read early (`Whole`, `Streamed`, or `Assembled` from
+  members, by key or index, `ready` once those begun have settled, giving the streams still to come); fields are
+  taken to be written in order (`Schema.awaited`), so an optional one absent before a begun one is left out, and
+  required streams after the last begun are handed over before they begin (`Frame.coming`), so that every trailing
+  stream of a value is live. A value is handed over before it is whole only while a member it is writing is open and
+  read already (`Unfinished.open`): until a stream begins, a reply that cannot be read can still be asked again, and
+  a union whose case is whole waits to be whole itself. So how a reply's parts arrive can decide whether a value is
+  given early (a stream opening and closing within one part is never seen open); tests that mean a stream to be
+  seen open feed it a character at a time. A given answer's reply is checked at its end as `verdict` checks one
+  (`Unfolding.fault`): tool calls, a stop, the token limit or unended JSON fail it as `Unreadable`. Once a value is handed over (`Frame.taken`), a member it
+  knows arriving later, or a reserved stream never begun, fails the reply rather than be lost. `Unfinished` follows only brackets, strings,
+  escapes, commas and colons
+  (circe parses each value once whole, and the schema's own decoder reads it, so every value is decoded by the
+  same code as a whole reply), standing in for each open stream with a placeholder `Json` found by identity
+  through a `DynamicVariable` while decoding. A type with no stream is not read early, but at the end through
+  `Question.verdict`, as `ask` reads it. `Unfolding` drives it in a background fiber, keeping each stream's elements
+  and end in a `SignallingRef` (never a `Channel`, which serves one reader), so a stream reads alike however often,
+  as `Stream.emits` from a whole reply does.
 - What differs between the platforms is in `Platform` alone, one per platform (`src/main/scalajvm`,
   `src/main/scalajs`): the backends `resource` makes (the JDK's HTTP client, or the Fetch API), and whether a
   request may come from a browser's page, for which `AnthropicApi` adds `anthropic-dangerous-direct-browser-access`.
   Everything else is shared, so use nothing the JS side lacks: no `java.util.Locale` (lower case by character, as
   `LlmProvider.parse` does), nor `java.time`. The tests run on both, so they run their effects in `SyncIO`,
-  never `IO.unsafeRunSync`, which JavaScript lacks; tests of one platform alone go in `src/test/scalajs` or
-  `src/test/scalajvm`.
+  never `IO.unsafeRunSync`, which JavaScript lacks, or, where they need concurrency (`UnfoldingSuite`), return
+  `IO`'s `unsafeToFuture` with a timeout, which munit awaits on both; tests of one platform alone go in
+  `src/test/scalajs` or `src/test/scalajvm`.
 - `LlmConfig.toString` redacts the API key, so hosts may log a configuration. Keep any new secret out of `toString`
   and out of `LlmError` messages likewise.
 

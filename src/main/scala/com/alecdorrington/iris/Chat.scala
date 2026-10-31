@@ -300,7 +300,7 @@ final case class Chat
     * @return
     *   A copy of this chat ending with the reply.
     */
-  def assistant(reply: Answer[?]): Chat = appended(Message(
+  def assistant(reply: Reply): Chat = appended(Message(
     Role.Assistant,
     Part.Text(reply.text) +: reply.toolCalls,
   ))

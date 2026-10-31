@@ -2,7 +2,7 @@ package com.alecdorrington.iris
 
 import cats.effect.{Ref, SyncIO}
 import com.alecdorrington.example.{Colour, Person}
-import com.alecdorrington.iris.Fixtures.{config, json}
+import com.alecdorrington.iris.Fixtures.{askWhole, config, json}
 import io.circe.Json
 import io.circe.syntax.*
 import munit.FunSuite
@@ -85,8 +85,8 @@ class AskSuite extends FunSuite:
       attempts: Int = Question.attempts,
     )
     : Either[Throwable, Option[A]] = client
-    .ask[A](prompt, attempts = attempts)
-    .map(_.value)
+    .askWhole[A](prompt, attempts = attempts)
+    .map(_._1)
     .attempt
     .unsafeRunSync()
 
@@ -116,7 +116,11 @@ class AskSuite extends FunSuite:
       else said("Not told."),
     )
     assertEquals(
-      told.ask[Person](chat, attempts = 1).map(_.value).attempt.unsafeRunSync(),
+      told
+        .askWhole[Person](chat, attempts = 1)
+        .map(_._1)
+        .attempt
+        .unsafeRunSync(),
       Right(Some(ada)),
     )
 
@@ -272,31 +276,38 @@ class AskSuite extends FunSuite:
      "function":{"name":"weather","arguments":"{}"}}]},
     "finish_reason":"stop"}]}"""
 
+  test("calls in a reply the provider stopped are no calls, but a stop"):
+    failsAtOnceAs[Person](
+      """{"content":[{"type":"tool_use","id":"call_1","name":"weather",
+        "input":{}}],"stop_reason":"refusal"}""",
+      "It stopped, as `refusal`.",
+    )
+
   test("a reply asking for a tool is given at once, with no answer"):
     List(
       (
         "a person asked of anthropic",
-        client(_ => calling).ask[Person](prompt),
+        client(_ => calling).askWhole[Person](prompt),
         "Let me look.",
         StopReason.ToolCall,
       ),
       (
         "text asked of anthropic",
-        client(_ => calling).ask[String](prompt),
+        client(_ => calling).askWhole[String](prompt),
         "Let me look.",
         StopReason.ToolCall,
       ),
       (
         "a person asked of openai",
-        answering(LlmModel.Gpt5, forced).ask[Person](prompt),
+        answering(LlmModel.Gpt5, forced).askWhole[Person](prompt),
         "",
         StopReason.Completed,
       ),
     ).foreach: (row, asking, text, stopReason) =>
       asking.attempt.unsafeRunSync() match
-        case Right(reply) => assertEquals(
+        case Right((value, reply)) => assertEquals(
             (
-              reply.value,
+              value,
               reply.text,
               reply.stopReason,
               reply.toolCalls.map(_.tool),
@@ -353,8 +364,8 @@ class AskSuite extends FunSuite:
     )
     assertEquals(
       told
-        .ask[Person](Chat.of(ada), ReplyOptions())
-        .map(_.value)
+        .askWhole[Person](Chat.of(ada), ReplyOptions())
+        .map(_._1)
         .attempt
         .unsafeRunSync(),
       Right(Some(ada)),
@@ -377,16 +388,17 @@ class AskSuite extends FunSuite:
       else said("Ada, 36.", cost = Some((10, 2))),
     )
     assertEquals(
-      corrected.ask[Person](prompt).attempt.unsafeRunSync(),
-      Right(Answer(
-        text = adaJson,
-        stopReason = StopReason.Completed,
-        usage = Usage(uncachedTokens = 30, visibleTokens = 7),
-        // Claude Haiku 4.5's $1 and $5 per million tokens.
-        cost = Some(Usd(BigDecimal("0.000065"))),
-        value = Some(ada),
-        attempts = 2,
-      )),
+      corrected.askWhole[Person](prompt).attempt.unsafeRunSync(),
+      Right(
+        Some(ada) -> Reply(
+          text = adaJson,
+          stopReason = StopReason.Completed,
+          usage = Usage(uncachedTokens = 30, visibleTokens = 7),
+          // Claude Haiku 4.5's $1 and $5 per million tokens.
+          cost = Some(Usd(BigDecimal("0.000065"))),
+          attempts = 2,
+        ),
+      ),
     )
     // A tool asked for on a later attempt is given with every attempt's usage.
     val withUsage = """{"content":[{"type":"tool_use","id":"call_1",
@@ -398,8 +410,8 @@ class AskSuite extends FunSuite:
     )
     assertEquals(
       later
-        .ask[Person](prompt)
-        .map(reply => (reply.value, reply.attempts, reply.usage))
+        .askWhole[Person](prompt)
+        .map((value, reply) => (value, reply.attempts, reply.usage))
         .attempt
         .unsafeRunSync(),
       Right((None, 2, Usage(uncachedTokens = 30, visibleTokens = 7))),
@@ -411,8 +423,8 @@ class AskSuite extends FunSuite:
     )
     assertEquals(
       partly
-        .ask[Person](prompt)
-        .map(reply => (reply.usage, reply.cost))
+        .askWhole[Person](prompt)
+        .map((_, reply) => (reply.usage, reply.cost))
         .attempt
         .unsafeRunSync(),
       Right((
@@ -437,11 +449,10 @@ class AskSuite extends FunSuite:
         counting = new LlmClient.Forwarding(corrected):
           override protected def send
             (chat: Chat, options: ReplyOptions)
-            : SyncIO[Answer[Nothing]] = sent.update(_ + 1) *>
-            super.send(chat, options)
-        reply <- counting.ask[Person](prompt)
-        total <- sent.get
-      yield (reply.value, total)
+            : SyncIO[Reply] = sent.update(_ + 1) *> super.send(chat, options)
+        (value, _) <- counting.askWhole[Person](prompt)
+        total      <- sent.get
+      yield (value, total)
     assertEquals(counted.unsafeRunSync(), (Some(ada), 2))
 
   /** A client failing the test if it is ever asked to send. */
@@ -460,7 +471,7 @@ class AskSuite extends FunSuite:
       )
     do
       assertEquals(
-        never.ask[String](chat).attempt.unsafeRunSync(),
+        never.askWhole[String](chat).attempt.unsafeRunSync(),
         Left(LlmError.Unsendable("Anthropic", why)),
         chat,
       )
@@ -478,7 +489,7 @@ class AskSuite extends FunSuite:
     val calling  = Part.ToolCall("call_1", "weather", Json.obj())
     val answered = Chat()
       .user("What is the weather?")
-      .assistant(Answer(
+      .assistant(Reply(
         "",
         StopReason.ToolCall,
         toolCalls = List(calling),
@@ -511,8 +522,8 @@ class AskSuite extends FunSuite:
     )
     assertEquals(
       checked
-        .ask[String](answered, attempts = 1)
-        .map(_.value)
+        .askWhole[String](answered, attempts = 1)
+        .map(_._1)
         .attempt
         .unsafeRunSync(),
       Right(Some("Snowing in Zug.")),
@@ -540,14 +551,15 @@ class AskSuite extends FunSuite:
       )
     do
       assertEquals(
-        answering(model, body).ask[Person](prompt).attempt.unsafeRunSync(),
-        Right(Answer(
-          adaJson,
-          StopReason.Completed,
-          Usage(uncachedTokens = 5, visibleTokens = 3),
-          Some(Usd(BigDecimal(cost))),
-          value = Some(ada),
-        )),
+        answering(model, body).askWhole[Person](prompt).attempt.unsafeRunSync(),
+        Right(
+          Some(ada) -> Reply(
+            adaJson,
+            StopReason.Completed,
+            Usage(uncachedTokens = 5, visibleTokens = 3),
+            Some(Usd(BigDecimal(cost))),
+          ),
+        ),
         model,
       )
 
@@ -560,7 +572,7 @@ class AskSuite extends FunSuite:
         .thenRespond(ResponseStub.adjust(
           said(adaJson, cost = Some((1000, 100))),
         )),
-    ).ask[Person](prompt).map(_.cost).attempt.unsafeRunSync()
+    ).askWhole[Person](prompt).map(_._2.cost).attempt.unsafeRunSync()
     assertEquals(
       costing(config.copy(model = next)),
       Right(None),

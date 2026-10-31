@@ -13,7 +13,7 @@ import scala.util.matching.Regex
   */
 private[iris] object Question:
 
-  /** The most answers an ask asks for, unless told otherwise. */
+  /** The most replies an ask asks for, unless told otherwise. */
   val attempts: Int = 3
 
   /**
@@ -24,107 +24,119 @@ private[iris] object Question:
     */
   def ask[F[_] : MonadThrow, A : Schema as A]
     (
-      send: Chat => F[Answer[Nothing]],
+      send: Chat => F[Reply],
       chat: Chat,
       attempts: Int,
     )
-    : F[Answer[A]] =
-    if attempts < 1 then
-      MonadThrow[F].raiseError(IllegalArgumentException(
-        s"An ask needs at least one attempt, not $attempts.",
-      ))
-    else
-      Attempts(send, A, attempts).attempt(
-        chat.unanswerable.fold(instructed(chat, instructions(A)))(_ => chat),
-        Vector.empty,
-      )
+    : F[Answer[F, A]] =
+    // Sends the chat, after the replies so far, and reads what comes back.
+    def attempt(chat: Chat, replies: Vector[Reply]): F[Answer[F, A]] = send(
+      chat,
+    ).flatMap(reply =>
+      verdict(A, chat, replies :+ reply, attempts) match
+        case Verdict.Answered(value, whole) => Answer(
+            value,
+            whole.pure[F],
+            MonadThrow[F].unit,
+          ).pure[F]
+        case Verdict.Again(next)   => attempt(next, replies :+ reply)
+        case Verdict.Failed(error) => error.raiseError,
+    )
+    counted(attempts).fold(
+      _.raiseError,
+      _ => attempt(opening(chat, A), Vector.empty),
+    )
 
   /** What the model is told of the form its reply must take. */
   def instructions(schema: Schema[?]): String =
     "Reply with JSON alone, with no other text and no code fence, " +
       s"conforming to this JSON Schema:\n${ schema.json.noSpaces }"
 
-  /** The attempts at one answer. */
-  private final class Attempts[F[_] : MonadThrow, A]
+  /** Refuses fewer than one attempt. */
+  def counted(attempts: Int): Either[IllegalArgumentException, Unit] = Either
+    .cond(
+      attempts >= 1,
+      (),
+      IllegalArgumentException(
+        s"An ask needs at least one attempt, not $attempts.",
+      ),
+    )
+
+  /**
+    * The chat to send first: instructed, unless no provider would answer it, so
+    * that the provider refuses it before any request.
+    */
+  def opening(chat: Chat, schema: Schema[?]): Chat = chat
+    .unanswerable
+    .fold(instructed(chat, instructions(schema)))(_ => chat)
+
+  /**
+    * What becomes of an ask once its latest reply has come: its answer, none
+    * where the model asked for tools, a failure where asking again could not
+    * help, or another attempt, told what was wrong.
+    */
+  def verdict[A]
     (
-      send: Chat => F[Answer[Nothing]],
       schema: Schema[A],
+      chat: Chat,
+      replies: Vector[Reply],
       attempts: Int,
-    ):
+    )
+    : Verdict[A] =
+    val reply = replies.last
+    if calledTools(reply) then Verdict.Answered(None, summed(replies))
+    else
+      hopeless(reply) match
+        case Some(fatal) => Verdict.Failed(unreadable(replies, fatal))
+        case None        => read(schema, reply).leftMap(stopped(reply, _)) match
+            case Right(value) => Verdict.Answered(Some(value), summed(replies))
+            case Left(why) if replies.size < attempts =>
+              Verdict.Again(corrected(chat, reply, why))
+            case Left(why) => Verdict.Failed(unreadable(replies, why))
 
-    /** Sends the chat, after the answers so far, and reads what comes back. */
-    def attempt
-      (
-        chat: Chat,
-        answers: Vector[Answer[Nothing]],
-      )
-      : F[Answer[A]] =
-      send(chat).flatMap(reply => answered(chat, answers :+ reply))
+  /** What becomes of an ask once its latest reply has come. */
+  enum Verdict[+A]:
 
-    /**
-      * The answer, none where the model asked for tools, a failure where asking
-      * again could not help, or another attempt.
-      */
-    private def answered
-      (
-        chat: Chat,
-        answers: Vector[Answer[Nothing]],
-      )
-      : F[Answer[A]] =
-      val reply = answers.last
-      if calledTools(reply) then summed(answers, None).pure[F]
-      else
-        hopeless(reply) match
-          case Some(fatal) => unreadable(answers, fatal)
-          case None => read(schema, reply).leftMap(stopped(reply, _)) match
-              case Right(value) => summed(answers, Some(value)).pure[F]
-              case Left(why) if answers.size < attempts =>
-                attempt(corrected(chat, reply, why), answers)
-              case Left(why) => unreadable(answers, why)
+    /** The value, where the model gave one, and the reply it was read from. */
+    case Answered(value: Option[A], reply: Reply)
 
-    private def unreadable
-      (
-        answers: Vector[Answer[Nothing]],
-        detail: String,
-      )
-      : F[Answer[A]] = LlmError
-      .Unreadable(answers.size, detail, answers.toList)
-      .raiseError
+    /** Another attempt, at the chat told what was wrong. */
+    case Again(chat: Chat)
+
+    /** The failure, where asking again could not help. */
+    case Failed(error: LlmError)
+
+  /** Why the replies asked for could not be read, as the last could not. */
+  def unreadable(replies: Vector[Reply], detail: String): LlmError = LlmError
+    .Unreadable(replies.size, detail, replies.toList)
 
   /**
     * Whether a reply asks for tools, by its calls or why it stopped, as OpenAI
-    * says it stopped as usual for a call it was made to make. A call cut off at
-    * the token limit may be cut short, so is no call, but cut off.
+    * says it stopped as usual for a call it was made to make. Calls count only
+    * where it stopped as it would for them: one cut off at the token limit may
+    * be cut short, and one the provider stopped, as on a refusal, is no call.
     */
-  private def calledTools(reply: Answer[Nothing]): Boolean =
+  def calledTools(reply: Reply): Boolean =
     reply.stopReason == StopReason.ToolCall ||
-    reply.toolCalls.nonEmpty && reply.stopReason != StopReason.MaxTokens
+    reply.toolCalls.nonEmpty &&
+    (reply.stopReason == StopReason.Completed ||
+    reply.stopReason == StopReason.StopSequence)
 
   /**
-    * The last reply with the answer read from it, counting every attempt: its
-    * usage is theirs together, and its cost too, where each has one.
+    * The last reply, counting every attempt: its usage is theirs together, and
+    * its cost too, where each has one.
     */
-  private def summed[A]
-    (
-      answers: Vector[Answer[Nothing]],
-      answer: Option[A],
-    )
-    : Answer[A] = answers
+  def summed(replies: Vector[Reply]): Reply = replies
     .last
     .copy(
-      usage = answers.map(_.usage).reduce(_ + _),
-      cost = answers.traverse(_.cost).map(_.reduce(_ + _)),
-      value = answer,
-      attempts = answers.size,
+      usage = replies.map(_.usage).reduce(_ + _),
+      cost = replies.traverse(_.cost).map(_.reduce(_ + _)),
+      attempts = replies.size,
     )
 
   /** The answer a reply holds, or why it holds none. */
-  private def read[A]
-    (
-      schema: Schema[A],
-      reply: Answer[Nothing],
-    )
-    : Either[String, A] = parsed(reply.text).flatMap(decoded(schema, _))
+  private def read[A](schema: Schema[A], reply: Reply): Either[String, A] =
+    parsed(reply.text).flatMap(decoded(schema, _))
 
   /**
     * Why no reading of a reply could be trusted, nor asking again help, where
@@ -133,16 +145,15 @@ private[iris] object Question:
     * said nothing. A reply ended by a stop sequence is read, and if it cannot
     * be, asked for again, told so, as only Anthropic reports one.
     */
-  private def hopeless(reply: Answer[Nothing]): Option[String] =
-    reply.stopReason match
-      case StopReason.MaxTokens =>
-        Some("It was cut off at the token limit before it was complete.")
-      case StopReason.Other(reason)     => Some(s"It stopped, as `$reason`.")
-      case _ if reply.text.trim.isEmpty => Some("It said nothing.")
-      case _                            => None
+  def hopeless(reply: Reply): Option[String] = reply.stopReason match
+    case StopReason.MaxTokens =>
+      Some("It was cut off at the token limit before it was complete.")
+    case StopReason.Other(reason)     => Some(s"It stopped, as `$reason`.")
+    case _ if reply.text.trim.isEmpty => Some("It said nothing.")
+    case _                            => None
 
   /** Why a reply could not be read, said to have ended at a stop sequence. */
-  private def stopped(reply: Answer[Nothing], why: String): String =
+  private def stopped(reply: Reply, why: String): String =
     if reply.stopReason == StopReason.StopSequence then
       s"It stopped at a stop sequence. $why"
     else why
@@ -161,13 +172,7 @@ private[iris] object Question:
       case None => chat.user(instructions)
 
   /** The chat continued with a reply that said something, and why it failed. */
-  private def corrected
-    (
-      chat: Chat,
-      reply: Answer[Nothing],
-      why: String,
-    )
-    : Chat = chat
+  private def corrected(chat: Chat, reply: Reply, why: String): Chat = chat
     .assistant(reply.text)
     .user(s"That reply could not be read:\n$why\n\nReply again as asked.")
 
@@ -192,9 +197,8 @@ private[iris] object Question:
   private val fence: Regex = """(?s)```(?:[\w-]+\s)?\s*(.*?)\s*```""".r
 
   /** Every failure to decode the JSON, as circe says it. */
-  private def decoded[A](schema: Schema[A], json: Json): Either[String, A] =
-    schema
-      .decoder
-      .decodeAccumulating(json.hcursor)
-      .toEither
-      .leftMap(_.map(_.getMessage).toList.mkString("\n"))
+  def decoded[A](schema: Schema[A], json: Json): Either[String, A] = schema
+    .decoder
+    .decodeAccumulating(json.hcursor)
+    .toEither
+    .leftMap(_.map(_.getMessage).toList.mkString("\n"))
