@@ -128,6 +128,9 @@ longer.
   `scala.language.implicitConversions` where it is called, which a plain `Conversion` would (a feature warning,
   fatal in CI), and the inline summon reports `Content`'s own `@implicitNotFound` at the argument, where a
   `using` clause would leave a bare type mismatch. A spliced list must already be of parts (`values.map(Part.of)*`).
+  `fromContent` lies in `Part`'s implicit scope, as it must for a caller's `into` call to find it, so it converts
+  wherever a `Part` is expected: `val p: Part = "text"` compiles with a feature warning (an error under `WERROR`)
+  where it was a type mismatch. Only `into` parameters take a value unwarned.
   No type text may be (`NotGiven[String <:< A]`) is said as JSON: `List("a", 1.5).map(Part.of)` infers
   `String | Double`, which has a schema, and must still be refused. A single-turn prompt is `Chat.of(content*)`,
   never an overload of `Chat.apply`, which would capture `Chat(messages)` (the case class's own `apply` needs the
