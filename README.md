@@ -306,9 +306,9 @@ import com.alecdorrington.iris.{Delta, LlmClient}
 
 LlmClient.fromEnv[IO].use {
   case Some(client) => client.stream(Chat.of("Tell me a story.")).evalMap {
-    case Delta.Text(text)      => IO.print(text)
-    case Delta.ToolCall(call)  => IO.println(s"\n(asks for ${call.tool})")
-    case Delta.End(reason, _)  => IO.println(s"\n($reason)")
+    case Delta.Text(text)        => IO.print(text)
+    case Delta.ToolCall(call)    => IO.println(s"\n(asks for ${call.tool})")
+    case Delta.End(reason, _, _) => IO.println(s"\n($reason)")
   }.compile.drain
   case None => IO.unit
 }
@@ -472,7 +472,7 @@ def logged(client: LlmClient[IO]): LlmClient[IO] = new LlmClient.Forwarding(clie
     super.send(chat, options).flatTap(reply => IO.println(reply.usage))
   override def stream(chat: Chat, options: ReplyOptions): Stream[IO, Delta] =
     super.stream(chat, options).evalTap {
-      case Delta.End(_, usage) => IO.println(usage)
+      case Delta.End(_, usage, _) => IO.println(usage)
       case _                   => IO.unit
     }
   override def count(chat: Chat, options: ReplyOptions): IO[Int] =

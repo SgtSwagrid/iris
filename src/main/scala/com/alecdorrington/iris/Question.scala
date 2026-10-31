@@ -34,8 +34,11 @@ private[iris] object Question:
       chat,
     ).flatMap(reply =>
       verdict(A, chat, replies :+ reply, attempts) match
-        case Verdict.Answered(value, whole) =>
-          Answer(value, whole.pure[F], MonadThrow[F].unit).pure[F]
+        case Verdict.Answered(value, whole) => Answer(
+            value,
+            whole.pure[F],
+            MonadThrow[F].unit,
+          ).pure[F]
         case Verdict.Again(next)   => attempt(next, replies :+ reply)
         case Verdict.Failed(error) => error.raiseError,
     )

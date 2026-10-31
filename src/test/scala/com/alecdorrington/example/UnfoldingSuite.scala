@@ -84,7 +84,7 @@ class UnfoldingSuite extends FunSuite:
           Reply(
             text = deltas.collect { case Delta.Text(text) => text }.mkString,
             stopReason = deltas
-              .collectFirst { case Delta.End(stop, _) => stop }
+              .collectFirst { case Delta.End(stop, _, _) => stop }
               .getOrElse(StopReason.Unknown),
             toolCalls = deltas.collect { case Delta.ToolCall(call) => call },
           ),
@@ -544,7 +544,7 @@ class UnfoldingSuite extends FunSuite:
     run(
       for
         // Misnamed, so no stream of it opens: read whole, and asked again.
-        (llm, sent) <- streamer(
+        (llm, _) <- streamer(
           written("""{"First":[1],"Second":[2]}"""),
           written("""{"first":[1],"second":[2]}"""),
         )
@@ -579,16 +579,19 @@ class UnfoldingSuite extends FunSuite:
     val look = Part.ToolCall("call_1", "look", Json.obj())
     run(
       List(
+        // A character at a time, so that the stream is seen open.
         (
-          Stream(Delta.Text(page), Delta.ToolCall(look)) ++
-            Stream(Delta.End(StopReason.ToolCall, Usage())),
+          part(page, 1) ++ Stream(
+            Delta.ToolCall(look),
+            Delta.End(StopReason.ToolCall, Usage()),
+          ),
           "once its answer was given",
         ),
         (
-          Stream(
-            Delta.Text(page.dropRight(1)),
+          part(page.dropRight(1), 1) ++ Stream(
             Delta.ToolCall(look),
-          ) ++ Stream(Delta.End(StopReason.ToolCall, Usage())),
+            Delta.End(StopReason.ToolCall, Usage()),
+          ),
           "partway through its answer",
         ),
         (written(page, 4, StopReason.MaxTokens), "token limit"),
@@ -637,10 +640,13 @@ class UnfoldingSuite extends FunSuite:
     run(
       for
         ended <- Deferred[IO, Boolean]
-        reply = (part("""{"title":"Hi","words":[{"text":"a"},""", 4) ++
-          Stream.never[IO]).onFinalizeCase(exit =>
-          ended.complete(exit == Resource.ExitCase.Canceled).void,
-        )
+        reply =
+          (part(
+            """{"title":"Hi","words":[{"text":"a"},""",
+            4,
+          ) ++ Stream.never[IO]).onFinalizeCase(exit =>
+            ended.complete(exit == Resource.ExitCase.Canceled).void,
+          )
         (llm, _) <- streamer(reply)
         answer   <- llm.ask[Page](Chat.of("Translate."))
         _        <- answer.cancel
@@ -650,8 +656,10 @@ class UnfoldingSuite extends FunSuite:
       yield
         assert(stopped)
         List(words.last, whole).foreach:
-          case Left(error: IllegalStateException) =>
-            assert(error.getMessage.contains("cancelled"), error)
+          case Left(error: IllegalStateException) => assert(
+              error.getMessage.contains("cancelled"),
+              error,
+            )
           case other => fail(s"Not cancelled: $other"),
     )
 

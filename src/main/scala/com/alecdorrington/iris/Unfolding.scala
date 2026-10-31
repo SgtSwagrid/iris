@@ -35,17 +35,20 @@ private[iris] object Unfolding:
     ).mapN(Asking(stream(_, options), A, attempts, _, _, _))
       .flatMap(asking =>
         // Started and watched at once, so that no cancel falls between.
-        Async[F]
-          .uncancelable(poll =>
-            asking
-              .read(Question.opening(chat, A))
-              .start
-              .flatMap(reading =>
-                poll(asking.value.get.rethrow)
-                  .onCancel(reading.cancel)
-                  .map(Answer(_, asking.reply.get.rethrow, reading.cancel)),
-              ),
-          ),
+        Async[F].uncancelable(poll =>
+          asking
+            .read(Question.opening(chat, A))
+            .start
+            .flatMap(reading =>
+              poll(asking.value.get.rethrow)
+                .onCancel(reading.cancel)
+                .map(Answer(
+                  _,
+                  asking.reply.get.rethrow,
+                  reading.cancel,
+                )),
+            ),
+        ),
       )
 
   /**
@@ -85,9 +88,9 @@ private[iris] object Unfolding:
       */
     def read(chat: Chat): F[Unit] = attempt(chat, Vector.empty)
       .handleErrorWith(failed(_).uncancelable)
-      .onCancel(failed(
-        IllegalStateException("The answer was cancelled before its reply ended."),
-      ))
+      .onCancel(failed(IllegalStateException(
+        "The answer was cancelled before its reply ended.",
+      )))
 
     /** Reads the reply to the chat, after the replies so far. */
     private def attempt(chat: Chat, replies: Vector[Reply]): F[Unit] = Async[F]

@@ -79,9 +79,9 @@ trait LlmClient[F[_]]:
     * for a tool, as a whole reply would, and as the request fails where that
     * fails partway, as one timing out. A streamed reply is read to its end even
     * where nothing reads its streams, unless [[Answer.cancel]] stops it, and
-    * its failure reaches only its streams and [[Answer.reply]]. A
-    * value is given early only while one of its streams is seen open, so how a
-    * reply's parts arrive may decide whether it is.
+    * its failure reaches only its streams and [[Answer.reply]]. A value is
+    * given early only while one of its streams is seen open, so how a reply's
+    * parts arrive may decide whether it is.
     *
     * @tparam A
     *   The type of the answer, whose streams are of this client's effect.
@@ -161,7 +161,11 @@ trait LlmClient[F[_]]:
       Stream.emits(List.concat(
         Option.when(reply.text.nonEmpty)(Delta.Text(reply.text)),
         reply.toolCalls.map(Delta.ToolCall(_)),
-        List(Delta.End(reply.stopReason, reply.usage, reply.cost)),
+        List(Delta.End(
+          reply.stopReason,
+          reply.usage,
+          reply.cost,
+        )),
       )),
     )
 

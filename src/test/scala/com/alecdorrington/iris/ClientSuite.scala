@@ -58,7 +58,12 @@ class ClientSuite extends FunSuite:
       List(
         Delta.Text("Hi"),
         Delta.ToolCall(Part.ToolCall("call_1", "look", io.circe.Json.obj())),
-        Delta.End(StopReason.ToolCall, Usage()),
+        // Priced as it came, at Claude Haiku 4.5's rates, though it reports none.
+        Delta.End(
+          StopReason.ToolCall,
+          Usage(),
+          Some(Usd(BigDecimal(0))),
+        ),
       ),
     )
 
