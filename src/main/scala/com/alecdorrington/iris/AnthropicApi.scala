@@ -36,8 +36,23 @@ private[iris] object AnthropicApi extends ProviderApi:
   override val answers: Decoder[Either[LlmError, Answer[Nothing]]] =
     Decoder[Response].map(_.toAnswer)
 
-  override def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta] = Sse
-    .separately(deltas)(events)
+  /**
+    * The reply a stream's events make up. Its first event counts the request,
+    * and the stop reason's the reply, so the counts of the first are kept until
+    * then.
+    */
+  override def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta] = events
+    .zipWithScan1(TokenCounts.unreported)(started)
+    .flatMap((event, start) => Stream.emits(deltas(event, start)))
+
+  private def started(counts: TokenCounts, event: Json): TokenCounts =
+    val cursor = event.hcursor
+    if cursor.get[String]("type").toOption.contains("message_start") then
+      cursor
+        .downField("message")
+        .get[TokenCounts]("usage")
+        .getOrElse(TokenCounts.unreported)
+    else counts
 
   /** Anthropic writes the cache without replying when allowed no tokens. */
   override val leastReply: Int = 0
@@ -268,10 +283,10 @@ private[iris] object AnthropicApi extends ProviderApi:
   )
 
   /**
-    * What one streamed event says. The usage is left out, as the stop reason's
-    * event counts the output alone.
+    * What one streamed event says, given the counts the stream started with,
+    * which the stop reason's event may leave out.
     */
-  def deltas(event: Json): List[Delta] =
+  private def deltas(event: Json, start: TokenCounts): List[Delta] =
     val cursor = event.hcursor
     cursor.get[String]("type").toOption match
       case Some("content_block_delta") => cursor
@@ -284,7 +299,11 @@ private[iris] object AnthropicApi extends ProviderApi:
           stopReason(
             cursor.downField("delta").get[String]("stop_reason").toOption,
           ),
-          None,
+          cursor
+            .get[TokenCounts]("usage")
+            .getOrElse(TokenCounts.unreported)
+            .over(start)
+            .toUsage,
         ))
       case _ => List.empty
 
@@ -311,9 +330,17 @@ private[iris] object AnthropicApi extends ProviderApi:
     given Decoder[Block] =
       Decoder.forProduct5("type", "text", "id", "name", "input")(Block.apply)
 
+  final case class OutputBreakdown(thinkingTokens: Option[Int])
+
+  object OutputBreakdown:
+
+    given Decoder[OutputBreakdown] =
+      Decoder.forProduct1("thinking_tokens")(OutputBreakdown.apply)
+
   /**
     * The token counts of a response. Anthropic counts cache writes and reads
-    * apart from the input, so [[toUsage]] adds them back.
+    * apart from the input, as [[Usage]] does, but its thinking within the
+    * output.
     */
   final case class TokenCounts
     (
@@ -321,21 +348,42 @@ private[iris] object AnthropicApi extends ProviderApi:
       outputTokens: Option[Int],
       cacheWrites: Option[Int],
       cacheReads: Option[Int],
+      outputBreakdown: Option[OutputBreakdown],
     ):
 
-    def toUsage: Option[Usage] = Usage.of(
-      inputTokens.map(_ + cacheWrites.getOrElse(0) + cacheReads.getOrElse(0)),
-      outputTokens,
-      cacheReads,
+    def toUsage: Usage =
+      val output   = outputTokens.getOrElse(0)
+      val thinking = outputBreakdown
+        .flatMap(_.thinkingTokens)
+        .getOrElse(0)
+        .min(output)
+      Usage(
+        uncachedTokens = inputTokens.getOrElse(0),
+        cacheReadTokens = cacheReads.getOrElse(0),
+        cacheWriteTokens = cacheWrites.getOrElse(0),
+        visibleTokens = output - thinking,
+        thinkingTokens = thinking,
+      )
+
+    /** These counts, with each they leave out taken from earlier ones. */
+    def over(earlier: TokenCounts): TokenCounts = TokenCounts(
+      inputTokens.orElse(earlier.inputTokens),
+      outputTokens.orElse(earlier.outputTokens),
+      cacheWrites.orElse(earlier.cacheWrites),
+      cacheReads.orElse(earlier.cacheReads),
+      outputBreakdown.orElse(earlier.outputBreakdown),
     )
 
   object TokenCounts:
 
-    given Decoder[TokenCounts] = Decoder.forProduct4(
+    val unreported: TokenCounts = TokenCounts(None, None, None, None, None)
+
+    given Decoder[TokenCounts] = Decoder.forProduct5(
       "input_tokens",
       "output_tokens",
       "cache_creation_input_tokens",
       "cache_read_input_tokens",
+      "output_tokens_details",
     )(TokenCounts.apply)
 
   final case class Response
@@ -349,7 +397,7 @@ private[iris] object AnthropicApi extends ProviderApi:
     def toAnswer: Either[LlmError, Answer[Nothing]] = Right(Answer(
       text = content.flatMap(_.said).mkString,
       stopReason = AnthropicApi.stopReason(stopReason),
-      usage = usage.flatMap(_.toUsage),
+      usage = usage.fold(Usage())(_.toUsage),
       toolCalls = content.flatMap(_.toolCall),
     ))
 

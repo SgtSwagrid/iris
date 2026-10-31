@@ -405,44 +405,67 @@ class AdapterSuite extends FunSuite:
       Some(List("user", "assistant", "user")),
     )
 
-  test("each provider's response is read as an answer, with its cache reads"):
+  test("each provider's response is read as an answer, with its token counts"):
     List(
       // Anthropic leaves its cache's reads and writes out of its input tokens,
-      // and a block of thinking out of the reply.
+      // and a block of thinking out of the reply, but not out of its count.
       (
         AnthropicApi,
         """{"content":[{"type":"thinking","text":"hmm"},
            {"type":"text","text":"Hello!"}],"stop_reason":"end_turn",
-           "usage":{"input_tokens":10,"output_tokens":5,
+           "usage":{"input_tokens":10,"output_tokens":12,
                     "cache_creation_input_tokens":20,
-                    "cache_read_input_tokens":30}}""",
+                    "cache_read_input_tokens":30,
+                    "output_tokens_details":{"thinking_tokens":10}}}""",
         Answer(
           "Hello!",
           StopReason.Completed,
-          Some(Usage(60, 5, 30)),
+          Usage(
+            uncachedTokens = 10,
+            cacheReadTokens = 30,
+            cacheWriteTokens = 20,
+            visibleTokens = 2,
+            thinkingTokens = 10,
+          ),
         ),
       ),
+      // OpenAI counts its cache reads within its prompt, and its reasoning
+      // within its completion.
       (
         OpenAiApi,
         """{"choices":[{"message":{"content":"Hello!"},"finish_reason":"length"}],
-           "usage":{"prompt_tokens":40,"completion_tokens":2,
-                    "prompt_tokens_details":{"cached_tokens":32}}}""",
+           "usage":{"prompt_tokens":40,"completion_tokens":12,
+                    "prompt_tokens_details":{"cached_tokens":32},
+                    "completion_tokens_details":{"reasoning_tokens":10}}}""",
         Answer(
           "Hello!",
           StopReason.MaxTokens,
-          Some(Usage(40, 2, 32)),
+          Usage(
+            uncachedTokens = 8,
+            cacheReadTokens = 32,
+            visibleTokens = 2,
+            thinkingTokens = 10,
+          ),
         ),
       ),
+      // Gemini counts its cache reads within its prompt, but its thoughts apart
+      // from its candidates.
       (
         GeminiApi,
         """{"candidates":[{"content":{"parts":[{"text":"Hello!"}],"role":"model"},
            "finishReason":"STOP"}],
            "usageMetadata":{"promptTokenCount":40,"candidatesTokenCount":2,
-                            "cachedContentTokenCount":32}}""",
+                            "cachedContentTokenCount":32,
+                            "thoughtsTokenCount":10}}""",
         Answer(
           "Hello!",
           StopReason.Completed,
-          Some(Usage(40, 2, 32)),
+          Usage(
+            uncachedTokens = 8,
+            cacheReadTokens = 32,
+            visibleTokens = 2,
+            thinkingTokens = 10,
+          ),
         ),
       ),
     ).foreach: (api, body, reply) =>
@@ -484,21 +507,54 @@ class AdapterSuite extends FunSuite:
         why,
       )
 
-  test("usage reported in part, or not at all, is none, not a broken response"):
+  test(
+    "a count left out is 0, and usage left out wholly is no broken response",
+  ):
     assertEquals(
       answer(
         AnthropicApi,
         """{"content":[],"stop_reason":"end_turn",
          "usage":{"input_tokens":10}}""",
       ).map(_.usage),
-      Right(None),
+      Right(Usage(uncachedTokens = 10)),
+    )
+    // Gemini leaves out a count of 0, as of a reply cut off while it thought.
+    assertEquals(
+      answer(
+        GeminiApi,
+        """{"candidates":[{"finishReason":"MAX_TOKENS"}],
+         "usageMetadata":{"promptTokenCount":12,"thoughtsTokenCount":30}}""",
+      ).map(_.usage),
+      Right(Usage(uncachedTokens = 12, thinkingTokens = 30)),
     )
     assertEquals(
       answer(
         OpenAiApi,
         """{"choices":[{"message":{"content":"Hi"},"finish_reason":"stop"}]}""",
       ),
-      Right(Answer("Hi", StopReason.Completed, None)),
+      Right(Answer("Hi", StopReason.Completed, Usage())),
+    )
+
+  test("gemini's audio is counted apart, read afresh or from the cache"):
+    assertEquals(
+      answer(
+        GeminiApi,
+        """{"candidates":[{"content":{"parts":[{"text":"Hi"}]},
+           "finishReason":"STOP"}],
+           "usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":2,
+             "cachedContentTokenCount":40,
+             "promptTokensDetails":[{"modality":"TEXT","tokenCount":60},
+                                    {"modality":"AUDIO","tokenCount":40}],
+             "cacheTokensDetails":[{"modality":"TEXT","tokenCount":30},
+                                   {"modality":"AUDIO","tokenCount":10}]}}""",
+      ).map(_.usage),
+      Right(Usage(
+        uncachedTokens = 30,
+        cacheReadTokens = 30,
+        uncachedAudioTokens = 30,
+        cacheReadAudioTokens = 10,
+        visibleTokens = 2,
+      )),
     )
 
   test("a provider's request to wait is read where it is given in seconds"):

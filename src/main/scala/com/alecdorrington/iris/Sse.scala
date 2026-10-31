@@ -27,12 +27,3 @@ private[iris] object Sse:
     .map(parse)
     .collect:
       case Right(json) => json
-
-  /**
-    * Reads each event alone into deltas, a list as one event may carry both
-    * text and the end.
-    */
-  def separately[F[_]]
-    (read: Json => List[Delta])
-    (events: Stream[F, Json])
-    : Stream[F, Delta] = events.map(read).flatMap(Stream.emits)

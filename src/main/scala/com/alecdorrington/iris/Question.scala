@@ -102,7 +102,7 @@ private[iris] object Question:
 
   /**
     * The last reply with the answer read from it, counting every attempt: its
-    * usage is theirs together, or none where one of them reports none.
+    * usage is theirs together.
     */
   private def summed[A]
     (
@@ -112,7 +112,7 @@ private[iris] object Question:
     : Answer[A] = answers
     .last
     .copy(
-      usage = answers.toList.traverse(_.usage).flatMap(_.reduceOption(_ + _)),
+      usage = answers.map(_.usage).reduce(_ + _),
       value = answer,
       attempts = answers.size,
     )

@@ -18,8 +18,7 @@ package com.alecdorrington.iris
   *   The reason the model stopped the last reply.
   *
   * @param usage
-  *   The token counts of every reply asked for, together, or `None` where the
-  *   provider did not report those of one.
+  *   The token counts of every reply asked for, together.
   *
   * @param toolCalls
   *   The tools the model asks to have run before it goes on, if any.
@@ -35,7 +34,7 @@ final case class Answer[+A]
   (
     text: String,
     stopReason: StopReason = StopReason.Completed,
-    usage: Option[Usage] = None,
+    usage: Usage = Usage(),
     toolCalls: List[Part.ToolCall] = List.empty,
     value: Option[A] = None,
     attempts: Int = 1,
@@ -87,23 +86,57 @@ object StopReason:
     case None                                        => Unknown
 
 /**
-  * The token counts for one request, as reported by the provider.
+  * The token counts of one request or more, as the provider reported them,
+  * alike for every provider. No count includes another, so that each may be
+  * priced alone. A count the provider did not report is `0`, as is one it never
+  * charges for apart: only Anthropic charges for writing its cache, and only
+  * Gemini reports audio apart.
   *
-  * @param inputTokens
-  *   The number of tokens in the request, the whole chat included.
+  * @param uncachedTokens
+  *   The number of tokens of the request read afresh, other than audio.
   *
-  * @param outputTokens
-  *   The number of tokens in the reply.
+  * @param cacheReadTokens
+  *   The number of tokens of the request read from the provider's cache, other
+  *   than audio.
   *
-  * @param cachedTokens
-  *   The number of the [[inputTokens]] read from the provider's cache.
+  * @param cacheWriteTokens
+  *   The number of tokens of the request written to the provider's cache, where
+  *   the provider charges for writing them.
+  *
+  * @param uncachedAudioTokens
+  *   The number of tokens of audio in the request read afresh.
+  *
+  * @param cacheReadAudioTokens
+  *   The number of tokens of audio in the request read from the provider's
+  *   cache.
+  *
+  * @param visibleTokens
+  *   The number of tokens the model replied with: its text and tool calls.
+  *
+  * @param thinkingTokens
+  *   The number of tokens the model thought in before it replied, whether or
+  *   not the provider shows what it thought.
   */
 final case class Usage
   (
-    inputTokens: Int,
-    outputTokens: Int,
-    cachedTokens: Int = 0,
+    uncachedTokens: Int = 0,
+    cacheReadTokens: Int = 0,
+    cacheWriteTokens: Int = 0,
+    uncachedAudioTokens: Int = 0,
+    cacheReadAudioTokens: Int = 0,
+    visibleTokens: Int = 0,
+    thinkingTokens: Int = 0,
   ):
+
+  /** The number of tokens in the request, the whole chat included. */
+  def inputTokens: Int = uncachedTokens + cacheReadTokens + cacheWriteTokens +
+    uncachedAudioTokens + cacheReadAudioTokens
+
+  /** The number of the [[inputTokens]] read from the provider's cache. */
+  def cachedTokens: Int = cacheReadTokens + cacheReadAudioTokens
+
+  /** The number of tokens in the reply, its thinking included. */
+  def outputTokens: Int = visibleTokens + thinkingTokens
 
   /**
     * Adds the token counts of another request to these.
@@ -115,29 +148,11 @@ final case class Usage
     *   The counts of both requests together.
     */
   def + (other: Usage): Usage = Usage(
-    inputTokens + other.inputTokens,
-    outputTokens + other.outputTokens,
-    cachedTokens + other.cachedTokens,
+    uncachedTokens + other.uncachedTokens,
+    cacheReadTokens + other.cacheReadTokens,
+    cacheWriteTokens + other.cacheWriteTokens,
+    uncachedAudioTokens + other.uncachedAudioTokens,
+    cacheReadAudioTokens + other.cacheReadAudioTokens,
+    visibleTokens + other.visibleTokens,
+    thinkingTokens + other.thinkingTokens,
   )
-
-object Usage:
-
-  /**
-    * The usage, where both counts are reported, as providers may omit them on a
-    * failed reply. An unreported cache read counts as `0`.
-    */
-  private[iris] def of
-    (
-      input: Option[Int],
-      output: Option[Int],
-      cached: Option[Int] = None,
-    )
-    : Option[Usage] =
-    for
-      inputTokens  <- input
-      outputTokens <- output
-    yield Usage(
-      inputTokens,
-      outputTokens,
-      cached.getOrElse(0),
-    )
