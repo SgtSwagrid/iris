@@ -254,12 +254,18 @@ private[iris] object OpenAiApi extends ProviderApi:
     given Decoder[Choice] =
       Decoder.forProduct2("message", "finish_reason")(Choice.apply)
 
-  final case class PromptBreakdown(cachedTokens: Option[Int])
+  final case class PromptBreakdown
+    (
+      cachedTokens: Option[Int],
+      cacheWriteTokens: Option[Int],
+    )
 
   object PromptBreakdown:
 
     given Decoder[PromptBreakdown] =
-      Decoder.forProduct1("cached_tokens")(PromptBreakdown.apply)
+      Decoder.forProduct2("cached_tokens", "cache_write_tokens")(
+        PromptBreakdown.apply,
+      )
 
   final case class CompletionBreakdown(reasoningTokens: Option[Int])
 
@@ -269,8 +275,8 @@ private[iris] object OpenAiApi extends ProviderApi:
       Decoder.forProduct1("reasoning_tokens")(CompletionBreakdown.apply)
 
   /**
-    * The token counts of a response, whose prompt tokens include cached ones,
-    * and completion tokens reasoning.
+    * The token counts of a response, whose prompt tokens include those read
+    * from and written to the cache, and completion tokens reasoning.
     */
   final case class TokenCounts
     (
@@ -286,14 +292,19 @@ private[iris] object OpenAiApi extends ProviderApi:
         .flatMap(_.cachedTokens)
         .getOrElse(0)
         .min(prompt)
+      val written = promptBreakdown
+        .flatMap(_.cacheWriteTokens)
+        .getOrElse(0)
+        .min(prompt - cached)
       val completion = completionTokens.getOrElse(0)
       val reasoning  = completionBreakdown
         .flatMap(_.reasoningTokens)
         .getOrElse(0)
         .min(completion)
       Usage(
-        uncachedTokens = prompt - cached,
+        uncachedTokens = prompt - cached - written,
         cacheReadTokens = cached,
+        cacheWriteTokens = written,
         visibleTokens = completion - reasoning,
         thinkingTokens = reasoning,
       )

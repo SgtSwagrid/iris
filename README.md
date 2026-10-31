@@ -306,8 +306,8 @@ guessing with a tokeniser of its own.
 When many requests begin alike, as when one document is asked several questions, put what
 they share first and end it with a `Part.CacheBreakpoint`, so that the provider can keep what it
 made of the prefix rather than read it afresh every time. `Usage.cachedTokens` says how much of a
-prompt was read from the cache, and `cacheWriteTokens` how much Anthropic, which charges for it, wrote
-to it.
+prompt was read from the cache, and `cacheWriteTokens` how much was written to it, where the provider
+charges for writing it (Anthropic, and OpenAI from GPT-5.6).
 
 ```scala
 val asking = (question: String) =>

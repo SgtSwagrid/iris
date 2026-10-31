@@ -17,13 +17,18 @@ private[iris] object Sse:
   def data(line: String): Option[String] = Option
     .when(line.startsWith("data:"))(line.drop("data:".length).trim)
     .filter(_.nonEmpty)
-    .filterNot(_ == endMarker)
 
+  /**
+    * The events of a body, ending at OpenAI's `[DONE]` whether or not the body
+    * does, as a reply whose end waits for the stream's would otherwise wait for
+    * a connection held open after it.
+    */
   def events[F[_]](body: Stream[F, Byte]): Stream[F, Json] = body
     .through(text.utf8.decode)
     .through(text.lines)
     .map(data)
     .unNone
+    .takeWhile(_ != endMarker)
     .map(parse)
     .collect:
       case Right(json) => json

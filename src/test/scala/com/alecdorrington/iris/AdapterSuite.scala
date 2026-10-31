@@ -556,6 +556,40 @@ class AdapterSuite extends FunSuite:
         visibleTokens = 2,
       )),
     )
+    // A cache not broken down by kind of media holds audio in the prompt's
+    // share.
+    assertEquals(
+      answer(
+        GeminiApi,
+        """{"candidates":[{"content":{"parts":[{"text":"Hi"}]},
+           "finishReason":"STOP"}],
+           "usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":2,
+             "cachedContentTokenCount":800,
+             "promptTokensDetails":[{"modality":"AUDIO","tokenCount":1000}]}}""",
+      ).map(_.usage),
+      Right(Usage(
+        uncachedAudioTokens = 200,
+        cacheReadAudioTokens = 800,
+        visibleTokens = 2,
+      )),
+    )
+
+  test("openai's cache writes are counted apart from its prompt"):
+    assertEquals(
+      answer(
+        OpenAiApi,
+        """{"choices":[{"message":{"content":"Hi"},"finish_reason":"stop"}],
+           "usage":{"prompt_tokens":12000,"completion_tokens":5,
+             "prompt_tokens_details":{"cached_tokens":4000,
+                                      "cache_write_tokens":7000}}}""",
+      ).map(_.usage),
+      Right(Usage(
+        uncachedTokens = 1000,
+        cacheReadTokens = 4000,
+        cacheWriteTokens = 7000,
+        visibleTokens = 5,
+      )),
+    )
 
   test("a provider's request to wait is read where it is given in seconds"):
     List(

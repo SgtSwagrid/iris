@@ -67,11 +67,14 @@ longer.
   or the assistant's turn is followed by a user message of `.`.
 - `Usage` is seven counts, none including another, so that each can be priced alone (rates per count are planned):
   uncached, cache reads, cache writes, uncached and cached audio, visible and thinking. Every provider has every
-  count, `0` where it reports none or never charges apart (only Anthropic charges for cache writes; only Gemini
-  reports audio, by `promptTokensDetails`/`cacheTokensDetails`, and prices it higher on some models). Each
-  `ProviderApi` splits its own: Anthropic's `input_tokens` leaves the cache out and its `output_tokens` holds
-  `output_tokens_details.thinking_tokens`; OpenAI's prompt holds `cached_tokens` and its completion
-  `reasoning_tokens`; Gemini's prompt holds its cache, and `thoughtsTokenCount` lies outside `candidatesTokenCount`.
+  count, `0` where it reports none or never charges apart (Anthropic, and OpenAI from GPT-5.6, charge for cache
+  writes, Gemini not; only Gemini reports audio, by `promptTokensDetails`/`cacheTokensDetails`, and prices it higher
+  on some models; where it gives no `cacheTokensDetails`, its cache is taken to hold audio in the prompt's share).
+  Each `ProviderApi` splits its own: Anthropic's `input_tokens` leaves the cache out and its `output_tokens` holds
+  `output_tokens_details.thinking_tokens`; OpenAI's prompt holds `cached_tokens` and `cache_write_tokens`, and its
+  completion `reasoning_tokens` (its Responses API splits writes by lifetime, 30 minutes or 12 hours, at different
+  rates, but Iris uses Chat Completions without `prompt_cache_options`, so one write count is enough); Gemini's
+  prompt holds its cache, and `thoughtsTokenCount` lies outside `candidatesTokenCount`.
   Gemini leaves out every count of `0` (protobuf's JSON), so a count left out is `0`, never unknown, and a reply
   with no usage at all has `Usage()`: `Answer.usage` and `Delta.End.usage` are never optional (the user chose zeros
   over `None`). `inputTokens`, `cachedTokens` and `outputTokens` are totals of the counts, the whole prompt, the part

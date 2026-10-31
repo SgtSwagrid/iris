@@ -89,8 +89,8 @@ object StopReason:
   * The token counts of one request or more, as the provider reported them,
   * alike for every provider. No count includes another, so that each may be
   * priced alone. A count the provider did not report is `0`, as is one it never
-  * charges for apart: only Anthropic charges for writing its cache, and only
-  * Gemini reports audio apart.
+  * charges for apart: Gemini charges nothing for writing its cache, nor OpenAI
+  * before GPT-5.6, and only Gemini reports audio apart.
   *
   * @param uncachedTokens
   *   The number of tokens of the request read afresh, other than audio.

@@ -20,15 +20,26 @@ class StreamSuite extends FunSuite:
     .toList
     .unsafeRunSync()
 
-  test("a data line carries its payload, and no other line nor the end does"):
+  test("a data line carries its payload, and no other line does"):
     List(
       "data: {\"a\":1}"     -> Some("{\"a\":1}"),
       "data:{\"a\":1}"      -> Some("{\"a\":1}"),
       "event: message_stop" -> None,
       ": a comment"         -> None,
       ""                    -> None,
-      "data: [DONE]"        -> None,
     ).foreach((line, data) => assertEquals(Sse.data(line), data, line))
+
+  test("events end at the end marker, whatever the body does after it"):
+    val body = "data: {\"a\":1}\n\ndata: [DONE]\n\ndata: {\"b\":2}\n"
+    assertEquals(
+      (Stream.emits(body.getBytes("UTF-8")) ++
+        Stream.raiseError[SyncIO](new Exception("never read")))
+        .through(Sse.events)
+        .compile
+        .toList
+        .unsafeRunSync(),
+      List(Json.obj("a" -> Json.fromInt(1))),
+    )
 
   test("each provider streams its text, how it ended, and what it cost"):
     val usage = Usage(uncachedTokens = 3, visibleTokens = 2)

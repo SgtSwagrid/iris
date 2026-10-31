@@ -251,7 +251,9 @@ private[iris] object GeminiApi extends ProviderApi:
   /**
     * The token counts of a response, whose prompt tokens include cached ones,
     * each by kind of media too, and whose candidates' leave out thinking.
-    * Gemini leaves out every count of `0`.
+    * Gemini leaves out every count of `0`, and is not said always to break its
+    * cache down by kind of media, so without that breakdown the cache is taken
+    * to hold audio in the share the prompt does.
     */
   final case class TokenCounts
     (
@@ -265,12 +267,13 @@ private[iris] object GeminiApi extends ProviderApi:
     derives Decoder:
 
     def toUsage: Usage =
-      val prompt        = promptTokenCount.getOrElse(0)
-      val cached        = cachedContentTokenCount.getOrElse(0).min(prompt)
-      val cachedAudio   = audio(cacheTokensDetails).min(cached)
-      val uncachedAudio = (audio(promptTokensDetails) - cachedAudio)
-        .min(prompt - cached)
-        .max(0)
+      val prompt      = promptTokenCount.getOrElse(0)
+      val cached      = cachedContentTokenCount.getOrElse(0).min(prompt)
+      val prompted    = promptTokensDetails.fold(0)(audio)
+      val cachedAudio = cacheTokensDetails
+        .fold(share(cached, prompted, prompt))(audio)
+        .min(cached)
+      val uncachedAudio = (prompted - cachedAudio).min(prompt - cached).max(0)
       Usage(
         uncachedTokens = prompt - cached - uncachedAudio,
         cacheReadTokens = cached - cachedAudio,
@@ -280,11 +283,14 @@ private[iris] object GeminiApi extends ProviderApi:
         thinkingTokens = thoughtsTokenCount.getOrElse(0),
       )
 
-    private def audio(counts: Option[List[ModalityCount]]): Int = counts
-      .getOrElse(List.empty)
+    private def audio(counts: List[ModalityCount]): Int = counts
       .filter(_.modality == "AUDIO")
       .flatMap(_.tokenCount)
       .sum
+
+    /** The part of `whole` that `part` is of `of`, rounded down. */
+    private def share(whole: Int, part: Int, of: Int): Int =
+      if of == 0 then 0 else (whole.toLong * part / of).toInt
 
   final case class Response
     (
