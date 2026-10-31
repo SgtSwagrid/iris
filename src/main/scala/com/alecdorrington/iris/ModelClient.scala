@@ -119,7 +119,10 @@ trait ModelClient[F[_]]:
     *   not told. Tools are run for as long as the model asks for them, each
     *   round a request whose cost is the host's to bound, as for any request's:
     *   unbounded, a model that never stops asking for them is asked again
-    *   without end.
+    *   without end. Each request after a round closes with a
+    *   [[MessagePart.CacheBreakpoint]] of its own, so that it reads the rounds
+    *   before it from the cache, writing only its own; Anthropic marks it only
+    *   where the chat's own breakpoints leave room.
     *
     * @return
     *   An effect producing the answer, as soon as it can be given. It fails
