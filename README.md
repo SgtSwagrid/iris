@@ -517,6 +517,9 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
   `LlmClient(config, backend)` over an sttp `StreamBackend` for fs2 streams too; over any other backend,
   a stream delivers its reply whole, once it ends.
 - `Delta` has a new case, `ToolCall`, which a match over every case must take.
+- `Part.ToolCall` has a fourth field, `signature`, Gemini's thought signature, so a match takes
+  `Part.ToolCall(id, tool, arguments, _)`. A Gemini call's `id` is Gemini's own where it gives one, no
+  longer always the tool's name.
 - A class implementing `LlmClient` itself, rather than through `LlmClient.Forwarding`, may implement
   `stream`, which unless it does delivers each reply whole, through `send`. A wrapper that sees every
   request overrides it as it does `send`.
