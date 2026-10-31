@@ -4,6 +4,7 @@ import fs2.Stream
 import io.circe.{Decoder, Json}
 import io.circe.parser.parse
 import io.circe.syntax.*
+import scala.concurrent.duration.FiniteDuration
 import sttp.model.{Header, Uri}
 
 /**
@@ -33,6 +34,87 @@ private[iris] object OpenAiApi extends ProviderApi:
 
   override val answers: Decoder[Either[LlmError, Answer[Nothing]]] =
     Decoder[Response].map(_.toAnswer)
+
+  /**
+    * As https://developers.openai.com/api/docs/pricing gives them. GPT-5.6
+    * Sol's are promotional, until November 21, 2026 at least, and OpenAI has
+    * not said what they are after.
+    */
+  override def rates(model: LlmModel, at: FiniteDuration): Option[Rates] =
+    model match
+      case LlmModel.Gpt6Astra   => Some(writing(10, 1, 50))
+      case LlmModel.Gpt6_1Sol   => Some(writing(2, 0.10, 10))
+      case LlmModel.Gpt6Sol     => Some(writing(2, 0.20, 10))
+      case LlmModel.Gpt5_6Sol   => Some(writing(4, 0.40, 20))
+      case LlmModel.Gpt6_1Terra => Some(writing(1, 0.05, 5))
+      case LlmModel.Gpt5_6Terra => Some(writing(2, 0.20, 12))
+      case LlmModel.Gpt6Luna    => Some(writing(0.10, 0.01, 0.50))
+      case LlmModel.Gpt5_6Luna  => Some(writing(0.20, 0.02, 1.20))
+      case LlmModel.Gpt5        => Some(priced(1.25, 0.125, 10))
+      case LlmModel.Gpt5Mini    => Some(priced(0.25, 0.025, 2))
+      case _                    => None
+
+  /**
+    * The rates of GPT-5.6 and later, which charge a quarter more than input for
+    * writing the cache, for the thirty minutes it keeps unless told otherwise,
+    * and for a prompt longer than 272K tokens twice as much for input and half
+    * as much again for output. OpenAI does not say whether cached tokens count
+    * towards the 272K, so they are taken to, as [[Rates.Above]] says.
+    */
+  private def writing
+    (
+      input: Double,
+      cached: Double,
+      output: Double,
+    )
+    : Rates =
+    val (in, read, out) =
+      (ProviderApi.usd(input), ProviderApi.usd(cached), ProviderApi.usd(output))
+    val (twice, half) = (BigDecimal(2), BigDecimal(1.5))
+    rated(in, read, out, in * BigDecimal(1.25)).copy(above =
+      Some(Rates.Above(
+        272_000,
+        rated(
+          in * twice,
+          read * twice,
+          out * half,
+          in * BigDecimal(2.5),
+        ),
+      )),
+    )
+
+  /** The rates of earlier models, which charge no more for writing the cache. */
+  private def priced
+    (
+      input: Double,
+      cached: Double,
+      output: Double,
+    )
+    : Rates =
+    val in = ProviderApi.usd(input)
+    rated(
+      in,
+      ProviderApi.usd(cached),
+      ProviderApi.usd(output),
+      in,
+    )
+
+  private def rated
+    (
+      input: Usd,
+      cached: Usd,
+      output: Usd,
+      written: Usd,
+    )
+    : Rates = Rates(
+    uncached = input,
+    cacheRead = cached,
+    cacheWrite = written,
+    uncachedAudio = input,
+    cacheReadAudio = cached,
+    visible = output,
+    thinking = output,
+  )
 
   /**
     * The reply a stream's events make up, which ends with the stream, as its

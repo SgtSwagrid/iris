@@ -1,13 +1,14 @@
 package com.alecdorrington.iris
 
 import cats.MonadThrow
+import cats.effect.Clock
 import cats.syntax.all.*
 import io.circe.Decoder
 import sttp.client4.*
 import sttp.model.Uri
 
 /** An [[LlmClient]] for any provider's JSON API, as its [[ProviderApi]] says. */
-private[iris] final class JsonClient[F[_] : MonadThrow]
+private[iris] final class JsonClient[F[_] : MonadThrow : Clock]
   (
     api: ProviderApi,
     config: LlmConfig,
@@ -30,6 +31,11 @@ private[iris] final class JsonClient[F[_] : MonadThrow]
       )(using api.answers),
     )
     .flatMap(MonadThrow[F].fromEither(_))
+    .flatMap(reply =>
+      Clock[F]
+        .realTime
+        .map(now => reply.copy(cost = api.cost(config, reply.usage, now))),
+    )
 
   override def count(chat: Chat, options: ReplyOptions): F[Int] = MonadThrow[F]
     .fromEither(api.counting(config, chat, options))
