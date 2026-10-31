@@ -1046,6 +1046,22 @@ class StreamingAskerSuite extends FunSuite:
         assertEquals(chats.size, 1),
     )
 
+  test("done after elements written as JSON, none emitted, ends with those"):
+    run(
+      for
+        (llm, sent) <- streamer(
+          Stream(
+            Delta.Text("""[{"text":"a"},{"text":"b"}]"""),
+            done,
+          ) ++ toolStop,
+        )
+        words <- emitted(llm).flatMap(_.value.get.compile.toList)
+        chats <- sent
+      yield
+        assertEquals(words, List(Word("a"), Word("b")))
+        assertEquals(chats.size, 1),
+    )
+
   test("done beside a tool to run is not taken, and the stream goes on"):
     run(
       for

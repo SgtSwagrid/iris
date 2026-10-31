@@ -243,16 +243,22 @@ private[iris] object GeminiApi extends ProviderApi:
   private def declared(tool: Tool): Json = JsonHttp
     .declared(tool, "parameters")
     .mapObject(declaration =>
-      if tool
-          .parameters
-          .hcursor
-          .downField("properties")
-          .focus
-          .flatMap(_.asObject)
-          .forall(_.isEmpty)
-      then declaration.remove("parameters")
+      if empty(tool.parameters) then declaration.remove("parameters")
       else declaration,
     )
+
+  /**
+    * Whether a schema is of an object with no properties, taking no others, as
+    * a map's would.
+    */
+  private def empty(schema: Json): Boolean =
+    val cursor = schema.hcursor
+    cursor
+      .downField("properties")
+      .focus
+      .flatMap(_.asObject)
+      .exists(_.isEmpty) &&
+    cursor.downField("additionalProperties").focus.forall(_ == Json.False)
 
   private def part(content: MessagePart): Json = content match
     case MessagePart.Text(text)             => part(text)

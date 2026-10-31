@@ -92,7 +92,13 @@ class ToolSuite extends FunSuite:
         "properties" -> Json.obj(),
       ),
     )
-    val offered  = ModelRequest.Options(tools = List(bare, weather))
+    // An object of no named properties that takes any others.
+    val tally = Tool(
+      "tally",
+      "Tallies.",
+      Schema[Map[String, Int]].json,
+    )
+    val offered  = ModelRequest.Options(tools = List(bare, weather, tally))
     val declared = json(GeminiApi.body(config, Chat().userSays("Hi"), offered))
       .hcursor
       .downField("tools")
@@ -106,6 +112,10 @@ class ToolSuite extends FunSuite:
     assertEquals(
       declared.downN(1).downField("parameters").focus,
       Some(weather.parameters),
+    )
+    assertEquals(
+      declared.downN(2).downField("parameters").focus,
+      Some(tally.parameters),
     )
     assertEquals(
       json(AnthropicApi.body(config, Chat().userSays("Hi"), offered))

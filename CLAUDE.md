@@ -99,10 +99,10 @@ longer.
   second tool, `done` (the user chose a tool of its own over a flag on `emit`), and that reply ends the stream
   with no request after it (`Round.ends`), unless it also asks for another tool or has an element refused,
   when `done` is told it was not taken (`Emit.unfinished`) and the stream goes on; the last of
-  `ValidatedResponse.responses` is then that reply as given, its stop reason `ToolCall`. Measured on Haiku 4.5
-  and 5.5 (2026-10-31, 16 runs), `done`
-  came with the last emit every time, never early, sparing the request each stream otherwise ends with to
-  hear the model stop. `emit` takes one element per call, by the user's choice: a call reaches Iris only
+  `ValidatedResponse.responses` is then that reply as given, its stop reason `ToolCall`. A reply calling `done`
+  with no element emitted has its text read as a whole ask's is (`WholeAsker.read`), so that elements written as
+  JSON instead are kept. Measured on Haiku 4.5 and 5.5 (2026-10-31, 16 runs), `done` came with the last emit
+  every time, never early, sparing the request each stream otherwise ends with to hear the model stop. `emit` takes one element per call, by the user's choice: a call reaches Iris only
   whole, so a list would hold its elements back, and models already batch emits as parallel calls. An
   unreadable element is told back, the reply's later emits refused unread (`Emit.skipped`) so that elements
   keep their order, and the model emits again from it, up to `attempts` times in a row per element. What
@@ -111,7 +111,8 @@ longer.
   `Schema.listOf`), asked again where it cannot be. Tools for the host to run are refused beside `emit`
   (`Emit.unclaimed`), as an answer already given could not end at their calls, as are tools named `emit` or
   `done`. Gemini refuses a tool whose object schema has no properties, so `GeminiApi` declares one taking
-  nothing, as `done`, with no `parameters`.
+  nothing (`properties` empty, and `additionalProperties` absent or `false`), as `done`, with no `parameters`;
+  a map's schema, or one with no `properties` at all, is sent as it is.
 - A `MessagePart.ToolCall` goes back to its provider as the reply gave it. Gemini may give a call no `id`, so the tool's
   name stands in, and is never sent as one (`GeminiApi.issued`), on the call or its `functionResponse`. Gemini puts a
   `thoughtSignature` on the part beside a `functionCall` (the first of calls made together), which its thinking

@@ -412,7 +412,11 @@ private[iris] object StreamingAsker:
       )
       .fold(
         if round.calls.isEmpty then whole(chat, replies, progress, element)
-        else if round.ends then finished(Nil, replies.toList)
+        else if round.ends then
+          finished(
+            written(replies.last, progress, element),
+            replies.toList,
+          )
         else
           round
             .calls
@@ -449,7 +453,7 @@ private[iris] object StreamingAsker:
       if progress.fed > 0 then finished(Nil, replies.toList)
       else
         WholeAsker.verdict(
-          Schema.listOf(element.asInstanceOf[Schema[Any]]),
+          listOf(element),
           chat,
           replies,
           attempts,
@@ -466,6 +470,24 @@ private[iris] object StreamingAsker:
               element,
             )
           case WholeAsker.Verdict.Failed(error) => error.raiseError
+
+    /**
+      * The elements a reply calling [[Emit.done]] wrote as JSON instead, where
+      * none came through emit, as a reply ignoring emit is read, or else none.
+      */
+    private def written
+      (
+        reply: ModelResponse,
+        progress: Progress,
+        element: Schema[?],
+      )
+      : List[Any] =
+      if progress.fed > 0 then Nil
+      else WholeAsker.read(listOf(element), reply).getOrElse(Nil)
+
+    /** The schema of a list of the elements. */
+    private def listOf(element: Schema[?]): Schema[List[Any]] =
+      Schema.listOf(element.asInstanceOf[Schema[Any]])
 
     /** Ends an [[Emit]] stream, after any last elements, and its reply. */
     private def finished
