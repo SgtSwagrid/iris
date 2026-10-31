@@ -64,7 +64,7 @@ class StreamingAskerSuite extends FunSuite:
     : Stream[IO, Delta] = part(text, size) ++
     Stream.emit(Delta.End(stop, Usage()))
 
-  /** MessagePart of a reply, written `size` characters at a time. */
+  /** Part of a reply, written `size` characters at a time. */
   private def part(text: String, size: Int): Stream[IO, Delta] =
     Stream.emits(text.grouped(size).map(Delta.Text(_)).toList)
 
@@ -249,7 +249,7 @@ class StreamingAskerSuite extends FunSuite:
                 .flatMap(_.responses.attempt),
           )
           .map:
-            case Left(ModelError.UnreadableResponse(_, detail, _)) =>
+            case Left(ModelError.UnreadableResponse(detail, _)) =>
               assert(detail.contains(s"`$why`"), detail)
             case other => fail(s"Not unreadable: $other"),
       ),
@@ -379,7 +379,7 @@ class StreamingAskerSuite extends FunSuite:
             assertEquals(words.size, 2, why)
             assertEquals(again, words, why)
             List(words.last, answer).foreach:
-              case Left(ModelError.UnreadableResponse(_, detail, _)) =>
+              case Left(ModelError.UnreadableResponse(detail, _)) =>
                 assert(detail.contains(why), detail)
               case other => fail(s"Not unreadable: $other"),
           ),
@@ -620,7 +620,7 @@ class StreamingAskerSuite extends FunSuite:
           .map((words, reply) =>
             assertEquals(words, Some(List(Word("a"))), why)
             reply match
-              case Left(ModelError.UnreadableResponse(_, detail, _)) =>
+              case Left(ModelError.UnreadableResponse(detail, _)) =>
                 assert(detail.contains(why), detail)
               case other => fail(s"Not unreadable ($why): $other"),
           ),
@@ -1028,7 +1028,7 @@ class StreamingAskerSuite extends FunSuite:
             Left(error: ModelError.UnreadableResponse),
           ) =>
           assertEquals(word, Word("a"))
-          assertEquals(error.attempts, 4)
+          assertEquals(error.responses.size, 4)
           assert(
             error.detail.contains("2 times in a row"),
             error.detail,

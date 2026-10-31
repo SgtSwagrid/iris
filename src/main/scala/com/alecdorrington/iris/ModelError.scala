@@ -128,9 +128,6 @@ enum ModelError(message: String) extends Exception(message):
     * for: after the model was told why as often as allowed, or at once where
     * asking again could not help, as for a reply cut off at the token limit.
     *
-    * @param attempts
-    *   The number of replies asked for.
-    *
     * @param detail
     *   The description of why the last reply could not be read, as the model
     *   was told it, which may repeat what the reply said, as a host's own
@@ -138,15 +135,15 @@ enum ModelError(message: String) extends Exception(message):
     *   message.
     *
     * @param responses
-    *   The responses asked for, oldest first, with their usage, also kept out
-    *   of the message.
+    *   Every response asked for, oldest first, with their usage, also kept out
+    *   of the message: as many as the ask made attempts.
     */
   case UnreadableResponse
     (
-      attempts: Int,
       detail: String,
       responses: List[ModelResponse],
     )
     extends ModelError(
-      s"The model's reply could not be read as asked (attempts: $attempts)",
+      s"The model's reply could not be read as asked (attempts: ${ responses
+          .size })",
     )

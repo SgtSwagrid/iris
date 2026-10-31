@@ -161,8 +161,7 @@ private[iris] object WholeAsker:
       replies: Vector[ModelResponse],
       detail: String,
     )
-    : ModelError =
-    ModelError.UnreadableResponse(replies.size, detail, replies.toList)
+    : ModelError = ModelError.UnreadableResponse(detail, replies.toList)
 
   /**
     * Whether a reply asks for tools, by its calls or why it stopped, as OpenAI

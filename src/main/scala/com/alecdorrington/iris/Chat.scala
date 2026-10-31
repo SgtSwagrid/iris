@@ -257,7 +257,8 @@ object Message:
   *   The messages exchanged so far, oldest first.
   *
   * @param instructions
-  *   The system message, if any, setting the model's general behaviour.
+  *   The instructions, if any, setting the model's general behaviour, sent as
+  *   the provider's system message.
   */
 final case class Chat
   (

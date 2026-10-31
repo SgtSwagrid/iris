@@ -75,7 +75,7 @@ private[iris] object AnthropicApi extends ProviderApi:
     * more than input, for the five minutes Iris caches for.
     */
   private def priced(input: Double, hit: Double, output: Double): Rates = Rates(
-    withoutBreakpoints = ProviderApi.usd(input),
+    uncached = ProviderApi.usd(input),
     cacheRead = ProviderApi.usd(hit),
     cacheWrite = ProviderApi.usd(input) * BigDecimal(1.25),
     uncachedAudio = ProviderApi.usd(input),

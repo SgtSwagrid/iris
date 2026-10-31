@@ -79,7 +79,7 @@ private[iris] object GeminiApi extends ProviderApi:
       output: Double,
     )
     : Rates = Rates(
-    withoutBreakpoints = ProviderApi.usd(input),
+    uncached = ProviderApi.usd(input),
     cacheRead = ProviderApi.usd(cached),
     cacheWrite = ProviderApi.usd(input),
     uncachedAudio = ProviderApi.usd(audio),

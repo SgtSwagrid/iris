@@ -596,13 +596,13 @@ which find and replace makes:
 | `Role.Assistant`                                  | `Role.Model`                                                |
 | `Chat.of(...)`                                    | `Chat.userSays(...)`                                        |
 | `chat.user(...)`, `chat.assistant(...)`           | `chat.userSays(...)`, `chat.modelSays(...)`                 |
-| `chat.withSystem(text)`, `chat.system`            | `chat.withInstructions(text)`, `chat.instructions`          |
+| `chat.withSystem(text)`, `chat.system`, `Chat(system = …)` | `chat.withInstructions(text)`, `chat.instructions`, `Chat(instructions = …)` |
 | `chat.cacheable`                                  | `chat.cachePrefix`                                          |
 | `client.count(chat, options)`                     | `client.countTokens(ModelRequest(chat, options))`           |
 | `client.warm(chat, options)`                      | `client.warmCache(ModelRequest(chat, options))`             |
 | `streamer.stream(chat, options)`                  | `client.stream(ModelRequest(chat, options))`                |
 | `LlmProvider.key`                                 | `ModelProvider.id`                                          |
-| `LlmError.Unreadable(attempts, detail, answers)`  | `ModelError.UnreadableResponse(attempts, detail, responses)` |
+| `LlmError.Unreadable(attempts, detail, answers)`  | `ModelError.UnreadableResponse(detail, responses)`; `attempts` is `responses.size` |
 
 - `send`, `stream`, `countTokens` and `warmCache` take one `ModelRequest`, a chat and its options, where they
   took the two apart; `ask` still takes them apart. A wrapper overrides `send(request: ModelRequest)` and passes
@@ -716,7 +716,7 @@ as in `ModelConfig.fromEnv(defaultMaxTokens = 16_000)` or `ModelConfig.from(look
 
 In JavaScript, `ModelClient.resource` sends requests through the
 [Fetch API](https://developer.mozilla.org/docs/Web/API/Fetch_API), and everything else is as on the JVM.
-There is no environment to read, so `fromEnv` yields `None`: build an `ModelConfig` yourself, or read
+There is no environment to read, so `fromEnv` yields `None`: build a `ModelConfig` yourself, or read
 one with `ModelConfig.from` from wherever your page keeps its settings.
 
 A request made from a page carries the page's origin, which Anthropic refuses unless told otherwise, so in

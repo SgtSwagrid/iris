@@ -108,7 +108,7 @@ private[iris] object OpenAiApi extends ProviderApi:
       written: Usd,
     )
     : Rates = Rates(
-    withoutBreakpoints = input,
+    uncached = input,
     cacheRead = cached,
     cacheWrite = written,
     uncachedAudio = input,

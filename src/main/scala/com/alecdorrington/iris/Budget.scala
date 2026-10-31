@@ -60,7 +60,7 @@ final class Budget[F[_] : MonadThrow] private (
     * Limits a client to this budget. Each request it makes but counting, which
     * costs nothing, is refused with [[ModelError.OverBudget]] once the budget
     * is spent, a stream before it starts, and charged what its reply cost, as
-    * [[ModelClient.metered]] meters it. Every attempt of an [[ModelClient.ask]]
+    * [[ModelClient.metered]] meters it. Every attempt of a [[ModelClient.ask]]
     * is a request of its own, and so is warming.
     *
     * @param client

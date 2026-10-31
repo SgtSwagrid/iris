@@ -38,15 +38,16 @@ provider-specific goes there, never in the clients. `ModelConfig` holds a model 
 lookup of the host's), with the token limit when `LLM_MAX_TOKENS` is unset a parameter, for hosts whose replies run
 longer.
 
-- Names are plain and of one sense (the user's 0.5.0 naming pass): never a word that is both noun and verb, as
-  `Reply` or `Answer` were, nor "assistant" (the roles are `Role.User` and `Role.Model`, each provider naming them as
+- Names are plain and of one sense (the user's 0.5.0 naming pass): never a name as readily taken for a verb as for
+  what it names, as `Reply` and `Answer` were (`ModelRequest`, with its prefix, reads only as a thing), nor "assistant" (the roles are `Role.User` and `Role.Model`, each provider naming them as
   its API does). Public types take the `Model` prefix (`ModelClient`, `ModelRequest`, `ModelResponse`, `ModelError`),
   never `Llm`, and never a name sttp has too (`Response`, `RequestOptions`), as hosts import `sttp.client4.*` beside
-  Iris: hence `ModelRequest.Options`. A chat's messages are said by `userSays` and `modelSays`.
+  Iris: hence `ModelRequest.Options`. A chat's messages are said by `userSays` and `modelSays`. `Role.Model` hides the
+  `Model` type under `import Role.*`, so roles are written `Role.Model` and `Role.User`.
 - Clients are stateless: no session identity reaches the provider, and a conversation's whole history travels with
   each `Chat`. Keep it that way.
 - Every `ProviderApi` must normalise what it returns: the reply text, a `StopReason` (unknown labels kept as `Other`) and
-  token usage in `ValidatedResponse`. An unsuccessful response is `ModelError.Unsuccessful` (status and body) and an unreadable one
+  token usage in `ModelResponse`. An unsuccessful response is `ModelError.Unsuccessful` (status and body) and an unreadable one
   `ModelError.Malformed`, so hosts can tell rate limits from broken responses; a request no answer comes to
   within `ModelConfig.timeout` is `ModelError.TimedOut`, such as one whose reply takes too long to write;
   other transport failures are sttp's own.
@@ -62,7 +63,7 @@ longer.
   `ModelClient.apply` takes the host's backend as it is, and stays on `MonadThrow`, as the shared tests run in
   `SyncIO`.
 - Models are `Model` cases, never strings: each names the provider serving it (`ModelConfig.provider` is its model's)
-  and its API `id`, which `Model.parse` reads back. A model Iris does not list is an `Model.Other`,
+  and its API `id`, which `Model.parse` reads back. A model Iris does not list is a `Model.Other`,
   made only by `Model.of(provider, id)` (so that a listed id is always its listed case, and a blank one none, and
   Gemini's `models/` is dropped) and read as `provider:id`, so that a bare name must still be a listed one; list a new model as a case of its own. What one provider's models differ in
   (Anthropic's sampling and prefill, OpenAI's highest reasoning effort) is kept in its `ProviderApi` (`AnthropicApi`,
@@ -77,7 +78,7 @@ longer.
   `warmCache`, and once for each `stream`, at its `Delta.End` (one stopped before its end reports nothing). It is the
   one `Forwarding` overriding every method that spends, so a method that spends added later must be metered there.
   The one policy Iris offers is opt-in: a `Budget` (the user asked for USD limits per session), a `Ref` of what was
-  spent shared by every client it `limits`, each an `ModelClient.Forwarding` refusing requests over `metered`, which
+  spent shared by every client it `limits`, each a `ModelClient.Forwarding` refusing requests over `metered`, which
   charges them (never `mapK`, which wraps each pull of a stream and so can hold no check across one). It refuses a
   request, or a stream before it starts, once the limit is spent (`ModelError.OverBudget`), then charges each reply's
   `cost`, so requests in flight, a running stream among them, may take it past the limit (the user chose this soft
@@ -109,7 +110,7 @@ longer.
 - A `MessagePart.CacheBreakpoint` ends a prefix worth caching and says nothing to the model. Anthropic is told of one by
   `cache_control` on the block before it (in its message, else the previous message's last, else the system message),
   marking at most four blocks per chat, counted as sent (breakpoints in a row mark one); OpenAI and Gemini cache
-  prefixes unasked and are sent nothing, so their APIs drop them (`Message.withoutBreakpoints`). `ModelClient.warm` sends
+  prefixes unasked and are sent nothing, so their APIs drop them (`Message.withoutBreakpoints`). `ModelClient.warmCache` sends
   `Chat.cachePrefix` with the least reply the provider allows (`ProviderApi.leastMaxTokens`: Anthropic `max_tokens: 0`,
   others 1); a wrapper around a
   client must forward `warmCache`, not inherit the default, which `ModelClient.Forwarding` (override only what changes) and
@@ -166,7 +167,7 @@ longer.
   `ValidatedResponse[F, A]`: `value: Option[A]`, `None` where the model asked for a tool, and `responses`, every
   response the ask took, the last the one the value was read from. Tool calls count only under `ToolCall`,
   `Completed` or `StopSequence` (`WholeAsker.calledTools`), never under a refusal or the token limit. Never read one type differently from another, as
-  0.2's `ValidatedResponse` type class once did, nor give some types a different result: the user wants every ask
+  0.2's `Answer` type class once did, nor give some types a different result: the user wants every ask
   uniform. The provider's own response is a `ModelResponse`, which `send` and `warmCache` give. `ask` is built on `send` alone,
   provider-agnostic, and passes `WholeAsker.ask` the client's `send` as a function, as `send` is protected: the schema is asked for in words closing the
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
@@ -345,7 +346,10 @@ it only through a release (below).
    reply with none, and its tests (`AllowancesSuite`, `TaskEvaluationSuite`) make `Usage` by name, not `Some`; both
    projects take every rename of README's *Upgrading from 0.4* table, their wrappers overriding `send(request)` and
    their fakes `countTokens(request)`, and read an ask's `responses` (or its `usage` and `cost` totals) where they
-   read the answer's own fields.
+   read the answer's own fields. Code Switch, still on 0.3, also needs `Async` where it asks (five helpers take
+   `MonadThrow`) and 0.4's `Structured` as `Schema`. Themis also needs a `MediaType` for each `MessagePart.Media`, its
+   own role names where it read `Role.code`, `warmCache(request)` in its overrides, and `Chat(instructions = …)` where
+   it wrote `system = …` (nine places).
 
 ## Instructions
 

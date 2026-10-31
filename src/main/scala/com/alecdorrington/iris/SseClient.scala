@@ -14,8 +14,8 @@ private[iris] type SseRequest[F[_]] = StreamRequest[
 ]
 
 /**
-  * The streaming of replies for an [[ModelClient]] whose backend can stream,
-  * for any provider, as its [[ProviderApi]] says.
+  * The streaming of replies for a [[ModelClient]] whose backend can stream, for
+  * any provider, as its [[ProviderApi]] says.
   */
 private[iris] final class SseClient[F[_] : Async]
   (

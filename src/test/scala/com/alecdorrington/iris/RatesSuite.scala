@@ -111,9 +111,7 @@ class RatesSuite extends FunSuite:
         year: Int,
         month: Int,
         day: Int,
-      ) = Rates
-      .listed(model, ProviderApi.utc(year, month, day))
-      .map(_.withoutBreakpoints)
+      ) = Rates.listed(model, ProviderApi.utc(year, month, day)).map(_.uncached)
     assertEquals(
       input(Model.Gemini4Argon, 2026, 11, 30),
       Some(usd("2")),

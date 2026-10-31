@@ -129,8 +129,8 @@ class AskSuite extends FunSuite:
     asked[Person](client(_ => said(written)), attempts = 1)
       .left
       .map:
-        case ModelError.UnreadableResponse(_, detail, _) => detail
-        case other                                       => other.toString
+        case ModelError.UnreadableResponse(detail, _) => detail
+        case other                                    => other.toString
 
   test("JSON is read from the whole reply, else its last fence, and no other"):
     List(
@@ -170,8 +170,8 @@ class AskSuite extends FunSuite:
   test("the last unreadable reply fails the ask, keeping every reply"):
     // Text is no exception: unquoted, it is not JSON.
     asked[String](client(_ => said("Paris"))) match
-      case Left(ModelError.UnreadableResponse(attempts, detail, answers)) =>
-        assertEquals(attempts, 3)
+      case Left(ModelError.UnreadableResponse(detail, answers)) =>
+        assertEquals(answers.size, 3)
         assertEquals(detail, "It is not JSON.")
         assertEquals(
           answers.map(_.text),
@@ -223,7 +223,7 @@ class AskSuite extends FunSuite:
       ),
     ).foreach: (row, result, told, withheld) =>
       result match
-        case Left(failure @ ModelError.UnreadableResponse(_, detail, _)) =>
+        case Left(failure @ ModelError.UnreadableResponse(detail, _)) =>
           told.foreach(field =>
             assert(
               detail.contains(field),
@@ -499,11 +499,8 @@ class AskSuite extends FunSuite:
   /** Whether a reply fails an ask of a type at once. */
   private def failsAtOnceAs[A : Schema](answer: String, detail: String): Unit =
     asked[A](client(_ => answer)) match
-      case Left(ModelError.UnreadableResponse(attempts, said, answers)) =>
-        assertEquals(
-          (attempts, said, answers.size),
-          (1, detail, 1),
-        )
+      case Left(ModelError.UnreadableResponse(said, answers)) =>
+        assertEquals((said, answers.size), (detail, 1))
       case other => fail(s"Expected the ask to fail at once, not $other.")
 
   test("the request after a tool's result carries it, then the instructions"):
