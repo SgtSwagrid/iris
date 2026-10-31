@@ -197,7 +197,7 @@ class AdapterSuite extends FunSuite:
     )
     assertEquals(most(LlmModel.Gpt5), Some("high"))
 
-  private val picture = Part.Media("image/png", "aGVsbG8=")
+  private val picture = Part.Media(MediaType.Png, "aGVsbG8=")
 
   /** Two text parts in a row, then the picture they ask about. */
   private val looking = Chat().user(
@@ -206,7 +206,10 @@ class AdapterSuite extends FunSuite:
     picture,
   )
 
-  private val paper = Chat().user(Part.Media("application/pdf", "JVBERi0="))
+  private val paper = Chat().user(Part.Media(MediaType.Pdf, "JVBERi0="))
+
+  private val recording =
+    Chat().user(Part.Media(MediaType.of("audio/mp3").get, "SUQz"))
 
   private val named = Chat().user(
     Part.Text("BOOK 1: notes.txt"),
@@ -385,13 +388,35 @@ class AdapterSuite extends FunSuite:
       List(Some("document")),
     )
     assertEquals(
-      OpenAiApi.pictorial(paper),
+      OpenAiApi.acceptable(config, paper, options),
       Left(LlmError.Unsupported(
         "OpenAI",
         "sending application/pdf in a chat",
       )),
     )
-    assert(OpenAiApi.pictorial(looking).isRight)
+    assert(OpenAiApi.acceptable(config, looking, options).isRight)
+
+  test("only gemini is sent media iris does not list, which it judges itself"):
+    assertEquals(
+      AnthropicApi.acceptable(config, recording, options),
+      Left(LlmError.Unsupported(
+        "Anthropic",
+        "sending audio/mp3 in a chat",
+      )),
+    )
+    assert(AnthropicApi.acceptable(config, paper, options).isRight)
+    assert(OpenAiApi.acceptable(config, recording, options).isLeft)
+    assert(GeminiApi.acceptable(config, recording, options).isRight)
+    assertEquals(
+      parts(
+        GeminiApi.body(config, recording, options),
+        "contents",
+        "parts",
+      ).map(
+        _.hcursor.downField("inline_data").get[String]("mime_type").toOption,
+      ),
+      List(Some("audio/mp3")),
+    )
 
   test("counting asks for no reply, so needs no limit"):
     val body = json(AnthropicApi.countBody(config, chat))

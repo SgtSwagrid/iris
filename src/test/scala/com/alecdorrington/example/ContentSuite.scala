@@ -1,7 +1,9 @@
 // Outside Iris's package, so that content resolves as it would for a user.
 package com.alecdorrington.example
 
-import com.alecdorrington.iris.{Chat, Content, Message, Part, Role, Schema}
+import com.alecdorrington.iris.{
+  Chat, Content, MediaType, Message, Part, Role, Schema,
+}
 import io.circe.{Encoder, Json}
 import munit.FunSuite
 
@@ -16,7 +18,7 @@ final case class Scan(base64: String) derives Encoder.AsObject
 
 object Scan:
 
-  given Content[Scan] = scan => Part.Media("image/png", scan.base64)
+  given Content[Scan] = scan => Part.Media(MediaType.Png, scan.base64)
 
 object Note:
 
@@ -109,7 +111,7 @@ class ContentSuite extends FunSuite:
     )
 
   test("a part is said as itself"):
-    val picture = Part.Media("image/png", "iVBORw0KGgo=")
+    val picture = Part.Media(MediaType.Png, "iVBORw0KGgo=")
     assertEquals(Chat().user(picture), user(picture))
     assertEquals(Part.of(picture), picture)
 
@@ -165,7 +167,7 @@ class ContentSuite extends FunSuite:
       Chat().user("What is this?", Scan("iVBORw0KGgo=")),
       user(
         Part.Text("What is this?"),
-        Part.Media("image/png", "iVBORw0KGgo="),
+        Part.Media(MediaType.Png, "iVBORw0KGgo="),
       ),
     )
 
@@ -201,4 +203,31 @@ class ContentSuite extends FunSuite:
     assertEquals(
       Chat().user("Invent a person.").assistant(ada).messages.last,
       Message(Role.Assistant, List(adaJson)),
+    )
+
+  test("a media type is named as its listed case, in any case"):
+    assertEquals(
+      MediaType.of("image/png"),
+      Some(MediaType.Png),
+    )
+    assertEquals(
+      MediaType.of(" Image/JPEG; q=1 "),
+      Some(MediaType.Jpeg),
+    )
+    assertEquals(
+      MediaType.of("audio/MP3").map(_.name),
+      Some("audio/mp3"),
+    )
+    assert(!MediaType.listed.contains(MediaType.of("audio/mp3").get))
+    assertEquals(MediaType.of("png"), None)
+    assertEquals(MediaType.of("image/"), None)
+    assertEquals(MediaType.of(" "), None)
+
+  test("media made of bytes is sent base64 encoded"):
+    assertEquals(
+      Part.Media(
+        MediaType.Png,
+        Array[Byte](104, 101, 108, 108, 111),
+      ),
+      Part.Media(MediaType.Png, "aGVsbG8="),
     )

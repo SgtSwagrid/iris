@@ -175,7 +175,7 @@ private[iris] object GeminiApi extends ProviderApi:
     case Part.Text(text)             => part(text)
     case Part.Media(mediaType, data) => Json.obj(
         "inline_data" -> Json.obj(
-          "mime_type" -> mediaType.asJson,
+          "mime_type" -> mediaType.name.asJson,
           "data"      -> data.asJson,
         ),
       )

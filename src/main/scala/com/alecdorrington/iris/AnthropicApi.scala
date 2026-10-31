@@ -94,6 +94,7 @@ private[iris] object AnthropicApi extends ProviderApi:
       _ <- JsonHttp.answerable(provider, chat)
       _ <- continuable(chat, config.model)
       _ <- markable(chat)
+      _ <- JsonHttp.viewable(provider, chat, media)
     yield ()
 
   /**
@@ -123,6 +124,15 @@ private[iris] object AnthropicApi extends ProviderApi:
         s"${ model.id } will not continue an assistant message of its own",
       ),
     )
+
+  /** The media Anthropic takes inline: the pictures Iris lists, and PDFs. */
+  val media: Set[MediaType] = Set(
+    MediaType.Png,
+    MediaType.Jpeg,
+    MediaType.Gif,
+    MediaType.Webp,
+    MediaType.Pdf,
+  )
 
   val maxBreakpoints: Int = 4
 
@@ -252,12 +262,11 @@ private[iris] object AnthropicApi extends ProviderApi:
         "text" -> text.asJson,
       )
     case Part.Media(mediaType, data) => Json.obj(
-        "type" ->
-          (if mediaType.startsWith("image/") then "image" else "document")
-            .asJson,
+        "type" -> (if mediaType == MediaType.Pdf then "document" else "image")
+          .asJson,
         "source" -> Json.obj(
           "type"       -> "base64".asJson,
-          "media_type" -> mediaType.asJson,
+          "media_type" -> mediaType.name.asJson,
           "data"       -> data.asJson,
         ),
       )
