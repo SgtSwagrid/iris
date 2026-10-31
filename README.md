@@ -423,6 +423,11 @@ for
 yield answer.value
 ```
 
+Append the reply itself, with `chat.assistant(reply)`, so that each call goes back as it came: its
+`id` is the provider's, by which its result is matched (where Gemini gives a call none, the tool's
+name stands in), and Gemini's thinking models need back the thought signature a call carries, its
+`signature`, to go on with their reasoning.
+
 A reply which asked for a tool has `StopReason.ToolCall`, on every provider, and so does a
 streamed reply's `Delta.End` — Gemini reports no such reason of its own, so the asking is what
 says so. A streamed answer may ask for tools too, its calls in its reply's `toolCalls` once it ends.
@@ -546,6 +551,9 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
   `LlmClient(config, backend)` over an sttp `StreamBackend` for fs2 streams too; over any other backend,
   a stream delivers its reply whole, once it ends.
 - `Delta` has a new case, `ToolCall`, which a match over every case must take.
+- `Part.ToolCall` has a fourth field, `signature`, Gemini's thought signature, so a match takes
+  `Part.ToolCall(id, tool, arguments, _)`. A Gemini call's `id` is Gemini's own where it gives one, no
+  longer always the tool's name.
 - A class implementing `LlmClient` itself, rather than through `LlmClient.Forwarding`, may implement
   `stream`, which unless it does delivers each reply whole, through `send`. A wrapper that sees every
   request overrides it as it does `send`.

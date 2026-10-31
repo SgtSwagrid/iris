@@ -77,6 +77,12 @@ longer.
   never by id, which Gemini repeats. A model writing JSON instead is read whole at the end as a whole ask is
   (`Question.verdict` on `Schema.listOf`), asked again where it cannot be. Tools for the host to run are
   refused beside `emit` (`Emit.unclaimed`), as an answer already given could not end at their calls.
+- A `Part.ToolCall` goes back to its provider as the reply gave it. Gemini may give a call no `id`, so the tool's
+  name stands in, and is never sent as one (`GeminiApi.issued`), on the call or its `functionResponse`. Gemini puts a
+  `thoughtSignature` on the part beside a `functionCall` (the first of calls made together), which its thinking
+  models need back on that part (else `MISSING_THOUGHT_SIGNATURE`), so it is kept, opaque, as `Part.ToolCall.signature`,
+  which other providers ignore. A signature on text is not kept, as `Reply.text` joins the parts, and Google requires
+  one back only with a call.
 - A `Part.CacheBreakpoint` ends a prefix worth caching and says nothing to the model. Anthropic is told of one by
   `cache_control` on the block before it (in its message, else the previous message's last, else the system message),
   marking at most four blocks per chat, counted as sent (breakpoints in a row mark one); OpenAI and Gemini cache

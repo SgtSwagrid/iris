@@ -298,7 +298,7 @@ private[iris] object AnthropicApi extends ProviderApi:
           "data"       -> data.asJson,
         ),
       )
-    case Part.ToolCall(id, tool, arguments) => Json.obj(
+    case Part.ToolCall(id, tool, arguments, _) => Json.obj(
         "type"  -> "tool_use".asJson,
         "id"    -> id.asJson,
         "name"  -> tool.asJson,

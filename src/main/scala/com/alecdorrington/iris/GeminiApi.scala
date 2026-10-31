@@ -207,7 +207,7 @@ private[iris] object GeminiApi extends ProviderApi:
     val said  = parts.flatMap(_.text).mkString
     List.concat(
       Option.when(said.nonEmpty)(Delta.Text(said)),
-      parts.flatMap(_.functionCall).map(call => Delta.ToolCall(call.toPart)),
+      parts.flatMap(_.toolCall).map(Delta.ToolCall(_)),
       event
         .hcursor
         .downField("candidates")
@@ -241,17 +241,30 @@ private[iris] object GeminiApi extends ProviderApi:
           "data"      -> data.asJson,
         ),
       )
-    case Part.ToolCall(_, tool, arguments) => Json.obj(
-        "functionCall" -> Json.obj("name" -> tool.asJson, "args" -> arguments),
+    case Part.ToolCall(id, tool, arguments, signature) => JsonHttp.objectOf(
+        "functionCall" -> JsonHttp.objectOf(
+          "id"   -> issued(id, tool).asJson,
+          "name" -> tool.asJson,
+          "args" -> arguments,
+        ),
+        "thoughtSignature" -> signature.asJson,
       )
-    case Part.ToolResult(_, tool, output) => Json.obj(
-        "functionResponse" -> Json.obj(
+    case Part.ToolResult(callId, tool, output) => Json.obj(
+        "functionResponse" -> JsonHttp.objectOf(
+          "id"       -> issued(callId, tool).asJson,
           "name"     -> tool.asJson,
           "response" -> Json.obj("result" -> output.asJson),
         ),
       )
     // Breakpoints are taken out of a message before its parts are serialised.
     case Part.CacheBreakpoint => Json.obj()
+
+  /**
+    * The id Gemini gave a call, where it gave one: the tool's name stands in
+    * for one it did not, so is never sent as an id.
+    */
+  private def issued(id: String, tool: String): Option[String] =
+    Option.when(id != tool)(id)
 
   private def role(role: Role): String = role match
     case Role.Assistant => "model"
@@ -264,20 +277,36 @@ private[iris] object GeminiApi extends ProviderApi:
   private def stopped(asked: Boolean, reason: Option[String]): StopReason =
     if asked then StopReason.ToolCall else stopReason(reason)
 
-  /** A tool call, whose name also stands in for the id Gemini lacks. */
+  /** A tool call, which Gemini may give no id. */
   final case class FunctionCall
-    (name: String, args: Option[Json])
-    derives Decoder:
+    (
+      id: Option[String],
+      name: String,
+      args: Option[Json],
+    )
+    derives Decoder
 
-    def toPart: Part.ToolCall =
-      Part.ToolCall(name, name, args.getOrElse(Json.obj()))
-
+  /**
+    * A part of a reply, whose thought signature belongs to the call it makes,
+    * if any. A signature on text is not kept, as a reply's text parts are
+    * joined, and Gemini requires one back only with a call.
+    */
   final case class ReplyPart
     (
       text: Option[String],
       functionCall: Option[FunctionCall],
+      thoughtSignature: Option[String],
     )
-    derives Decoder
+    derives Decoder:
+
+    /** The call this part makes, its tool's name the id where it has none. */
+    def toolCall: Option[Part.ToolCall] = functionCall.map: call =>
+      Part.ToolCall(
+        call.id.getOrElse(call.name),
+        call.name,
+        call.args.getOrElse(Json.obj()),
+        thoughtSignature,
+      )
 
   final case class Content(parts: Option[List[ReplyPart]]) derives Decoder
 
@@ -300,7 +329,7 @@ private[iris] object GeminiApi extends ProviderApi:
     .mkString
 
   private def toolCalls(candidate: Candidate): List[Part.ToolCall] =
-    parts(candidate).flatMap(_.functionCall).map(_.toPart)
+    parts(candidate).flatMap(_.toolCall)
 
   /** The tokens of one kind of media, such as `AUDIO`. */
   final case class ModalityCount

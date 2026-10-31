@@ -202,6 +202,70 @@ class ToolSuite extends FunSuite:
         api.provider,
       )
 
+  test("gemini's calls keep their ids, by which two of one tool differ"):
+    assertEquals(
+      answer(
+        GeminiApi,
+        """{"candidates":[{"content":{"parts":[
+         {"functionCall":{"id":"a1","name":"weather","args":{"city":"Zug"}},
+          "thoughtSignature":"c2lnbmVk"},
+         {"functionCall":{"id":"b2","name":"weather","args":{"city":"Bern"}}}]},
+         "finishReason":"STOP"}]}""",
+      ).map(_.toolCalls),
+      // Only the first of calls made together carries a thought signature.
+      Right(List(
+        asked.copy(id = "a1", signature = Some("c2lnbmVk")),
+        asked.copy(
+          id = "b2",
+          arguments = Json.obj("city" -> Json.fromString("Bern")),
+        ),
+      )),
+    )
+
+  test("gemini is sent each call as it gave it, and each result by its id"):
+    val signed = asked.copy(signature = Some("c2lnbmVk"))
+    val named  = asked.copy(id = "weather")
+    val sent   = json(GeminiApi.body(
+      config,
+      Chat()
+        .user("What is the weather?")
+        .assistant(signed, named)
+        .user(
+          answered,
+          Part.ToolResult("weather", "weather", "Sunny."),
+        ),
+      offering,
+    )).hcursor.downField("contents")
+    // A call named for want of an id is sent with none, as is its result.
+    assertEquals(
+      sent.downN(1).get[List[Json]]("parts").toOption,
+      Some(List(
+        Json.obj(
+          "functionCall" -> Json.obj(
+            "id"   -> Json.fromString("call_1"),
+            "name" -> Json.fromString("weather"),
+            "args" -> asked.arguments,
+          ),
+          "thoughtSignature" -> Json.fromString("c2lnbmVk"),
+        ),
+        Json.obj(
+          "functionCall" -> Json.obj(
+            "name" -> Json.fromString("weather"),
+            "args" -> asked.arguments,
+          ),
+        ),
+      )),
+    )
+    assertEquals(
+      sent
+        .downN(2)
+        .get[List[Json]]("parts")
+        .map(_.map(
+          _.hcursor.downField("functionResponse").get[String]("id").toOption,
+        )),
+      Right(List(Some("call_1"), None)),
+    )
+
   test(
     "gemini counts the contents it would send, its system message the user's",
   ):
