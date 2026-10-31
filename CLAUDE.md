@@ -136,6 +136,13 @@ longer.
   never an overload of `Chat.apply`, which would capture `Chat(messages)` (the case class's own `apply` needs the
   default `system`, so loses). `Message(role, List[Part])` is the case class's own, chosen over the varargs
   `apply` as more specific.
+- Media types are `MediaType` cases, as models are `LlmModel` cases: `MediaType.Listed` (the pictures and PDFs
+  more than one provider takes) and `MediaType.Other`, made only by `MediaType.of` (lower case, parameters
+  dropped), so that a listed name is always its listed case. Anthropic and OpenAI each list the media they take
+  (`media`) and refuse any other with `LlmError.Unsupported` through `JsonHttp.viewable`; Gemini takes many
+  more (audio, video) and is sent any, judging for itself. OpenAI's chat completions also take PDFs as `file`
+  parts, which Iris does not send yet (unverified: whether `file_data` needs a `data:` prefix and a
+  `filename`).
 - `Schema` is one type class of schema, encoder and decoder, so the three cannot disagree; never derive one
   from a circe codec, which says nothing of its JSON (the user chose a compile error over an any-JSON schema).
   Each schema holds its `parts` and an `outline`, its own JSON given how to write each part, from which `rendered`

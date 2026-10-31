@@ -1,6 +1,7 @@
 package com.alecdorrington.iris
 
 import io.circe.Json
+import java.util.Base64
 import scala.Conversion.into
 import scala.compiletime.summonInline
 
@@ -73,15 +74,38 @@ object Part:
     content.part(_)
 
   /**
-    * A picture, document or other media for the model to look at.
+    * A picture, document or other media for the model to look at. A provider
+    * refuses media it cannot take with [[LlmError.Unsupported]], before any
+    * request: Anthropic takes every [[MediaType]] Iris lists, OpenAI its
+    * pictures alone, and Gemini any media of its own lists, which leave out
+    * GIF.
     *
     * @param mediaType
-    *   The IANA media type of the data, such as `image/png`.
+    *   The kind of media.
     *
     * @param data
     *   The content, Base64 encoded.
     */
-  final case class Media(mediaType: String, data: String) extends Part
+  final case class Media(mediaType: MediaType, data: String) extends Part
+
+  object Media:
+
+    /**
+      * Creates media of its content as bytes, which are Base64 encoded.
+      *
+      * @param mediaType
+      *   The kind of media.
+      *
+      * @param bytes
+      *   The content.
+      *
+      * @return
+      *   Media of the content.
+      */
+    def apply(mediaType: MediaType, bytes: Array[Byte]): Media = Media(
+      mediaType,
+      Base64.getEncoder.encodeToString(bytes),
+    )
 
   /**
     * A call by the model for a tool to be run. It is part of the model's

@@ -20,7 +20,7 @@ import scala.util.NotGiven
   * said as that says it, as a picture of one's own may be:
   *
   * {{{
-  * given Content[Scan] = scan => Part.Media("image/png", scan.base64)
+  * given Content[Scan] = scan => Part.Media(MediaType.Png, scan.base64)
   * }}}
   *
   * No other value can be said.

@@ -54,7 +54,7 @@ private[iris] object OpenAiApi extends ProviderApi:
     )
     : Either[LlmError, Unit] = JsonHttp
     .answerable(provider, chat)
-    .flatMap(_ => pictorial(chat))
+    .flatMap(_ => JsonHttp.viewable(provider, chat, media))
 
   /**
     * The models whose reasoning effort goes no higher than `high`. OpenAI's
@@ -96,17 +96,16 @@ private[iris] object OpenAiApi extends ProviderApi:
       "messages" -> messages.asJson,
     )
 
-  /** Refuses media other than pictures, which chat completions cannot take. */
-  def pictorial(chat: Chat): Either[LlmError, Unit] = chat
-    .messages
-    .flatMap(_.content)
-    .collectFirst:
-      case Part.Media(mediaType, _) if !mediaType.startsWith("image/") =>
-        LlmError.Unsupported(
-          provider.displayName,
-          s"sending $mediaType in a chat",
-        )
-    .toLeft(())
+  /**
+    * The media chat completions are sent inline: pictures alone, as Iris sends
+    * no PDF as a file part.
+    */
+  val media: Set[MediaType] = Set(
+    MediaType.Png,
+    MediaType.Jpeg,
+    MediaType.Gif,
+    MediaType.Webp,
+  )
 
   private def text(role: String, content: String): Json = Json.obj(
     "role"    -> role.asJson,
@@ -166,7 +165,8 @@ private[iris] object OpenAiApi extends ProviderApi:
       ))
     case Part.Media(mediaType, data) => Some(Json.obj(
         "type"      -> "image_url".asJson,
-        "image_url" -> Json.obj("url" -> s"data:$mediaType;base64,$data".asJson),
+        "image_url" ->
+          Json.obj("url" -> s"data:${ mediaType.name };base64,$data".asJson),
       ))
     case _: Part.ToolCall | _: Part.ToolResult | Part.CacheBreakpoint => None
 
