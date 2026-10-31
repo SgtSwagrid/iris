@@ -3,6 +3,7 @@ package com.alecdorrington.iris
 import fs2.Stream
 import io.circe.{Decoder, Json}
 import io.circe.syntax.*
+import scala.concurrent.duration.FiniteDuration
 import sttp.model.{Header, Uri}
 
 /**
@@ -29,6 +30,58 @@ private[iris] object GeminiApi extends ProviderApi:
 
   override val answers: Decoder[Either[LlmError, Answer[Nothing]]] =
     Decoder[Response].map(_.toAnswer)
+
+  /** As https://ai.google.dev/gemini-api/docs/pricing gives them. */
+  override def rates(model: LlmModel, at: FiniteDuration): Option[Rates] =
+    model match
+      case LlmModel.Gemini4Argon => Some(
+          if at < ProviderApi.utc(2026, 12, 1) then
+            priced(2.00, 0.10, 2.00, 0.10, 10.00)
+          else priced(4.00, 0.20, 4.00, 0.20, 20.00),
+        )
+      case LlmModel.Gemini3_8Flash | LlmModel.Gemini3_6Flash => Some(
+          if at < ProviderApi.utc(2027, 1, 1) then
+            priced(0.75, 0.075, 0.75, 0.075, 3.75)
+          else priced(1.50, 0.15, 1.50, 0.15, 7.50),
+        )
+      case LlmModel.Gemini3_5FlashLite =>
+        Some(priced(0.30, 0.03, 0.30, 0.03, 2.50))
+      case LlmModel.Gemini3_1FlashLite =>
+        Some(priced(0.25, 0.025, 0.50, 0.05, 1.50))
+      case LlmModel.Gemini2_5Pro => Some(
+          priced(1.25, 0.125, 1.25, 0.125, 10.00).copy(above =
+            Some(Rates.Above(
+              200_000,
+              priced(2.50, 0.25, 2.50, 0.25, 15.00),
+            )),
+          ),
+        )
+      case LlmModel.Gemini2_5Flash => Some(priced(0.30, 0.03, 1.00, 0.10, 2.50))
+      case LlmModel.Gemini2_5FlashLite =>
+        Some(priced(0.10, 0.01, 0.30, 0.03, 0.40))
+      case _ => None
+
+  /**
+    * Rates by input, its cache reads, audio, its cache reads, and output, as
+    * Gemini lists them. Writing its cache costs no more than input.
+    */
+  private def priced
+    (
+      input: Double,
+      cached: Double,
+      audio: Double,
+      cachedAudio: Double,
+      output: Double,
+    )
+    : Rates = Rates(
+    uncached = ProviderApi.usd(input),
+    cacheRead = ProviderApi.usd(cached),
+    cacheWrite = ProviderApi.usd(input),
+    uncachedAudio = ProviderApi.usd(audio),
+    cacheReadAudio = ProviderApi.usd(cachedAudio),
+    visible = ProviderApi.usd(output),
+    thinking = ProviderApi.usd(output),
+  )
 
   override def counting
     (

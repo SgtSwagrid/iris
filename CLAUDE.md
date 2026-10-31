@@ -81,6 +81,19 @@ longer.
   of it read from the cache, and the whole reply. Streams count too: Anthropic's start counts the request and its
   stop the reply (taking what it leaves out from the start), and OpenAI's usage comes in a chunk of its own after
   `finish_reason`, so its `Delta.End` comes when the stream does.
+- Each `ProviderApi` lists its models' `Rates` (`rates(model, at)`), USD per million tokens on the standard tier,
+  copied by hand from its pricing page (no provider serves prices by API, so they are listed rather than fetched
+  from a third party's catalogue), with any change the provider has announced from its day (`ProviderApi.utc`,
+  midnight UTC, by hand as JavaScript has no `java.time`). Every listed model must have rates (`RatesSuite`
+  checks), so a new model needs its prices. A rate per `Usage` count: a count charged nothing apart is charged as
+  its kind (cache writes as input on Gemini and OpenAI before GPT-5.6, audio as input but on Gemini models
+  pricing it apart, thinking as output), and a long-prompt tier is `Rates.Above`, which prices the whole request
+  once its `inputTokens` exceed it (Claude Haiku 5.5 over 100K, GPT-5.6 and later over 272K, Gemini 2.5 Pro over
+  200K). Figures go through `ProviderApi.usd` and derived ones are worked out in `BigDecimal`, never `Double`.
+  `JsonClient` and `SseClient` price each reply as it comes, by the effect's `Clock`, at `LlmConfig.rates`, else
+  those listed, so `Answer.cost` and `Delta.End.cost` are per request, summed over an ask only where every attempt
+  has one, and `None` for an `Other` model with no rates configured. Iris prices nothing it does not send: batch,
+  priority or fast mode, data residency, server tools. `/update-iris` keeps the rates current.
 - Providers run adjacent text blocks together (Anthropic was measured to: two blocks count exactly as their
   texts concatenated), so every `ProviderApi` serialises a message's parts through `Message.separated`, which opens
   with a blank line each text part following another with only breakpoints (or empty text) between them. A part's

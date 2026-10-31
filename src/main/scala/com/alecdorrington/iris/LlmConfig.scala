@@ -83,6 +83,10 @@ object LlmProvider:
   * @param timeout
   *   The longest to wait for a reply, from sending the request to reading the
   *   reply whole, or, for a stream, for each next part of it.
+  *
+  * @param rates
+  *   The rates replies cost, in place of those Iris lists for the model, as for
+  *   a model it does not list, a proxy charging its own, or a discount.
   */
 final case class LlmConfig
   (
@@ -91,6 +95,7 @@ final case class LlmConfig
     maxTokens: Int,
     baseUrl: Option[String] = None,
     timeout: FiniteDuration = LlmConfig.defaultTimeout,
+    rates: Option[Rates] = None,
   ):
 
   /** The provider whose API to use: the one serving [[model]]. */
@@ -103,8 +108,8 @@ final case class LlmConfig
   /** The API origin to send to: [[baseUrl]] when set, else the provider's. */
   def origin: String = baseUrl.getOrElse(provider.origin)
 
-  override def toString: String =
-    s"LlmConfig(${ model.name }, <redacted>, $maxTokens, $baseUrl, $timeout)"
+  override def toString: String = s"LlmConfig(${ model
+      .name }, <redacted>, $maxTokens, $baseUrl, $timeout, $rates)"
 
 object LlmConfig:
 

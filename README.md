@@ -230,6 +230,28 @@ refuses the request.
 client.ask[String](chat, ReplyOptions(effort = Some(Effort.Medium)))
 ```
 
+### Costs
+
+Each `Answer` also says what it `cost`, in US dollars: each reply priced as it came, at the
+[`Rates`](src/main/scala/com/alecdorrington/iris/Rates.scala) Iris lists for its model, and summed over
+an ask's attempts as its usage is. Rates are per million tokens, one for each of `Usage`'s counts,
+as the provider charges on its standard tier, and a model charging more for a long prompt has
+rates `above` a number of prompt tokens, which then apply to the whole request. A price change
+the provider has announced is listed from its day, so each reply is priced at the rates of the day
+it came. A stream's `Delta.End` says what its reply cost alike.
+
+A model Iris does not list has no rates, and its cost is `None`, unless the configuration gives
+rates of its own, which also stand in for those listed, as for a proxy charging its own prices, or
+a discount:
+
+```scala
+LlmConfig(model, apiKey, maxTokens = 4096, rates = Some(Rates.of(BigDecimal(3), BigDecimal(15))))
+```
+
+`Rates.listed(model, at)` gives the rates Iris lists ahead of any request, as for estimating one.
+No provider publishes its prices through its API, so Iris lists them as they stood at its release:
+a later change it could not know of needs a newer Iris or rates of your own.
+
 ### Pictures and documents
 
 A message is a list of [`Part`](src/main/scala/com/alecdorrington/iris/Chat.scala)s, so text may travel beside
@@ -403,6 +425,10 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
   `MediaType.of(name)` for a name read at runtime, which is `None` where the name is no media type. It
   also takes the content's bytes, encoding them itself. Anthropic now refuses media other than pictures
   and PDFs before sending it, where its API refused it.
+- `Answer` has a new field, `cost`, after `usage`, so match it by its seven fields; `Delta.End` has one
+  too, last.
+- `LlmClient.apply` needs a `Clock` of its effect, which prices each reply as it comes, as `IO` and
+  `SyncIO` have.
 
 ### Upgrading from 0.3
 

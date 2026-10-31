@@ -1,7 +1,7 @@
 package com.alecdorrington.iris
 
 import cats.{~>, MonadThrow}
-import cats.effect.{Async, Resource}
+import cats.effect.{Async, Clock, Resource}
 import cats.syntax.traverse.*
 import sttp.client4.Backend
 
@@ -194,7 +194,7 @@ object LlmClient:
     * Creates a client over an existing backend.
     *
     * @tparam F
-    *   The effect type.
+    *   The effect type, whose clock prices each reply as it comes.
     *
     * @param config
     *   The model, key and defaults to use.
@@ -207,7 +207,7 @@ object LlmClient:
     * @return
     *   A client for the configured provider.
     */
-  def apply[F[_] : MonadThrow]
+  def apply[F[_] : MonadThrow : Clock]
     (config: LlmConfig, backend: Backend[F])
     : LlmClient[F] = JsonClient(
     ProviderApi.of(config.provider),

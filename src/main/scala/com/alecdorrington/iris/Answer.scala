@@ -20,6 +20,11 @@ package com.alecdorrington.iris
   * @param usage
   *   The token counts of every reply asked for, together.
   *
+  * @param cost
+  *   What every reply asked for cost, together, in US dollars, each priced as
+  *   it came at the [[Rates]] of the configuration or else of its model, or
+  *   `None` where neither has any, as for a model Iris does not list.
+  *
   * @param toolCalls
   *   The tools the model asks to have run before it goes on, if any.
   *
@@ -35,6 +40,7 @@ final case class Answer[+A]
     text: String,
     stopReason: StopReason = StopReason.Completed,
     usage: Usage = Usage(),
+    cost: Option[BigDecimal] = None,
     toolCalls: List[Part.ToolCall] = List.empty,
     value: Option[A] = None,
     attempts: Int = 1,

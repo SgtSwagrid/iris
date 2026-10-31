@@ -22,5 +22,13 @@ enum Delta:
     *
     * @param usage
     *   The token counts of the whole reply.
+    *
+    * @param cost
+    *   What the reply cost in US dollars, as [[Answer.cost]] says.
     */
-  case End(stopReason: StopReason, usage: Usage)
+  case End
+    (
+      stopReason: StopReason,
+      usage: Usage,
+      cost: Option[BigDecimal] = None,
+    )

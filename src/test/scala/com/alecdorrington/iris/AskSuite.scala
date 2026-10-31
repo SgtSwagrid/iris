@@ -382,6 +382,8 @@ class AskSuite extends FunSuite:
         text = adaJson,
         stopReason = StopReason.Completed,
         usage = Usage(uncachedTokens = 30, visibleTokens = 7),
+        // Claude Haiku 4.5's $1 and $5 per million tokens.
+        cost = Some(BigDecimal("0.000065")),
         value = Some(ada),
         attempts = 2,
       )),
@@ -408,8 +410,15 @@ class AskSuite extends FunSuite:
       else said("Ada, 36."),
     )
     assertEquals(
-      partly.ask[Person](prompt).map(_.usage).attempt.unsafeRunSync(),
-      Right(Usage(uncachedTokens = 20, visibleTokens = 5)),
+      partly
+        .ask[Person](prompt)
+        .map(reply => (reply.usage, reply.cost))
+        .attempt
+        .unsafeRunSync(),
+      Right((
+        Usage(uncachedTokens = 20, visibleTokens = 5),
+        Some(BigDecimal("0.000045")),
+      )),
     )
     // Usage adds up count by count, and so do its totals.
     val sum = Usage(1, 2, 3, 4, 5, 6, 7) + Usage(10, 20, 30, 40, 50, 60, 70)
@@ -525,9 +534,9 @@ class AskSuite extends FunSuite:
     val gemini = s"""{"candidates":[{"content":{"parts":[{"text":$written}]},
       "finishReason":"STOP"}],
       "usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3}}"""
-    for (model, body) <- List(
-        LlmModel.Gpt5           -> openAi,
-        LlmModel.Gemini2_5Flash -> gemini,
+    for (model, body, cost) <- List(
+        (LlmModel.Gpt5, openAi, "0.00003625"),
+        (LlmModel.Gemini2_5Flash, gemini, "0.000009"),
       )
     do
       assertEquals(
@@ -536,7 +545,33 @@ class AskSuite extends FunSuite:
           adaJson,
           StopReason.Completed,
           Usage(uncachedTokens = 5, visibleTokens = 3),
+          Some(BigDecimal(cost)),
           value = Some(ada),
         )),
         model,
       )
+
+  test("a model iris does not list costs nothing known, unless configured"):
+    val next = LlmModel.of(LlmProvider.Anthropic, "claude-next").get
+    def costing(configured: LlmConfig) = LlmClient[SyncIO](
+      configured,
+      BackendStub(CatsMonadError[SyncIO]())
+        .whenAnyRequest
+        .thenRespond(ResponseStub.adjust(
+          said(adaJson, cost = Some((1000, 100))),
+        )),
+    ).ask[Person](prompt).map(_.cost).attempt.unsafeRunSync()
+    assertEquals(
+      costing(config.copy(model = next)),
+      Right(None),
+    )
+    val rates = Rates.of(BigDecimal(3), BigDecimal(15))
+    assertEquals(
+      costing(config.copy(model = next, rates = Some(rates))),
+      Right(Some(BigDecimal("0.0045"))),
+    )
+    // A configuration's rates stand in for those listed, too.
+    assertEquals(
+      costing(config.copy(rates = Some(rates))),
+      Right(Some(BigDecimal("0.0045"))),
+    )
