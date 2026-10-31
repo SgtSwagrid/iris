@@ -110,14 +110,16 @@ trait ModelClient[F[_]]:
     *   asking for these alone is followed by their outputs, and the model asked
     *   to go on, as often as it asks. Given tools, an answer that is itself a
     *   `fs2.Stream` is given element by element through a tool of its own,
-    *   `emit`, so that the model may run the others between elements, beside
-    *   which no tool may be offered for the host to run, as the effect
-    *   otherwise fails with an `IllegalArgumentException`. A tool whose `run`
-    *   fails fails the ask, or the stream and [[ValidatedResponse.responses]]
-    *   where its answer was given, the model not told. Tools are run for as
-    *   long as the model asks for them, each round a request whose cost is the
-    *   host's to bound, as for any request's: unbounded, a model that never
-    *   stops asking for them is asked again without end.
+    *   `emit`, so that the model may run the others between elements, and ends
+    *   with the reply in which the model calls another, `done`. No tool may
+    *   then be offered for the host to run, nor one named `emit` or `done`, as
+    *   the effect otherwise fails with an `IllegalArgumentException`. A tool
+    *   whose `run` fails fails the ask, or the stream and
+    *   [[ValidatedResponse.responses]] where its answer was given, the model
+    *   not told. Tools are run for as long as the model asks for them, each
+    *   round a request whose cost is the host's to bound, as for any request's:
+    *   unbounded, a model that never stops asking for them is asked again
+    *   without end.
     *
     * @return
     *   An effect producing the answer, as soon as it can be given. It fails

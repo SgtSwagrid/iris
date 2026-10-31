@@ -446,14 +446,18 @@ client.ask[Review](chat, tools = List(dictionary))
 Where the answer is itself a stream, as `Stream[IO, Word]`, and tools are given, the model gives its
 elements through a tool of its own, `emit`, one call each, and may call the others between them: each
 element reaches the stream as soon as its call has, in order, and the stream goes on after each tool has
-run. An element that cannot be read is answered with why, and the model emits it again, and those after it,
-up to `attempts` times for each element. A model writing its elements as a JSON array instead has them read
-from its reply once it ends, and is asked again where they cannot be. A reply cut off at the token limit,
-or stopped, ends the stream with `ModelError.UnreadableResponse` after the elements it gave, as a failing `run` ends
-it with its error. Taking only some of the elements does not stop the model writing the rest, nor the tools
-it asks for running: `answer.cancel` does. Tools for you to run, in `ModelRequest.Options.tools`, cannot be offered
-beside such a stream, whose answer, given already, could not end at their calls. Nested streams are
-streamed this way only without tools.
+run. In the reply giving its last element, the model calls a second tool of Iris's, `done`, and that reply
+ends the stream with no request after it; a model that does not stops in a reply of its own, a request
+later. `done` is not taken in a reply that also asks for another tool, or gives an element that cannot be
+read, and the stream goes on. An element that cannot be read is answered with why, and the model emits it
+again, and those after it, up to `attempts` times for each element. A model writing its elements as a JSON
+array instead has them read from its reply once it ends, and is asked again where they cannot be. A reply
+cut off at the token limit, or stopped, ends the stream with `ModelError.UnreadableResponse` after the
+elements it gave, as a failing `run` ends it with its error. Taking only some of the elements does not stop
+the model writing the rest, nor the tools it asks for running: `answer.cancel` does. Tools for you to run,
+in `ModelRequest.Options.tools`, cannot be offered beside such a stream, whose answer, given already, could
+not end at their calls, nor tools named `emit` or `done`. Nested streams are streamed this way only without
+tools.
 
 Or offer the model tools for you to run yourself, through `ModelRequest.Options.tools`, and it will say so in its
 reply's `toolCalls`, with no `value`: append the reply and each tool's result, and ask again.

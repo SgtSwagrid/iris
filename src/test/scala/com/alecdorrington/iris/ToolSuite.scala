@@ -83,6 +83,40 @@ class ToolSuite extends FunSuite:
       Some("function"),
     )
 
+  test("gemini is offered a tool taking nothing with no schema, others with"):
+    val bare = Tool(
+      "ping",
+      "Pings.",
+      Json.obj(
+        "type"       -> Json.fromString("object"),
+        "properties" -> Json.obj(),
+      ),
+    )
+    val offered  = ModelRequest.Options(tools = List(bare, weather))
+    val declared = json(GeminiApi.body(config, Chat().userSays("Hi"), offered))
+      .hcursor
+      .downField("tools")
+      .downN(0)
+      .downField("functionDeclarations")
+    assertEquals(
+      declared.downN(0).get[String]("name").toOption,
+      Some("ping"),
+    )
+    assert(declared.downN(0).downField("parameters").failed)
+    assertEquals(
+      declared.downN(1).downField("parameters").focus,
+      Some(weather.parameters),
+    )
+    assertEquals(
+      json(AnthropicApi.body(config, Chat().userSays("Hi"), offered))
+        .hcursor
+        .downField("tools")
+        .downN(0)
+        .downField("input_schema")
+        .focus,
+      Some(bare.parameters),
+    )
+
   test(
     "anthropic sends a call and its result as blocks, the call's nulls kept",
   ):

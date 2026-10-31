@@ -709,6 +709,10 @@ class StreamingAskerSuite extends FunSuite:
     Json.obj("element" -> Json.obj("text" -> Json.fromInt(5))),
   ))
 
+  /** A call saying every element has been emitted. */
+  private val done: Delta =
+    Delta.ToolCall(MessagePart.ToolCall("done-1", "done", Json.obj()))
+
   private def look(word: String, id: String = ""): Delta =
     Delta.ToolCall(MessagePart.ToolCall(
       if id.isEmpty then s"look-$word" else id,
@@ -860,8 +864,10 @@ class StreamingAskerSuite extends FunSuite:
         ),
     )
 
-  test("a tool named emit is refused beside a stream given through emit"):
-    run(
+  test(
+    "a tool named emit or done is refused beside a stream given through them",
+  ):
+    run(List("emit", "done").traverse_(name =>
       Ref
         .of[IO, List[String]](Nil)
         .flatMap(asked =>
@@ -872,7 +878,7 @@ class StreamingAskerSuite extends FunSuite:
                 tools = List(
                   dictionary(asked),
                   RunnableTool[IO](
-                    Tool("emit", "Emits.", Json.obj()),
+                    Tool(name, "Clashes.", Json.obj()),
                     _ => IO.pure("ok"),
                   ),
                 ),
@@ -882,11 +888,11 @@ class StreamingAskerSuite extends FunSuite:
         )
         .map:
           case Left(error: IllegalArgumentException) => assert(
-              error.getMessage.contains("named `emit`"),
+              error.getMessage.contains(s"named `$name`"),
               error,
             )
           case other => fail(s"Not refused: $other"),
-    )
+    ))
 
   test(
     "a tool for the host to run is refused beside a stream given through emit",
@@ -930,13 +936,12 @@ class StreamingAskerSuite extends FunSuite:
         assertEquals(words, Nil)
         assertEquals(
           options.head.tools.map(_.name),
-          List("look", "emit"),
+          List("look", "emit", "done"),
         )
         assertEquals(
           options
             .head
-            .tools
-            .last
+            .tools(1)
             .parameters
             .hcursor
             .downField("properties")
@@ -1010,6 +1015,93 @@ class StreamingAskerSuite extends FunSuite:
         ),
     )
 
+  test("a reply calling done ends the stream, with no request after it"):
+    run(
+      for
+        (llm, sent) <- streamer(Stream(emit("a"), emit("b"), done) ++ toolStop)
+        read        <- emitted(llm).flatMap(answer =>
+          answer.value.get.compile.toList.product(answer.responses),
+        )
+        chats <- sent
+      yield
+        val (words, responses) = read
+        assertEquals(words, List(Word("a"), Word("b")))
+        assertEquals(chats.size, 1)
+        assertEquals(
+          responses.map(response =>
+            (response.stopReason, response.toolCalls.map(_.tool)),
+          ),
+          List((StopReason.ToolCall, List("emit", "emit", "done"))),
+        ),
+    )
+
+  test("done alone, with no element emitted, ends the stream empty"):
+    run(
+      for
+        (llm, sent) <- streamer(Stream(done) ++ toolStop)
+        words       <- emitted(llm).flatMap(_.value.get.compile.toList)
+        chats       <- sent
+      yield
+        assertEquals(words, Nil)
+        assertEquals(chats.size, 1),
+    )
+
+  test("done beside a tool to run is not taken, and the stream goes on"):
+    run(
+      for
+        asked       <- Ref.of[IO, List[String]](Nil)
+        (llm, sent) <- streamer(
+          Stream(emit("a"), look("b"), done) ++ toolStop,
+          Stream(emit("b"), done) ++ toolStop,
+        )
+        words <- llm
+          .ask[Stream[IO, Word]](
+            Chat.userSays("Translate."),
+            tools = List(dictionary(asked)),
+          )
+          .flatMap(_.value.get.compile.toList)
+        looked <- asked.get
+        chats  <- sent
+      yield
+        assertEquals(words, List(Word("a"), Word("b")))
+        assertEquals(looked, List("b"))
+        assertEquals(chats.size, 2)
+        chats(1).messages.last.toolResults.map(_.output) match
+          case List(taken, found, untaken) =>
+            assertEquals(taken, "ok")
+            assertEquals(found, "b, as looked up")
+            assert(
+              untaken.contains("call `done` again"),
+              untaken,
+            )
+          case other => fail(s"Not told of each: $other"),
+    )
+
+  test("done beside an element refused is not taken, before it or after"):
+    run(
+      List(
+        Stream(emit("a"), garbled("emit-b"), done) ->
+          "emit again from that one",
+        Stream(emit("a"), done, garbled("emit-b")) -> "call `done` again",
+      ).traverse_((first, untaken) =>
+        for
+          (llm, sent) <- streamer(
+            first ++ toolStop,
+            Stream(emit("b"), done) ++ toolStop,
+          )
+          words <- emitted(llm).flatMap(_.value.get.compile.toList)
+          chats <- sent
+        yield
+          assertEquals(words, List(Word("a"), Word("b")))
+          assertEquals(chats.size, 2)
+          val told = chats(1).messages.last.toolResults
+          assert(
+            told.find(_.tool == "done").exists(_.output.contains(untaken)),
+            told,
+          ),
+      ),
+    )
+
   test("an element emitted wrong as often as attempts allow fails the stream"):
     run(
       for
@@ -1038,31 +1130,38 @@ class StreamingAskerSuite extends FunSuite:
 
   test("a reply cut off after its elements were read fails the stream"):
     run(
-      List(
-        StopReason.MaxTokens,
-        StopReason.Other("refusal"),
-      ).traverse_(stopped =>
-        for
-          (llm, _) <- streamer(Stream(emit("a"), Delta.End(stopped, Usage())))
-          read     <- emitted(llm).flatMap(answer =>
-            answer
-              .value
-              .get
-              .attempt
-              .compile
-              .toList
-              .product(answer.responses.attempt),
-          )
-        yield read match
-          case (
-              List(
-                Right(word),
+      (
+        List(
+          StopReason.MaxTokens,
+          StopReason.Other("refusal"),
+        ),
+        List(
+          Stream(emit("a")),
+          Stream(emit("a"), done),
+        ),
+      ).tupled
+        .traverse_((stopped, calls) =>
+          for
+            (llm, _) <- streamer(calls ++ Stream(Delta.End(stopped, Usage())))
+            read     <- emitted(llm).flatMap(answer =>
+              answer
+                .value
+                .get
+                .attempt
+                .compile
+                .toList
+                .product(answer.responses.attempt),
+            )
+          yield read match
+            case (
+                List(
+                  Right(word),
+                  Left(_: ModelError.UnreadableResponse),
+                ),
                 Left(_: ModelError.UnreadableResponse),
-              ),
-              Left(_: ModelError.UnreadableResponse),
-            ) => assertEquals(word, Word("a"))
-          case other => fail(s"Not failed on $stopped: $other"),
-      ),
+              ) => assertEquals(word, Word("a"))
+            case other => fail(s"Not failed on $stopped: $other"),
+        ),
     )
 
   test("a tool failing as it runs fails the stream and reply, untold"):
