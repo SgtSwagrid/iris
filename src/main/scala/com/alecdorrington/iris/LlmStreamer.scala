@@ -46,14 +46,21 @@ trait LlmStreamer[F[_]]:
     * in a fiber of its own for as long as the resource is in use.
     *
     * The model is told the same JSON Schema as by [[LlmClient.ask]], a stream
-    * being an array, so its reply is no different; only its reading is. A value
-    * holding a stream is handed over once each of its fields is read or begun
-    * as a stream, or left out, as one that may be is where a later field has
-    * begun, the model writing its fields in order: a stream is delivered as it
-    * is written only where every field after it is a stream too. One read only
-    * once whole, as a stream within a list, holds its elements from the start.
-    * A type holding no stream is handed over once the reply ends, as
-    * [[LlmClient.ask]] gives it.
+    * being an array, so its reply is no different; only its reading is. The
+    * model writes a value's fields in order, so a value holding a stream is
+    * handed over once each field it has begun is read or begun as a stream,
+    * each it has passed over is one that may be left out, and each it has yet
+    * to begin is a stream it must write, handed over to begin when it does: so
+    * a value's streams are delivered as they are written wherever every field
+    * after them is a stream, and any other is whole by the time the field after
+    * it begins. A field it writes after its value was handed over, or a stream
+    * it never begins, fails the answer. One read only once whole, as a stream
+    * within a list, holds its elements from the start. A type holding no stream
+    * is handed over once the reply ends, as [[LlmClient.ask]] gives it. Every
+    * stream may be read as often as wanted, each time from its first element.
+    * Its JSON is read from the reply's start, or from within a code fence it
+    * opens with, and reading ends with it: what follows, which
+    * [[LlmClient.ask]] would refuse, is not read.
     *
     * {{{
     * case class Page(title: String, words: Stream[IO, Word])
@@ -66,11 +73,14 @@ trait LlmStreamer[F[_]]:
     * A reply that cannot be read before its answer is handed over is followed
     * by why, and the model asked again, as [[LlmClient.ask]] asks, as is a
     * reply that does not begin with its JSON, which is read only once whole.
-    * Once handed over, an answer is never asked for again: a reply that cannot
-    * be read to its end, as one cut off at the token limit, fails each of its
-    * streams not yet ended, and [[Answering.answer]], with
-    * [[LlmError.Unreadable]]. Tool calls are not streamed, so an answer asking
-    * for a tool has neither a value nor any [[Answer.toolCalls]].
+    * Once handed over, an answer is never asked for again: whatever fails
+    * afterwards fails each of its streams not yet ended, after the elements
+    * they have delivered, and [[Answering.answer]]. A reply that cannot be read
+    * to its end, as one cut off at the token limit, fails with
+    * [[LlmError.Unreadable]]; a request failing partway, as one timing out,
+    * fails as it does; and a release of the resource before the reply ends
+    * fails with an `IllegalStateException`. Tool calls are not streamed, so no
+    * tool may be offered.
     *
     * @tparam A
     *   The type of the answer, whose streams are of this streamer's effect.
@@ -80,7 +90,8 @@ trait LlmStreamer[F[_]]:
     *
     * @param options
     *   The per-request options, alike for every attempt; unset fields fall back
-    *   to the configuration or the provider's defaults.
+    *   to the configuration or the provider's defaults. They may offer no tool,
+    *   as the resource otherwise fails with an `IllegalArgumentException`.
     *
     * @param attempts
     *   The most answers to ask for before one is handed over, three unless
@@ -89,8 +100,9 @@ trait LlmStreamer[F[_]]:
     *
     * @return
     *   A resource holding the answer as soon as it is handed over, which stops
-    *   reading the reply once released. It fails as [[LlmClient.ask]] fails
-    *   where no answer could be handed over.
+    *   reading the reply once released, though the connection may stay open
+    *   until the next part of the reply arrives. It fails as [[LlmClient.ask]]
+    *   fails where no answer could be handed over.
     */
   final def ask[A : Schema]
     (
@@ -100,7 +112,7 @@ trait LlmStreamer[F[_]]:
     )
     (using Async[F])
     : Resource[F, Answering[F, A]] =
-    Unfolding.ask(stream(_, options), chat, attempts)
+    Unfolding.ask(stream, chat, options, attempts)
 
 object LlmStreamer:
 

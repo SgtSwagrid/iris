@@ -651,7 +651,11 @@ object Schema extends DerivedSchemas:
           case index: Int => schemas.lift(index)
           case _          => None
         },
-        (settled, _) => schemas.indices.forall(settled),
+        awaited(
+          schemas
+            .zipWithIndex
+            .map((schema, index) => (index, schema, !schema.optional)),
+        ),
       ),
     )
 
@@ -712,25 +716,37 @@ object Schema extends DerivedSchemas:
           case label: String => fields.find(_.label == label).map(_.schema)
           case _             => None
         },
-        (settled, begun) => fields.tails.forall(settledIn(settled, begun)),
+        awaited(
+          fields.map(field => (field.label, field.schema, field.required)),
+        ),
       ),
     )
 
   /**
-    * Whether the first of a record's fields, written in order, has settled, or
-    * been left out, as one that may be is where a later one has begun.
+    * The members still to come of a value read from its members, written in
+    * order, where the rest are enough to make it up: each up to the last begun
+    * has settled, or has not begun and may be left out, and each after it is a
+    * stream that must be written, handed over before it begins.
+    *
+    * @param members
+    *   Each member's key, schema, and whether it must be written.
     */
-  private def settledIn
+  private def awaited
+    (members: List[(String | Int, Schema[?], Boolean)])
     (
       settled: Set[String | Int],
       begun: Set[String | Int],
     )
-    (fields: List[Field])
-    : Boolean = fields match
-    case field :: later => settled(field.label) ||
-      !field.required &&
-      !begun(field.label) && later.exists(next => begun(next.label))
-    case Nil => true
+    : Option[List[String | Int]] =
+    val (written, unwritten) =
+      members.splitAt(members.lastIndexWhere((key, _, _) => begun(key)) + 1)
+    Option.when(
+      written.forall((key, _, required) =>
+        settled(key) || !required && !begun(key),
+      ) && unwritten.forall((_, schema, required) =>
+        required && schema.arrival.streamed,
+      ),
+    )(unwritten.map(_._1))
 
   /**
     * A field of a case class.
@@ -831,7 +847,8 @@ object Schema extends DerivedSchemas:
               case label: String => cases.find(_._1 == label).map(_._2)
               case _             => None
             },
-            (settled, _) => cases.exists((label, _) => settled(label)),
+            (settled, _) =>
+              Option.when(cases.exists((label, _) => settled(label)))(Nil),
           ),
     )
 

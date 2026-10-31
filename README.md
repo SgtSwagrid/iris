@@ -298,23 +298,33 @@ streamer.ask[Page](Chat.of(s"Translate: $text")).use { answering =>
 
 The model is told the same JSON Schema either way, a stream being an array, so its reply is plain
 JSON; only its reading differs. The answer is an
-[`Answering`](src/main/scala/com/alecdorrington/iris/Answering.scala): its `value`, with no value
-where the model asked for a tool, and the whole `answer` once the reply ends. Read it within `use`, as
-the reply goes on being read in a fiber of its own only until the resource is released. Each stream
-may be read once, and streams may be nested, as a stream of pages each with a stream of words. A type
+[`Answering`](src/main/scala/com/alecdorrington/iris/Answering.scala): its `value`, and the whole
+`answer` once the reply ends. Read it within `use`, as the reply goes on being read in a fiber of its
+own only until the resource is released. A stream may be read as often as you like, each time from its
+first element, and streams may be nested, as a stream of pages each with a stream of words. A type
 holding no stream is handed over once its reply ends, exactly as a client's `ask` gives it.
 
-The model writes a value's fields in order, so a value holding a stream is handed over once each of
-its fields is read, begun as a stream, or left out, which an optional field is taken to be once a
-later one begins. A field after a stream that is not a stream itself holds the value back until the
-reply has written it, by which time the stream is whole: put a value's streams last. Until the answer
-is handed over, a reply that cannot be read is answered and asked again, as a client asks; a reply
-that does not begin with its JSON, or a code fence holding it, is read only once whole. Once the answer
-is handed over it is never asked for again: a reply that cannot be read to its end, as one cut off at
-the token limit or with an element that cannot be read, fails each of its streams still being read,
-after the elements they delivered already, and `answer`, with `LlmError.Unreadable`. A stream cannot
-be said to the model as JSON, as it would have to be run; say a list of its elements. Tool calls are
-not streamed, so an answer asking for a tool has no `toolCalls` either.
+The model writes a value's fields in order, so a value holding a stream is handed over as soon as each
+field it has begun is read or begun as a stream, each it has passed over may be left out (an optional
+field is taken to be once a later one begins), and each it has yet to begin is a stream, handed over to
+begin when it does. So `Lesson(title: String, words: Stream[IO, Word], examples: Stream[IO, String])`
+is handed over as `words` begins, and both stream as they are written. A field that is not a stream
+holds back the value it is in until the reply has written it, and with it any stream before it, which
+is then whole: put streams last. A field written after its value was handed over, as one written out of
+order, or a stream that never begins, fails the answer.
+
+Its JSON is read from the reply's start, or from within a code fence the reply opens with, and reading
+ends with it; what follows, which a client's `ask` would refuse, is not read. Until the answer is
+handed over, a reply that cannot be read is answered and asked again, as a client asks; a reply that
+does not begin with its JSON, or a code fence holding it, is read only once whole. Once the answer is
+handed over it is never asked for again: what
+fails afterwards fails each of its streams not yet ended, after the elements they delivered already,
+and `answer`. A reply that cannot be read to its end, as one cut off at the token limit or with an
+element that cannot be read, fails with `LlmError.Unreadable`; a request failing partway, as on a
+timeout, fails as it would anywhere; and releasing the resource before the reply ends fails them with
+an `IllegalStateException`. A stream cannot be said to the model as JSON, as it would have to be run;
+say a list of its elements. Tool calls are not streamed, so a streamed ask offering tools fails with
+an `IllegalArgumentException` before any request.
 
 ### Tools
 

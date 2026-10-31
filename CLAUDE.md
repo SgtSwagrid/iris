@@ -188,16 +188,22 @@ longer.
   as soon as all of `A` but its `fs2.Stream`s is read; each stream (not within a list or map, which are read whole)
   is then fed as its elements close. The user chose live streams in the value over snapshots of a partial value,
   knowing the costs: `Schema[Stream[F, A]]`'s encoder throws (a stream cannot be said without being run), nothing is
-  asked again once handed over (a later failure fails the unfinished streams and `answer` with `Unreadable`), and
-  `F` must be the streamer's (the cast is unchecked). The model is told a stream as an array, the same schema as a
-  `List`. Each schema's `Arrival` says how it is read early (`Whole`, `Streamed`, or `Assembled` from members, by
-  key or index, once `enough` have settled); a record's fields are taken to be written in order, so an optional one
-  absent before a begun one is left out. `Unfinished` follows only brackets, strings, escapes, commas and colons
+  asked again once handed over (a later failure fails the unfinished streams and `answer`: `Unreadable` for a reply,
+  a request's own error, `IllegalStateException` on release), and `F` must be the streamer's (the cast is
+  unchecked). Tools are refused, as `Delta` carries no tool calls. The model is told a stream as an array, the same
+  schema as a `List`. Each schema's `Arrival` says how it is read early (`Whole`, `Streamed`, or `Assembled` from
+  members, by key or index, `ready` once those begun have settled, giving the streams still to come); fields are
+  taken to be written in order (`Schema.awaited`), so an optional one absent before a begun one is left out, and
+  required streams after the last begun are handed over before they begin (`Frame.coming`), so that every trailing
+  stream of a value is live. Once a value is handed over (`Frame.taken`), a member it knows arriving later, or a
+  reserved stream never begun, fails the answer rather than be lost. `Unfinished` follows only brackets, strings,
+  escapes, commas and colons
   (circe parses each value once whole, and the schema's own decoder reads it, so every value is decoded by the
   same code as a whole reply), standing in for each open stream with a placeholder `Json` found by identity
   through a `DynamicVariable` while decoding. A type with no stream is not read early, but at the end through
-  `Question.verdict`, as `ask` reads it. `Unfolding` drives it in a background fiber, with an unbounded `Channel`
-  per stream.
+  `Question.verdict`, as `ask` reads it. `Unfolding` drives it in a background fiber, keeping each stream's elements
+  and end in a `SignallingRef` (never a `Channel`, which serves one reader), so a stream reads alike however often,
+  as `Stream.emits` from a whole reply does.
 - What differs between the platforms is in `Platform` alone, one per platform (`src/main/scalajvm`,
   `src/main/scalajs`): the backends `resource` makes (the JDK's HTTP client, or the Fetch API), and whether a
   request may come from a browser's page, for which `AnthropicApi` adds `anthropic-dangerous-direct-browser-access`.

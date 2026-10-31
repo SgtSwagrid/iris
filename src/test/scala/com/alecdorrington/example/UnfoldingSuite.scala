@@ -29,6 +29,25 @@ final case class Verse
     lines: Stream[IO, String],
   )
 
+final case class Gloss
+  (
+    title: String,
+    note: Option[String] = None,
+    words: Stream[IO, Word],
+  )
+
+final case class Two
+  (
+    first: Stream[IO, Int],
+    second: Stream[IO, Int],
+  )
+
+sealed trait Listing
+
+final case class Listed(items: Stream[IO, Int]) extends Listing
+
+final case class Refused(why: String) extends Listing
+
 class UnfoldingSuite extends FunSuite:
 
   /** A reply written `size` characters at a time, ending as said. */
@@ -113,7 +132,7 @@ class UnfoldingSuite extends FunSuite:
 
   test("every element is read whole, however the reply is cut into parts"):
     val strings = """```json
-["a]\"b", "c,d{", "", "\\"]
+["a]\"b", "c,d{", "", "\\", "\u005d\u0022"]
 ```"""
     run(
       List(1, 2, 5)
@@ -125,14 +144,103 @@ class UnfoldingSuite extends FunSuite:
             unfolded[Stream[IO, Long], List[Long]](
               written("[1, 22,333 ,-4e2]", size),
             )(_.compile.toList),
+            unfolded[
+              Stream[IO, Option[Boolean]],
+              List[Option[Boolean]],
+            ](written("[true,null ,false]", size))(_.compile.toList),
           ).tupled,
         )
         .map(_.foreach(read =>
           assertEquals(
             read,
-            (List("a]\"b", "c,d{", "", "\\"), List(1L, 22L, 333L, -400L)),
+            (
+              List("a]\"b", "c,d{", "", "\\", "]\""),
+              List(1L, 22L, 333L, -400L),
+              List(Some(true), None, Some(false)),
+            ),
           ),
         )),
+    )
+
+  /**
+    * The elements of the stream that `elements` finds in an answer, its reply
+    * written past `first` only once the first of them has been read.
+    */
+  private def early[A : Schema]
+    (first: String, rest: String)
+    (elements: A => Stream[IO, Any])
+    : IO[List[Any]] =
+    for
+      gate     <- Deferred[IO, Unit]
+      (llm, _) <-
+        streamer(part(first, 3) ++ Stream.exec(gate.get) ++ written(rest, 3))
+      read <- llm
+        .ask[A](Chat.of("Translate."))
+        .use(
+          _.value
+            .liftTo[IO](Exception("No value."))
+            .flatMap(elements(_).evalTap(_ => gate.complete(())).compile.toList),
+        )
+    yield read
+
+  test("a stream arrives as it is written wherever it is"):
+    run(
+      List(
+        early[Gloss](
+          """{"title":"Hi","words":[{"text":"a"},""",
+          """{"text":"b"}]}""",
+        )(_.words) -> List(Word("a"), Word("b")),
+        early[Option[Stream[IO, Int]]]("[1,", "2]")(_.getOrElse(
+          Stream.empty,
+        )) -> List(1, 2),
+        early[Either[String, Stream[IO, Int]]]("""{"Right":[1,""", "2]}")(
+          _.getOrElse(Stream.empty),
+        ) -> List(1, 2),
+        early[Listing]("""{"Listed":{"items":[1,""", "2]}}") {
+          case Listed(items) => items
+          case Refused(_)    => Stream.empty
+        } -> List(1, 2),
+        early[(String, Stream[IO, Int])]("""["x",[1,""", "2]]")(_._2) ->
+          List(1, 2),
+        // A stream still to come is handed over before it begins.
+        early[Two](
+          """{"first":[1,""",
+          """2],"second":[3]}""",
+        )(two => two.first ++ two.second) -> List(1, 2, 3),
+      ).traverse_((read, expected) => read.map(assertEquals(_, expected))),
+    )
+
+  test("a field written after its value was read fails the answer"):
+    run(
+      List(
+        """{"title":"Hi","words":[{"text":"a"}],"note":"N"}""" -> "note",
+        """{"title":"Hi","words":[{"text":"a"}],"words":[]}""" -> "words",
+        """{"first":[1]}"""                                    -> "second",
+      ).traverse_((reply, why) =>
+        streamer(written(reply, 4))
+          .flatMap((llm, _) =>
+            if why == "second" then
+              llm.ask[Two](Chat.of("Count.")).use(_.answer.attempt)
+            else llm.ask[Gloss](Chat.of("Translate.")).use(_.answer.attempt),
+          )
+          .map:
+            case Left(LlmError.Unreadable(_, detail, _)) =>
+              assert(detail.contains(s"`$why`"), detail)
+            case other => fail(s"Not unreadable: $other"),
+      ),
+    )
+
+  test("a field written out of order is read once its value is whole"):
+    run(
+      unfolded[
+        Gloss,
+        (String, Option[String], List[Word]),
+      ](written(
+        """{"words":[{"text":"a"}],"note":"N","title":"Hi"}""",
+        4,
+      ))(gloss => gloss.words.compile.toList.map((gloss.title, gloss.note, _))).map(
+        read => assertEquals(read, ("Hi", Some("N"), List(Word("a")))),
+      ),
     )
 
   test("a stream within a stream arrives as it is written"):
@@ -234,16 +342,18 @@ class UnfoldingSuite extends FunSuite:
                 (
                   answering.value.get.words.attempt.compile.toList,
                   answering.answer.attempt,
+                  answering.value.get.words.attempt.compile.toList,
                 ).tupled,
               ),
           )
-          .map((words, answer) =>
+          .map((words, answer, again) =>
             assertEquals(
               words.take(1),
               List(Right(Word("a"))),
               why,
             )
             assertEquals(words.size, 2, why)
+            assertEquals(again, words, why)
             List(words.last, answer).foreach:
               case Left(LlmError.Unreadable(_, detail, _)) =>
                 assert(detail.contains(why), detail)
@@ -260,12 +370,134 @@ class UnfoldingSuite extends FunSuite:
       ))(IO.pure).map(read => assertEquals(read, Person("Ada", 36, None))),
     )
 
-  test("streams of a released answer fail rather than wait for good"):
+  test("a request failing after its answer is handed over fails as it does"):
+    val timedOut = LlmError.TimedOut("Anthropic", 1.second)
+    run(
+      streamer(
+        part(
+          """{"title":"Hi","words":[{"text":"a"},""",
+          4,
+        ) ++ Stream.raiseError[IO](timedOut),
+      ).flatMap((llm, _) =>
+        llm
+          .ask[Page](Chat.of("Translate."))
+          .use(answering =>
+            (
+              answering.value.get.words.attempt.compile.toList,
+              answering.answer.attempt,
+            ).tupled,
+          )
+          .map((words, answer) =>
+            assertEquals(
+              words,
+              List(Right(Word("a")), Left(timedOut)),
+            )
+            assertEquals(answer.left.toOption, Some(timedOut)),
+          ),
+      ),
+    )
+
+  test("a stream within a stream that cannot be read fails both"):
+    run(
+      streamer(written(
+        """[{"heading":"One","lines":["a",5]}]""",
+        3,
+      )).flatMap((llm, _) =>
+          llm
+            .ask[Stream[IO, Verse]](Chat.of("Translate."))
+            .use(
+              _.value
+                .get
+                .evalMap(_.lines.attempt.compile.toList)
+                .attempt
+                .compile
+                .toList,
+            ),
+        )
+        .map:
+          case List(
+              Right(
+                List(
+                  Right("a"),
+                  Left(_: LlmError.Unreadable),
+                ),
+              ),
+              Left(_: LlmError.Unreadable),
+            ) => ()
+          case other => fail(s"Not failed within and without: $other"),
+    )
+
+  test("a stream reads alike however often, at once, later, or after its end"):
+    run(
+      for
+        gate <- Deferred[IO, Unit]
+        reply = part(
+          """{"title":"Hi","words":[{"text":"a"},""",
+          8,
+        ) ++ Stream.exec(gate.get) ++ written("""{"text":"b"}]}""", 8)
+        (llm, _) <- streamer(reply)
+        read     <- llm
+          .ask[Page](Chat.of("Translate."))
+          .use: answering =>
+            val words = answering.value.get.words
+            for
+              both <- (
+                words.evalTap(_ => gate.complete(())).compile.toList,
+                words.take(1).compile.toList,
+              ).parTupled
+              ended <- answering.answer.map(_.value.map(_.title))
+              again <- words.compile.toList
+            yield (both, ended, again)
+      yield assertEquals(
+        read,
+        (
+          (List(Word("a"), Word("b")), List(Word("a"))),
+          Some("Hi"),
+          List(Word("a"), Word("b")),
+        ),
+      ),
+    )
+
+  test("a released answer fails its streams and answer, not waits for good"):
     run(
       streamer(part("""{"title":"Hi","words":[""", 4) ++ Stream.never[IO])
         .flatMap((llm, _) => llm.ask[Page](Chat.of("Translate.")).use(IO.pure))
-        .flatMap(_.value.get.words.compile.toList.attempt)
-        .map(read => assert(read.isLeft, read)),
+        .flatMap(answering =>
+          (
+            answering.value.get.words.compile.toList.attempt,
+            answering.answer.attempt,
+          ).tupled,
+        )
+        .map((words, answer) =>
+          List(words, answer).foreach:
+            case Left(error: IllegalStateException) => assert(
+                error.getMessage.contains("released"),
+                error,
+              )
+            case other => fail(s"Not released: $other"),
+        ),
+    )
+
+  test("a streamed ask offering tools is refused before any request"):
+    run(
+      streamer()
+        .flatMap((llm, sent) =>
+          llm
+            .ask[Page](
+              Chat.of("Translate."),
+              ReplyOptions(tools = List(Tool("look", "Looks up.", Json.obj()))),
+            )
+            .use(IO.pure)
+            .attempt
+            .product(sent),
+        )
+        .map((read, chats) =>
+          assert(
+            read.left.exists(_.isInstanceOf[IllegalArgumentException]),
+            read,
+          )
+          assertEquals(chats, Nil),
+        ),
     )
 
   test("a stream is asked for as a list, and read from a whole reply as one"):

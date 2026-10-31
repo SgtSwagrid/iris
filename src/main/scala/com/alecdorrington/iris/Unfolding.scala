@@ -4,7 +4,7 @@ import cats.effect.{Async, Deferred, Ref, Resource}
 import cats.effect.syntax.all.*
 import cats.syntax.all.*
 import fs2.Stream
-import fs2.concurrent.Channel
+import fs2.concurrent.SignallingRef
 
 /**
   * The asking of an answer handed over as its reply unfolds: as soon as all of
@@ -22,29 +22,56 @@ private[iris] object Unfolding:
     */
   def ask[F[_] : Async, A : Schema as A]
     (
-      stream: Chat => Stream[F, Delta],
+      stream: (Chat, ReplyOptions) => Stream[F, Delta],
       chat: Chat,
+      options: ReplyOptions,
       attempts: Int,
     )
     : Resource[F, Answering[F, A]] =
     for
-      _      <- Resource.eval(Question.counted(attempts).liftTo[F])
+      _ <- Resource.eval(
+        (Question.counted(attempts) *> toolless(options)).liftTo[F],
+      )
       asking <- Resource.eval(
         (
-          Ref.of[
-            F,
-            Map[Int, Channel[F, Either[Throwable, Any]]],
-          ](Map.empty),
+          Ref.of[F, Map[Int, SignallingRef[F, Feed]]](Map.empty),
           Deferred[F, Either[Throwable, Option[A]]],
           Deferred[F, Either[Throwable, Answer[A]]],
-        ).mapN(Asking(stream, A, attempts, _, _, _)),
+        ).mapN(Asking(stream(_, options), A, attempts, _, _, _)),
       )
       _     <- asking.read(Question.opening(chat, A)).background
       value <- Resource.eval(asking.value.get.rethrow)
     yield Answering(value, asking.answer.get.rethrow)
 
+  /** Refuses tools, as the calls of one are not streamed. */
+  private def toolless
+    (options: ReplyOptions)
+    : Either[IllegalArgumentException, Unit] = Either.cond(
+    options.tools.isEmpty,
+    (),
+    IllegalArgumentException(
+      "A streamed ask cannot offer tools, as their calls are not streamed: ask through an LlmClient.",
+    ),
+  )
+
   /**
-    * The asking of one answer: the channels feeding its streams, by number, the
+    * What a stream has been fed: its elements so far, each read from the first,
+    * and how it ended, once it has.
+    */
+  private final case class Feed
+    (
+      elements: Vector[Any] = Vector.empty,
+      end: Option[Either[Throwable, Unit]] = None,
+    ):
+
+    def fed(element: Any): Feed = copy(elements = elements :+ element)
+
+    /** This feed ended, unless it has already. */
+    def ended(outcome: Either[Throwable, Unit]): Feed =
+      if end.isDefined then this else copy(end = Some(outcome))
+
+  /**
+    * The asking of one answer: the feeds of its streams, by number, the
     * answer's value, once handed over, and the whole answer.
     */
   private final class Asking[F[_] : Async, A]
@@ -52,10 +79,7 @@ private[iris] object Unfolding:
       stream: Chat => Stream[F, Delta],
       schema: Schema[A],
       attempts: Int,
-      channels: Ref[
-        F,
-        Map[Int, Channel[F, Either[Throwable, Any]]],
-      ],
+      feeds: Ref[F, Map[Int, SignallingRef[F, Feed]]],
       val value: Deferred[F, Either[Throwable, Option[A]]],
       val answer: Deferred[F, Either[Throwable, Answer[A]]],
     ):
@@ -65,7 +89,7 @@ private[iris] object Unfolding:
       * still to be read where it cannot be, or the resource is released first.
       */
     def read(chat: Chat): F[Unit] = attempt(chat, Vector.empty)
-      .handleErrorWith(failed)
+      .handleErrorWith(failed(_).uncancelable)
       .onCancel(failed(IllegalStateException(
         "The answer's resource was released before its reply ended.",
       )))
@@ -111,15 +135,15 @@ private[iris] object Unfolding:
       )
       (event: Unfinished.Event)
       : F[Unit] = event match
-      case Unfinished.Event.Opened(stream) => Channel
-          .unbounded[F, Either[Throwable, Any]]
-          .flatMap(channel => channels.update(_ + (stream -> channel)))
+      case Unfinished.Event.Opened(stream) => SignallingRef
+          .of[F, Feed](Feed())
+          .flatMap(feed => feeds.update(_ + (stream -> feed)))
       case Unfinished.Event.Read(0, read) =>
         value.complete(Right(Some(read.asInstanceOf[A]))).void
       case Unfinished.Event.Read(stream, read) =>
-        channels.get.flatMap(_(stream).send(Right(read))).void
+        feeds.get.flatMap(_(stream).update(_.fed(read)))
       case Unfinished.Event.Ended(stream) =>
-        channels.get.flatMap(_(stream).close).void
+        feeds.get.flatMap(_(stream).update(_.ended(Right(()))))
       case Unfinished.Event.Failed(detail) => Question
           .unreadable(
             answers :+ Answer(unfinished.text, StopReason.Unknown),
@@ -166,19 +190,28 @@ private[iris] object Unfolding:
             case Question.Verdict.Failed(error) => error.raiseError
 
     /** Fails whatever is still to be read of the answer. */
-    private def failed(error: Throwable): F[Unit] = value.complete(Left(
-      error,
-    )) *> answer.complete(Left(error)) *>
-      channels
-        .get
-        .flatMap(
-          _.values
-            .toList
-            .traverse_(channel => channel.send(Left(error)) *> channel.close),
-        )
+    private def failed(error: Throwable): F[Unit] =
+      value.complete(Left(error)) *> answer.complete(Left(error)) *>
+        feeds
+          .get
+          .flatMap(_.values.toList.traverse_(_.update(_.ended(Left(error)))))
 
-    /** The stream fed by a channel, once the reader has opened it. */
+    /**
+      * A stream read from its feed, once the reader has opened it: every
+      * element fed it from the first, however often it is read.
+      */
     private def live(stream: Int): Any = Stream
-      .eval(channels.get.map(_(stream)))
-      .flatMap(_.stream)
-      .rethrow
+      .eval(feeds.get.map(_(stream)))
+      .flatMap(
+        _.discrete
+          .takeThrough(_.end.isEmpty)
+          .zipWithPrevious
+          .flatMap((previous, feed) =>
+            Stream.emits(
+              feed.elements.drop(previous.fold(0)(_.elements.size)),
+            ) ++
+              Stream
+                .fromOption(feed.end.flatMap(_.left.toOption))
+                .flatMap(Stream.raiseError[F]),
+          ),
+      )

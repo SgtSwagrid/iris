@@ -20,17 +20,26 @@ private[iris] enum Arrival:
 
   /**
     * From its members, as soon as enough of them have settled: each is whole,
-    * or is a stream begun, or a value of its own read before it is whole.
+    * or is a stream begun, or a value of its own read before it is whole, and
+    * any left are streams still to come, handed over before they begin.
     *
     * @param member
     *   The schema of a member, by its key in an object or index in an array,
     *   where it has one.
     *
-    * @param enough
-    *   Whether the members settled, given those begun, make up a value.
+    * @param ready
+    *   The members still to come, where the members settled, given those begun,
+    *   are enough to make up a value.
     */
   case Assembled
     (
       member: (String | Int) => Option[Schema[?]],
-      enough: (Set[String | Int], Set[String | Int]) => Boolean,
+      ready: (Set[String | Int], Set[String | Int]) => Option[
+        List[String | Int],
+      ],
     )
+
+  /** Whether it is read as a stream. */
+  def streamed: Boolean = this match
+    case Streamed(_) => true
+    case _           => false

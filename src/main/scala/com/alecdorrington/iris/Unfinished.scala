@@ -5,6 +5,7 @@ import com.alecdorrington.iris.Unfinished.{Event, Expect, Frame, State}
 import io.circe.{Decoder, HCursor, Json}
 import io.circe.parser.parse
 import io.circe.syntax.*
+import scala.collection.mutable
 import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 import scala.util.DynamicVariable
 
@@ -98,15 +99,28 @@ private[iris] final class Unfinished(schema: Schema[?], live: Int => Any):
       case Expect.Member if !frame.array =>
         if char == '"' then string = index else lost()
       case Expect.Member | Expect.Value =>
-        frame.begin()
-        char match
-          case '"'       => string = index
-          case '{' | '[' =>
-            val array = char == '['
-            frames = Frame(frame.arrivalOf(array), array, index) :: frames
-          case _ if char == '-' || char.isDigit || "tfn".contains(char) =>
-            bare = index
-          case _ => lost()
+        val reserved = frame.coming.get(frame.upcoming)
+        if frame.array && !frame.admits(frame.upcoming) then
+          failed("It wrote more of a list after the value holding it was read.")
+        else if reserved.nonEmpty && char != '[' then
+          failed(
+            s"It wrote `${ frame.upcoming }` as something other than a list.",
+          )
+        else
+          frame.begin()
+          char match
+            case '"'       => string = index
+            case '{' | '[' =>
+              val array = char == '['
+              frames = Frame(
+                frame.arrivalOf(array),
+                array,
+                index,
+                reserved,
+              ) :: frames
+            case _ if char == '-' || char.isDigit || "tfn".contains(char) =>
+              bare = index
+            case _ => lost()
       case _ => lost()
 
   private def quoted(index: Int, char: Char): Unit =
@@ -121,13 +135,26 @@ private[iris] final class Unfinished(schema: Schema[?], live: Int => Any):
   private def named(start: Int, end: Int): Unit = parsed(start, end)
     .toOption
     .flatMap(_.asString)
-    .fold(lost())(frames.head.named)
+    .fold(lost())(keyed)
 
+  /**
+    * A key is read, which must not name a member of a value read already, whose
+    * reading took it to be left out, or read it already.
+    */
+  private def keyed(key: String): Unit =
+    if frames.head.admits(key) then frames.head.named(key)
+    else failed(s"It wrote `$key` after the value holding it was read.")
+
+  /** A container ends, which a value read already may only once it has all. */
   private def closed(index: Int, char: Char): Unit = frames match
     case frame :: (rest @ _ :: _) if frame.closes(char == ']') =>
-      frames = rest
-      frame.live.foreach(stream => events += Event.Ended(stream))
-      ended(frame.start, index + 1)
+      frame.missing match
+        case Some(member) =>
+          failed(s"It left out `$member`, which was being waited for.")
+        case None =>
+          frames = rest
+          frame.live.foreach(stream => events += Event.Ended(stream))
+          ended(frame.start, index + 1)
     case _ => lost()
 
   /**
@@ -192,13 +219,13 @@ private[iris] final class Unfinished(schema: Schema[?], live: Int => Any):
   private def settles(path: Vector[Frame], index: Int): Boolean =
     val frame = path(index)
     frame.arrival match
-      case Arrival.Streamed(_)          => true
-      case Arrival.Assembled(_, enough) => enough(
+      case Arrival.Streamed(_)         => true
+      case Arrival.Assembled(_, ready) => ready(
           frame.settled(
             path.isDefinedAt(index + 1) && settles(path, index + 1),
           ),
           frame.begun,
-        )
+        ).isDefined
       case Arrival.Whole => false
 
   /**
@@ -239,19 +266,27 @@ private[iris] final class Unfinished(schema: Schema[?], live: Int => Any):
     : Either[String, Json] =
     val frame = path(index)
     frame.arrival match
-      case Arrival.Streamed(element) => opened(frame, element, opening, holes)
-      case _                         => (
+      case Arrival.Streamed(element)   => opened(frame, element, opening, holes)
+      case Arrival.Assembled(_, ready) =>
+        val current = path.isDefinedAt(index + 1) && settles(path, index + 1)
+        frame.taken = true
+        (
           frame
             .wholes
             .toList
             .traverse((key, start, end) => parsed(start, end).map(key -> _)),
-          path
-            .lift(index + 1)
-            .filter(_ => settles(path, index + 1))
-            .traverse(_ =>
-              built(path, index + 1, opening, holes).map(frame.key -> _),
+          Option
+            .when(current)(index + 1)
+            .traverse(child =>
+              built(path, child, opening, holes).map(frame.key -> _),
             ),
-        ).mapN(_ ++ _).map(frame.json)
+          Right(
+            ready(frame.settled(current), frame.begun)
+              .getOrElse(Nil)
+              .map(member => member -> reserved(frame, member, opening, holes)),
+          ),
+        ).mapN(_ ++ _ ++ _).map(frame.json)
+      case Arrival.Whole => Left(Unfinished.unparsed)
 
   /**
     * Opens a stream begun within a value being handed over, with the elements
@@ -265,20 +300,45 @@ private[iris] final class Unfinished(schema: Schema[?], live: Int => Any):
       holes: ListBuffer[(Json, Any)],
     )
     : Either[String, Json] =
-    streams += 1
-    val stream = streams
-    val hole   = Json.obj("stream" -> stream.asJson)
-    holes += hole -> live(stream)
+    val (stream, hole) = holed(opening, holes)
+    frame.live = Some(stream)
     val elements = frame
       .wholes
       .toList
       .traverse((_, start, end) => parsed(start, end).flatMap(read(element, _)))
-    frame.live = Some(stream)
     frame.wholes.clear()
     elements.map: values =>
-      opening += Event.Opened(stream)
       opening ++= values.map(Event.Read(stream, _))
       hole
+
+  /**
+    * Opens a stream of a value being handed over before it begins, kept for the
+    * member it will be, and stands it in for by a placeholder of its own.
+    */
+  private def reserved
+    (
+      frame: Frame,
+      member: String | Int,
+      opening: ListBuffer[Event],
+      holes: ListBuffer[(Json, Any)],
+    )
+    : Json =
+    val (stream, hole) = holed(opening, holes)
+    frame.coming(member) = stream
+    hole
+
+  /** A new stream, opened, and the placeholder standing in for it. */
+  private def holed
+    (
+      opening: ListBuffer[Event],
+      holes: ListBuffer[(Json, Any)],
+    )
+    : (Int, Json) =
+    streams += 1
+    val hole = Json.obj("stream" -> streams.asJson)
+    holes += hole -> live(streams)
+    opening += Event.Opened(streams)
+    streams -> hole
 
   private def read(schema: Schema[?], json: Json): Either[String, Any] =
     Question.decoded(schema, json)
@@ -373,6 +433,12 @@ private[iris] object Unfinished:
     /** Whether the element being written has been handed over already. */
     var handed: Boolean = false
 
+    /** Whether the value it holds has been handed over already. */
+    var taken: Boolean = false
+
+    /** The streams handed over before they began, by member. */
+    val coming: mutable.Map[String | Int, Int] = mutable.Map.empty
+
     var expect: Expect = Expect.Member
 
     /** Whether the value of the member being written has begun. */
@@ -392,11 +458,24 @@ private[iris] object Unfinished:
 
     /** How the member being written arrives, a stream only as an array. */
     def arrivalOf(array: Boolean): Arrival =
-      member.fold(Arrival.Whole)(_.arrival) match
+      member(key).fold(Arrival.Whole)(_.arrival) match
         case Arrival.Streamed(_) if !array => Arrival.Whole
         case arrival                       => arrival
 
     def expectsKey: Boolean = !array && expect == Expect.Member
+
+    /** The key or index of the member to begin next. */
+    def upcoming: String | Int = if array then count else key
+
+    /**
+      * Whether a member may begin: any, unless the value it holds has been read
+      * already, when only a stream still to come, or a key it does not know.
+      */
+    def admits(next: String | Int): Boolean = !taken ||
+      coming.contains(next) && !begun(next) || !array && member(next).isEmpty
+
+    /** A stream still to come that never began, once it has ended. */
+    def missing: Option[String | Int] = coming.keys.find(!begun(_))
 
     /** Whether it may end here, as it may after a whole member or if empty. */
     def closes(asArray: Boolean): Boolean = array == asArray &&
@@ -430,7 +509,7 @@ private[iris] object Unfinished:
           key -> json
         })
 
-    private def member: Option[Schema[?]] = arrival match
+    private def member(key: String | Int): Option[Schema[?]] = arrival match
       case Arrival.Streamed(element)    => Some(element)
       case Arrival.Assembled(member, _) => member(key)
       case Arrival.Whole                => None
