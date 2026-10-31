@@ -96,7 +96,16 @@ trait LlmClient[F[_]]:
     * @param attempts
     *   The most replies to ask for before an answer is given, three unless
     *   given, which must be at least one, as the effect otherwise fails with an
-    *   `IllegalArgumentException`.
+    *   `IllegalArgumentException`; a reply asking for tools that are run does
+    *   not count.
+    *
+    * @param tools
+    *   The tools to offer the model and run wherever it asks for them, beside
+    *   any [[ReplyOptions.tools]] offered for the host to run: a reply asking
+    *   for these alone is followed by their outputs, and the model asked to go
+    *   on, as often as it asks. Given tools, an answer that is itself a
+    *   `fs2.Stream` is given element by element through a tool of its own,
+    *   `emit`, so that the model may run the others between elements.
     *
     * @return
     *   An effect producing the answer, as soon as it can be given. It fails
@@ -108,11 +117,20 @@ trait LlmClient[F[_]]:
       chat: Chat,
       options: ReplyOptions = ReplyOptions(),
       attempts: Int = Question.attempts,
+      tools: List[RunnableTool[F]] = Nil,
     )
     (using Async[F])
     : F[Answer[F, A]] =
-    if Schema[A].gradual then Unfolding.ask(stream, chat, options, attempts)
-    else Question.ask(send(_, options), chat, attempts)
+    val toolbox = Toolbox(tools)
+    if Schema[A].gradual then
+      Unfolding.ask(stream, chat, options, attempts, toolbox)
+    else
+      Question.ask(
+        send(_, toolbox.offered(options)),
+        chat,
+        attempts,
+        toolbox,
+      )
 
   /**
     * Sends a chat to the model for its next reply, whole: the request every ask

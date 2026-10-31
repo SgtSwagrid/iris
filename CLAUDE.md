@@ -63,8 +63,15 @@ longer.
 - A set but unrecognised `LLM_PROVIDER` or `LLM_MODEL` means unconfigured (`None`), never a fall back to key inference.
 - The library does no throttling, retrying or logging of its own; those are the host's to wrap around a client.
   The one exception is `ask`, which asks again after a reply it cannot read, never after a failed request.
-  Nor does it run a tool it is asked for: `ReplyOptions.tools` offers them and `Reply.toolCalls`
-  reports what was asked, but what a tool does, and whether it may, is the host's.
+  It runs a tool only where the host hands `ask` one with its implementation (`RunnableTool`), which the user
+  chose, as handing it over says it may run: `ask` then runs any the model asks for alone (`Toolbox.runs`), tells
+  it their outputs and asks it to go on (`Question.onwards`, `Verdict.Run`), not counting those rounds against
+  `attempts`. `ReplyOptions.tools` still offers tools for the host to run, reported in `Reply.toolCalls`; a
+  reply asking for any of those ends the ask with no value. Where tools are run and the answer is itself a
+  stream (`Emit.element`), its elements come through a tool of Iris's own, `emit`, one call each (wrapped under
+  `element`, any `$defs` hoisted), so the model can call tools between them: measured on Haiku 4.5, it batches
+  emits per reply and interleaves lookups as told. An unreadable element is told back, and the model emits it
+  again; a model writing JSON instead is read whole at the end (`Emit.elements`).
 - A `Part.CacheBreakpoint` ends a prefix worth caching and says nothing to the model. Anthropic is told of one by
   `cache_control` on the block before it (in its message, else the previous message's last, else the system message),
   marking at most four blocks per chat, counted as sent (breakpoints in a row mark one); OpenAI and Gemini cache
