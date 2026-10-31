@@ -76,9 +76,8 @@ object Part:
   /**
     * A picture, document or other media for the model to look at. A provider
     * refuses media it cannot take with [[LlmError.Unsupported]], before any
-    * request: Anthropic takes every [[MediaType]] Iris lists, OpenAI its
-    * pictures alone, and Gemini any media of its own lists, which leave out
-    * GIF.
+    * request: Anthropic takes every [[MediaType]] Iris lists, and OpenAI its
+    * pictures alone. Gemini is sent any media, and judges it itself.
     *
     * @param mediaType
     *   The kind of media.
