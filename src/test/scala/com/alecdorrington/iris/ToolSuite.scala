@@ -295,3 +295,14 @@ class ToolSuite extends FunSuite:
       next.messages(2).content,
       List(answered),
     )
+
+  test("a model's reply saying nothing but its calls is appended as those"):
+    val reply = Reply(
+      "",
+      StopReason.ToolCall,
+      toolCalls = List(asked),
+    )
+    assertEquals(
+      Chat().user("Weather?").assistant(reply).messages.last.content,
+      List(asked),
+    )

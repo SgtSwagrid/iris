@@ -314,7 +314,8 @@ final case class Chat
     */
   def assistant(reply: Reply): Chat = appended(Message(
     Role.Assistant,
-    Part.Text(reply.text) +: reply.toolCalls,
+    Option.when(reply.text.nonEmpty)(Part.Text(reply.text)).toList ++
+      reply.toolCalls,
   ))
 
   /**

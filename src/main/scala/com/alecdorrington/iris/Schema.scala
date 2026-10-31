@@ -264,11 +264,14 @@ object Schema extends DerivedSchemas:
     arrives = A.arrival,
   )
 
-  given [A : Schema as A]: Schema[List[A]] = listed(
-    Encoder.encodeList(using A.encoder),
-    Decoder.decodeList(using A.decoder),
-    applied("List", A),
-    A,
+  given [A : Schema as A]: Schema[List[A]] = listOf(A)
+
+  /** The schema of a list of values of another, as its given is. */
+  private[iris] def listOf[A](item: Schema[A]): Schema[List[A]] = listed(
+    Encoder.encodeList(using item.encoder),
+    Decoder.decodeList(using item.decoder),
+    applied("List", item),
+    item,
   )
 
   given [A : Schema as A]: Schema[Vector[A]] = listed(

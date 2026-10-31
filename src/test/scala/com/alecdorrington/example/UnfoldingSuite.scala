@@ -44,6 +44,8 @@ final case class Two
     second: Stream[IO, Int],
   )
 
+final case class Lookup(word: String)
+
 sealed trait Listing
 
 final case class Listed(items: Stream[IO, Int]) extends Listing
@@ -680,6 +682,513 @@ class UnfoldingSuite extends FunSuite:
           answer.reply.map(answer.value -> _.usage.outputTokens),
         )
         .map(read => assertEquals(read, (Some(Person("Ada", 36, None)), 2))),
+    )
+
+  /** A tool looking a word up, which says each word it was asked about. */
+  private def dictionary(asked: Ref[IO, List[String]]): RunnableTool[IO] =
+    RunnableTool.of[IO, Lookup]("look", "Looks up a word.")(lookup =>
+      asked.update(_ :+ lookup.word).as(s"${ lookup.word }, as looked up"),
+    )
+
+  private def emit(text: String, id: String = ""): Delta =
+    Delta.ToolCall(Part.ToolCall(
+      if id.isEmpty then s"emit-$text" else id,
+      "emit",
+      Json.obj("element" -> Json.obj("text" -> Json.fromString(text))),
+    ))
+
+  /** An emitted element that cannot be read, its text a number. */
+  private def garbled(id: String): Delta = Delta.ToolCall(Part.ToolCall(
+    id,
+    "emit",
+    Json.obj("element" -> Json.obj("text" -> Json.fromInt(5))),
+  ))
+
+  private def look(word: String, id: String = ""): Delta =
+    Delta.ToolCall(Part.ToolCall(
+      if id.isEmpty then s"look-$word" else id,
+      "look",
+      Json.obj("word" -> Json.fromString(word)),
+    ))
+
+  /** A client streaming a list as JSON, keeping the options it was sent. */
+  private def offering(offered: Ref[IO, List[ReplyOptions]]): LlmClient[IO] =
+    new LlmClient[IO]:
+      override protected def send
+        (chat: Chat, options: ReplyOptions)
+        : IO[Reply] = IO.raiseError(Exception("Not sent."))
+
+      override def count(chat: Chat, options: ReplyOptions): IO[Int] = IO
+        .raiseError(Exception("Not counted."))
+
+      override def stream
+        (chat: Chat, options: ReplyOptions)
+        : Stream[IO, Delta] = Stream.exec(offered.update(_ :+ options)) ++
+        written("[]")
+
+  /** Asks for a stream of words given through emit, the dictionary run. */
+  private def emitted
+    (llm: LlmClient[IO], attempts: Int = 3)
+    : IO[Answer[IO, Stream[IO, Word]]] = Ref
+    .of[IO, List[String]](Nil)
+    .flatMap(asked =>
+      llm.ask[Stream[IO, Word]](
+        Chat.of("Translate."),
+        attempts = attempts,
+        tools = List(dictionary(asked)),
+      ),
+    )
+
+  private val stop     = Stream(Delta.End(StopReason.Completed, Usage()))
+  private val toolStop = Stream(Delta.End(StopReason.ToolCall, Usage()))
+
+  test("a stream given through emit runs the tools asked for between elements"):
+    run(
+      for
+        asked       <- Ref.of[IO, List[String]](Nil)
+        gate        <- Deferred[IO, Unit]
+        (llm, sent) <- streamer(
+          Stream(emit("a"), emit("b"), look("c")) ++ toolStop,
+          // Not written until the first element has been read.
+          Stream.exec(gate.get) ++ Stream(emit("c")) ++ toolStop,
+          stop,
+        )
+        read <- llm
+          .ask[Stream[IO, Word]](
+            Chat.of("Translate."),
+            tools = List(dictionary(asked)),
+          )
+          .flatMap(answer =>
+            answer
+              .value
+              .get
+              .evalTap(_ => gate.complete(()))
+              .compile
+              .toList
+              .product(answer.reply.map(_.attempts)),
+          )
+        looked <- asked.get
+        chats  <- sent
+      yield
+        assertEquals(
+          read,
+          (List(Word("a"), Word("b"), Word("c")), 3),
+        )
+        assertEquals(looked, List("c"))
+        assertEquals(
+          chats(1).messages.last.toolResults.map(_.output),
+          List("ok", "ok", "c, as looked up"),
+        ),
+    )
+
+  test("an emitted element that cannot be read is told, and emitted again"):
+    run(
+      for
+        asked       <- Ref.of[IO, List[String]](Nil)
+        (llm, sent) <- streamer(
+          Stream(Delta.ToolCall(Part.ToolCall(
+            "emit-1",
+            "emit",
+            Json.obj("element" -> Json.obj("text" -> Json.fromInt(5))),
+          ))) ++ toolStop,
+          Stream(emit("a")) ++ toolStop,
+          stop,
+        )
+        words <- llm
+          .ask[Stream[IO, Word]](
+            Chat.of("Translate."),
+            tools = List(dictionary(asked)),
+          )
+          .flatMap(_.value.get.compile.toList)
+        chats <- sent
+      yield
+        assertEquals(words, List(Word("a")))
+        assert(
+          chats(1)
+            .messages
+            .last
+            .toolResults
+            .head
+            .output
+            .contains("could not be read"),
+          chats(1),
+        ),
+    )
+
+  test("a model writing its stream as JSON, not through emit, is read whole"):
+    run(
+      for
+        asked    <- Ref.of[IO, List[String]](Nil)
+        (llm, _) <- streamer(written("""[{"text":"a"},{"text":"b"}]"""))
+        words    <- llm
+          .ask[Stream[IO, Word]](
+            Chat.of("Translate."),
+            tools = List(dictionary(asked)),
+          )
+          .flatMap(_.value.get.compile.toList)
+      yield assertEquals(words, List(Word("a"), Word("b"))),
+    )
+
+  test("tools given are run for a type holding no stream before its answer"):
+    run(
+      for
+        asked       <- Ref.of[IO, List[String]](Nil)
+        (llm, sent) <- streamer(
+          Stream(look("Ada")) ++ toolStop,
+          written("""{"name":"Ada","age":36}"""),
+        )
+        person <- llm
+          .ask[Person](
+            Chat.of("Invent a person."),
+            tools = List(dictionary(asked)),
+          )
+          .flatMap(answer => answer.reply.map(answer.value -> _.attempts))
+        looked <- asked.get
+        chats  <- sent
+      yield
+        assertEquals(
+          person,
+          (Some(Person("Ada", 36, None)), 2),
+        )
+        assertEquals(looked, List("Ada"))
+        assertEquals(
+          chats(1).messages.last.toolResults.map(_.output),
+          List("Ada, as looked up"),
+        ),
+    )
+
+  test("a tool named emit is refused beside a stream given through emit"):
+    run(
+      Ref
+        .of[IO, List[String]](Nil)
+        .flatMap(asked =>
+          streamer().flatMap((llm, _) =>
+            llm
+              .ask[Stream[IO, Word]](
+                Chat.of("Translate."),
+                tools = List(
+                  dictionary(asked),
+                  RunnableTool[IO](
+                    Tool("emit", "Emits.", Json.obj()),
+                    _ => IO.pure("ok"),
+                  ),
+                ),
+              )
+              .attempt,
+          ),
+        )
+        .map:
+          case Left(error: IllegalArgumentException) => assert(
+              error.getMessage.contains("named `emit`"),
+              error,
+            )
+          case other => fail(s"Not refused: $other"),
+    )
+
+  test(
+    "a tool for the host to run is refused beside a stream given through emit",
+  ):
+    run(
+      Ref
+        .of[IO, List[String]](Nil)
+        .flatMap(asked =>
+          streamer().flatMap((llm, _) =>
+            llm
+              .ask[Stream[IO, Word]](
+                Chat.of("Translate."),
+                ReplyOptions(tools =
+                  List(Tool(
+                    "weather",
+                    "Says the weather.",
+                    Json
+                      .obj(),
+                  )),
+                ),
+                tools = List(dictionary(asked)),
+              )
+              .attempt,
+          ),
+        )
+        .map:
+          case Left(error: IllegalArgumentException) => assert(
+              error.getMessage.contains("host"),
+              error,
+            )
+          case other => fail(s"Not refused: $other"),
+    )
+
+  test("emit is offered beside the tools run, taking an element of the stream"):
+    run(
+      for
+        offered <- Ref.of[IO, List[ReplyOptions]](Nil)
+        words <- emitted(offering(offered)).flatMap(_.value.get.compile.toList)
+        options <- offered.get
+      yield
+        assertEquals(words, Nil)
+        assertEquals(
+          options.head.tools.map(_.name),
+          List("look", "emit"),
+        )
+        assertEquals(
+          options
+            .head
+            .tools
+            .last
+            .parameters
+            .hcursor
+            .downField("properties")
+            .downField("element")
+            .focus,
+          Some(Schema[Word].json),
+        ),
+    )
+
+  test("an element refused is emitted again before those after it are read"):
+    run(
+      for
+        (llm, sent) <- streamer(
+          Stream(emit("a"), garbled("emit-b"), emit("c")) ++ toolStop,
+          Stream(emit("b"), emit("c")) ++ toolStop,
+          stop,
+        )
+        words <- emitted(llm).flatMap(_.value.get.compile.toList)
+        chats <- sent
+      yield
+        assertEquals(
+          words,
+          List(Word("a"), Word("b"), Word("c")),
+        )
+        chats(1).messages.last.toolResults.map(_.output) match
+          case List(taken, refused, skipped) =>
+            assertEquals(taken, "ok")
+            assert(
+              refused.contains("could not be read"),
+              refused,
+            )
+            assert(
+              skipped.contains("emit again from that one"),
+              skipped,
+            )
+          case other => fail(s"Not told of each: $other"),
+    )
+
+  test("calls sharing an id are each answered, in order"):
+    run(
+      for
+        asked       <- Ref.of[IO, List[String]](Nil)
+        (llm, sent) <- streamer(
+          Stream(
+            emit("a", "emit"),
+            emit("b", "emit"),
+            look("c", "look"),
+            look("d", "look"),
+          ) ++ toolStop,
+          stop,
+        )
+        words <- llm
+          .ask[Stream[IO, Word]](
+            Chat.of("Translate."),
+            tools = List(dictionary(asked)),
+          )
+          .flatMap(_.value.get.compile.toList)
+        looked <- asked.get
+        chats  <- sent
+      yield
+        assertEquals(words, List(Word("a"), Word("b")))
+        assertEquals(looked, List("c", "d"))
+        assertEquals(
+          chats(1).messages.last.toolResults.map(_.output),
+          List(
+            "ok",
+            "ok",
+            "c, as looked up",
+            "d, as looked up",
+          ),
+        ),
+    )
+
+  test("an element emitted wrong as often as attempts allow fails the stream"):
+    run(
+      for
+        (llm, _) <- streamer(
+          Stream(garbled("emit-1")) ++ toolStop,
+          // Read, so that the next element has its own attempts.
+          Stream(emit("a")) ++ toolStop,
+          Stream(garbled("emit-2")) ++ toolStop,
+          Stream(garbled("emit-3")) ++ toolStop,
+        )
+        words <-
+          emitted(llm, attempts = 2).flatMap(_.value.get.attempt.compile.toList)
+      yield words match
+        case List(
+            Right(word),
+            Left(error: LlmError.Unreadable),
+          ) =>
+          assertEquals(word, Word("a"))
+          assertEquals(error.attempts, 4)
+          assert(
+            error.detail.contains("2 times in a row"),
+            error.detail,
+          )
+        case other => fail(s"Not failed: $other"),
+    )
+
+  test("a reply cut off after its elements were read fails the stream"):
+    run(
+      List(
+        StopReason.MaxTokens,
+        StopReason.Other("refusal"),
+      ).traverse_(stopped =>
+        for
+          (llm, _) <- streamer(Stream(emit("a"), Delta.End(stopped, Usage())))
+          read     <- emitted(llm).flatMap(answer =>
+            answer
+              .value
+              .get
+              .attempt
+              .compile
+              .toList
+              .product(answer.reply.attempt),
+          )
+        yield read match
+          case (
+              List(
+                Right(word),
+                Left(_: LlmError.Unreadable),
+              ),
+              Left(_: LlmError.Unreadable),
+            ) => assertEquals(word, Word("a"))
+          case other => fail(s"Not failed on $stopped: $other"),
+      ),
+    )
+
+  test("a tool failing as it runs fails the stream and reply, untold"):
+    val broken = RunnableTool[IO](
+      Tool("look", "Looks up a word.", Json.obj()),
+      _ => IO.raiseError(IllegalStateException("Broken.")),
+    )
+    run(
+      for
+        (llm, sent) <- streamer(Stream(emit("a"), look("b")) ++ toolStop)
+        read        <- llm
+          .ask[Stream[IO, Word]](
+            Chat.of("Translate."),
+            tools = List(broken),
+          )
+          .flatMap(answer =>
+            answer
+              .value
+              .get
+              .attempt
+              .compile
+              .toList
+              .product(answer.reply.attempt),
+          )
+        chats <- sent
+      yield
+        read match
+          case (
+              List(
+                Right(word),
+                Left(error: IllegalStateException),
+              ),
+              Left(same: IllegalStateException),
+            ) =>
+            assertEquals(word, Word("a"))
+            assertEquals(error.getMessage, "Broken.")
+            assertEquals(same.getMessage, "Broken.")
+          case other => fail(s"Not failed: $other")
+        assertEquals(chats.size, 1),
+    )
+
+  test("a cancelled answer stops a tool running between its elements"):
+    run(
+      for
+        started <- Deferred[IO, Unit]
+        stopped <- Deferred[IO, Unit]
+        waiting = RunnableTool[IO](
+          Tool("look", "Looks up a word.", Json.obj()),
+          _ =>
+            (started.complete(()) *> IO.never[String]).onCancel(
+              stopped.complete(()).void,
+            ),
+        )
+        (llm, _) <- streamer(Stream(emit("a"), look("b")) ++ toolStop)
+        answer   <- llm.ask[Stream[IO, Word]](
+          Chat.of("Translate."),
+          tools = List(waiting),
+        )
+        _     <- started.get
+        _     <- answer.cancel
+        _     <- stopped.get
+        words <- answer.value.get.attempt.compile.toList
+      yield words match
+        case List(
+            Right(word),
+            Left(error: IllegalStateException),
+          ) =>
+          assertEquals(word, Word("a"))
+          assert(
+            error.getMessage.contains("cancelled"),
+            error,
+          )
+        case other => fail(s"Not cancelled: $other"),
+    )
+
+  test("a reply giving no elements through emit, nor as JSON, is asked again"):
+    run(
+      for
+        (llm, sent) <- streamer(
+          written("Here are the words."),
+          written("""[{"text":"a"}]"""),
+        )
+        words <- emitted(llm).flatMap(_.value.get.compile.toList)
+        chats <- sent
+      yield
+        assertEquals(words, List(Word("a")))
+        assert(
+          chats(1).messages.last.text.contains("could not be read"),
+          chats(1),
+        ),
+    )
+
+  test("a reply saying nothing, through emit or else, fails the stream"):
+    run(
+      for
+        (llm, _) <- streamer(written(""))
+        read     <- emitted(llm).flatMap(answer =>
+          answer.value.get.compile.toList.attempt.product(answer.reply.attempt),
+        )
+      yield read match
+        case (Left(error: LlmError.Unreadable), Left(_: LlmError.Unreadable)) =>
+          assert(
+            error.detail.contains("said nothing"),
+            error.detail,
+          )
+        case other => fail(s"Not failed: $other"),
+    )
+
+  test("a stream given through emit is summed over every reply asked for"):
+    run(
+      for
+        (llm, _) <- streamer(
+          Stream(
+            emit("a"),
+            Delta.End(
+              StopReason.ToolCall,
+              Usage(uncachedTokens = 3),
+            ),
+          ),
+          Stream(Delta.End(
+            StopReason.Completed,
+            Usage(uncachedTokens = 7, visibleTokens = 2),
+          )),
+        )
+        reply <- emitted(llm).flatMap(_.reply)
+      yield assertEquals(
+        (reply.usage, reply.attempts),
+        (Usage(uncachedTokens = 10, visibleTokens = 2), 2),
+      ),
     )
 
   test("a stream is asked for as a list, and read from a whole reply as one"):
