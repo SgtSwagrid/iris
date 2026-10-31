@@ -2,8 +2,7 @@ package com.alecdorrington.iris
 
 /**
   * How a value of a type is read while its JSON is still arriving, as
-  * [[LlmClient.askStreamed]] reads it: once whole, as a stream, or from its
-  * members.
+  * [[LlmClient.ask]] reads it: once whole, as a stream, or from its members.
   */
 private[iris] enum Arrival:
 

@@ -9,9 +9,7 @@ import sttp.client4.{Backend, StreamBackend}
 
 /**
   * A provider-agnostic client for large language models, constructed with
-  * [[LlmClient.resource]] or [[LlmClient.fromEnv]]. It gives a reply whole,
-  * through [[ask]], or as it is written, through [[askStreamed]] and
-  * [[stream]].
+  * [[LlmClient.resource]] or [[LlmClient.fromEnv]].
   *
   * Clients are stateless: the whole conversation travels with each [[Chat]], so
   * a conversation continues by appending to the chat and sending it again.
@@ -24,7 +22,7 @@ trait LlmClient[F[_]]:
   /**
     * Asks the model for its next reply to a chat, with an answer of a type read
     * from it: the one way a caller has a reply, as [[count]] and [[warm]] have
-    * none to read. It needs `F` to raise errors, as every client's effect can.
+    * none to read, alike for every type.
     *
     * Every type is asked for alike, `String` as much as a case class of one's
     * own: the model is told the type's JSON Schema, closing the chat's last
@@ -33,9 +31,8 @@ trait LlmClient[F[_]]:
     * can be or the attempts run out, but not where asking again could not help:
     * a reply cut off at the token limit, which is never read, stopped for a
     * reason of the provider's, such as a refusal, or saying nothing. A reply
-    * asking for a tool is given with no answer. A chat in which the user says
-    * nothing fails with [[LlmError.Unsendable]] before any request. Every
-    * attempt goes through [[send]], so a wrapper overriding it sees each.
+    * asking for a tool is given with no value. A chat in which the user says
+    * nothing fails with [[LlmError.Unsendable]] before any request.
     *
     * {{{
     * case class Person(name: String, age: Int)
@@ -43,79 +40,44 @@ trait LlmClient[F[_]]:
     * client.ask[Person](Chat.of("Invent a person.")).map(_.value)
     * }}}
     *
-    * @tparam A
-    *   The type of the answer.
-    *
-    * @param chat
-    *   The conversation so far, including any system message.
-    *
-    * @param options
-    *   The per-request options, alike for every attempt; unset fields fall back
-    *   to the configuration or the provider's defaults.
-    *
-    * @param attempts
-    *   The most answers to ask for, three unless given, which must be at least
-    *   one, as the effect otherwise fails with an `IllegalArgumentException`.
-    *
-    * @return
-    *   An effect producing the last reply with its answer, alike for every
-    *   type: its text, why the model stopped, the usage of every attempt and
-    *   the tools it asked for. It fails with [[LlmError.Unreadable]] where the
-    *   last reply could not be read either.
-    */
-  final def ask[A : Schema]
-    (
-      chat: Chat,
-      options: ReplyOptions = ReplyOptions(),
-      attempts: Int = Question.attempts,
-    )
-    (using MonadThrow[F])
-    : F[Answer[A]] = Question.ask(send(_, options), chat, attempts)
-
-  /**
-    * Asks the model for its next reply to a chat, as [[ask]] does, but hands
-    * its answer over while the reply is still being written, through
-    * [[stream]]: as soon as everything in it but its streams is read. Each
-    * `fs2.Stream` within it, other than within a list or map, then delivers
-    * each of its elements as soon as the model has written it whole, while the
-    * reply goes on being read in a fiber of its own for as long as the resource
-    * is in use.
-    *
-    * The model is told the same JSON Schema as by [[ask]], a stream being an
-    * array, so its reply is no different; only its reading is. The model writes
-    * a value's fields in order, so a value holding a stream is handed over once
-    * each field it has begun is read or begun as a stream, each it has passed
-    * over is one that may be left out, and each it has yet to begin is a stream
-    * it must write, handed over to begin when it does: so a value's streams are
-    * delivered as they are written wherever every field after them is a stream,
-    * and any other is whole by the time the field after it begins. A field it
-    * writes after its value was handed over, or a stream it never begins, fails
-    * the answer. One read only once whole, as a stream within a list, holds its
-    * elements from the start. A type holding no stream is handed over once the
-    * reply ends, as [[ask]] gives it. Every stream may be read as often as
-    * wanted, each time from its first element. Its JSON is read from the
-    * reply's start, or from within a code fence it opens with, and reading ends
-    * with it: what follows, which [[ask]] would refuse, is not read.
+    * The answer is given as soon as everything in its value but its streams is
+    * read. Each `fs2.Stream` within the type, other than within a list or map,
+    * which are read whole, then delivers each of its elements as soon as the
+    * model has written it whole, while the reply goes on being read to its end
+    * in a fiber of its own; [[Answer.reply]] gives the reply once it ends. Only
+    * streams are ever partial: every other value is read whole first. A type
+    * holding no stream is asked with one request, through [[send]], and given
+    * once its reply ends; any other, through [[stream]], each attempt going
+    * through the one or the other, so a wrapper overriding both sees each.
     *
     * {{{
     * case class Page(title: String, words: Stream[IO, Word])
     *
-    * client.askStreamed[Page](chat).use(answering =>
-    *   answering.value.traverse_(_.words.evalMap(show).compile.drain),
+    * client.ask[Page](chat).flatMap(answer =>
+    *   answer.value.traverse_(_.words.evalMap(show).compile.drain),
     * )
     * }}}
     *
-    * A reply that cannot be read before its answer is handed over is followed
-    * by why, and the model asked again, as [[ask]] asks, as is a reply that
-    * does not begin with its JSON, which is read only once whole. Once handed
-    * over, an answer is never asked for again: whatever fails afterwards fails
+    * The model is told the same JSON Schema whether its reply streams or not, a
+    * stream being an array, so its reply is no different; only its reading is.
+    * The model writes a value's fields in order, so a value holding a stream is
+    * given once each field it has begun is read or begun as a stream, each it
+    * has passed over is one that may be left out, and each it has yet to begin
+    * is a stream it must write, given to begin when it does: so a value's
+    * streams are delivered as they are written wherever every field after them
+    * is a stream, and any other is whole by the time the field after it begins.
+    * A field it writes after its value was given, or a stream it never begins,
+    * fails the reply. Every stream may be read as often as wanted, each time
+    * from its first element. A streamed reply's JSON is read from its start, or
+    * from within a code fence it opens with, and reading ends with it: what
+    * follows, which a reply read whole would be refused for, is not read; one
+    * that does not begin with its JSON is read only once whole. Once an answer
+    * is given, it is never asked for again: whatever fails afterwards fails
     * each of its streams not yet ended, after the elements they have delivered,
-    * and [[Answering.answer]]. A reply that cannot be read to its end, as one
-    * cut off at the token limit, fails with [[LlmError.Unreadable]]; a request
-    * failing partway, as one timing out, fails as it does; and a release of the
-    * resource before the reply ends fails with an `IllegalStateException`. Tool
-    * calls are not streamed, so no tool may be offered. A client over a backend
-    * that cannot stream fails with [[LlmError.Unsupported]].
+    * and [[Answer.reply]], with [[LlmError.Unreadable]] where the reply cannot
+    * be read to its end, as one cut off at the token limit, and as the request
+    * fails where that fails partway, as one timing out. A streamed reply is
+    * read to its end even where nothing reads its streams.
     *
     * @tparam A
     *   The type of the answer, whose streams are of this client's effect.
@@ -125,34 +87,34 @@ trait LlmClient[F[_]]:
     *
     * @param options
     *   The per-request options, alike for every attempt; unset fields fall back
-    *   to the configuration or the provider's defaults. They may offer no tool,
-    *   as the resource otherwise fails with an `IllegalArgumentException`.
+    *   to the configuration or the provider's defaults.
     *
     * @param attempts
-    *   The most answers to ask for before one is handed over, three unless
-    *   given, which must be at least one, as the resource otherwise fails with
-    *   an `IllegalArgumentException`.
+    *   The most replies to ask for before an answer is given, three unless
+    *   given, which must be at least one, as the effect otherwise fails with an
+    *   `IllegalArgumentException`.
     *
     * @return
-    *   A resource holding the answer as soon as it is handed over, which stops
-    *   reading the reply once released, though the connection may stay open
-    *   until the next part of the reply arrives. It fails as [[ask]] fails
-    *   where no answer could be handed over.
+    *   An effect producing the answer, as soon as it can be given. It fails
+    *   with [[LlmError.Unreadable]] where the last reply could not be read
+    *   either.
     */
-  final def askStreamed[A : Schema]
+  final def ask[A : Schema]
     (
       chat: Chat,
       options: ReplyOptions = ReplyOptions(),
       attempts: Int = Question.attempts,
     )
     (using Async[F])
-    : Resource[F, Answering[F, A]] =
-    Unfolding.ask(stream, chat, options, attempts)
+    : F[Answer[F, A]] =
+    if Schema[A].gradual then Unfolding.ask(stream, chat, options, attempts)
+    else Question.ask(send(_, options), chat, attempts)
 
   /**
-    * Sends a chat to the model for its next reply: the one request every other
-    * is made through, which a client implements and a wrapper overrides,
-    * passing it on with `super.send`. Callers ask through [[ask]].
+    * Sends a chat to the model for its next reply, whole: the request every ask
+    * for a type holding no stream is made through, which a client implements
+    * and a wrapper overrides, passing it on with `super.send`. Callers ask
+    * through [[ask]].
     *
     * @param chat
     *   The conversation so far, including any system message.
@@ -164,11 +126,13 @@ trait LlmClient[F[_]]:
     * @return
     *   An effect producing the model's reply.
     */
-  protected def send(chat: Chat, options: ReplyOptions): F[Answer[Nothing]]
+  protected def send(chat: Chat, options: ReplyOptions): F[Reply]
 
   /**
-    * Sends a chat to the model, streaming its reply's text as it arrives: the
-    * request every [[askStreamed]] is made through.
+    * Sends a chat to the model, streaming its reply as it arrives: the request
+    * every ask for a type holding a stream is made through. Unless a client
+    * says otherwise, its reply is sent through [[send]] and arrives at once,
+    * whole, as a client's over a backend that cannot stream does.
     *
     * @param chat
     *   The conversation so far, including any system message.
@@ -178,17 +142,24 @@ trait LlmClient[F[_]]:
     *   the provider's defaults.
     *
     * @return
-    *   A stream of the reply's text, ending with a [[Delta.End]]. Nothing is
-    *   sent until the stream runs, and failures are raised in it as
-    *   [[LlmError]]s, as [[LlmError.Unsupported]] where the client's backend
-    *   cannot stream.
+    *   A stream of the reply's text and tool calls, ending with a
+    *   [[Delta.End]]. Nothing is sent until the stream runs, and failures are
+    *   raised in it as [[LlmError]]s.
     */
   def stream
     (
       chat: Chat,
       options: ReplyOptions = ReplyOptions(),
     )
-    : Stream[F, Delta]
+    : Stream[F, Delta] = Stream
+    .eval(send(chat, options))
+    .flatMap(reply =>
+      Stream.emits(List.concat(
+        Option.when(reply.text.nonEmpty)(Delta.Text(reply.text)),
+        reply.toolCalls.map(Delta.ToolCall(_)),
+        List(Delta.End(reply.stopReason, reply.usage)),
+      )),
+    )
 
   /**
     * Counts the input tokens a chat would cost, as the provider counts them.
@@ -234,15 +205,16 @@ trait LlmClient[F[_]]:
       chat: Chat,
       options: ReplyOptions = ReplyOptions(),
     )
-    : F[Answer[Nothing]] = send(
+    : F[Reply] = send(
     chat.cacheable,
     options.copy(maxTokens = Some(1)),
   )
 
   /**
     * Runs every request of this client, [[warm]] included, through a
-    * transformation, such as a limit on requests in flight, and each step of a
-    * [[stream]] alike.
+    * transformation, and each step of a [[stream]] alike: one that holds a
+    * stream as a whole, such as a limit on requests in flight, belongs in an
+    * override of `stream` in [[LlmClient.Forwarding]] instead.
     *
     * @tparam G
     *   The effect the transformed client runs in.
@@ -256,14 +228,13 @@ trait LlmClient[F[_]]:
   final def mapK[G[_]](transform: F ~> G): LlmClient[G] =
     val client = this
     new LlmClient[G]:
-      override protected def send
-        (chat: Chat, options: ReplyOptions)
-        : G[Answer[Nothing]] = transform(client.send(chat, options))
+      override protected def send(chat: Chat, options: ReplyOptions): G[Reply] =
+        transform(client.send(chat, options))
 
       override def count(chat: Chat, options: ReplyOptions): G[Int] =
         transform(client.count(chat, options))
 
-      override def warm(chat: Chat, options: ReplyOptions): G[Answer[Nothing]] =
+      override def warm(chat: Chat, options: ReplyOptions): G[Reply] =
         transform(client.warm(chat, options))
 
       override def stream(chat: Chat, options: ReplyOptions): Stream[G, Delta] =
@@ -275,11 +246,10 @@ object LlmClient:
     * A client passing every request on to another, for a wrapper to override
     * only what it changes. It passes [[LlmClient.warm]] on too, which the
     * default would send through [[LlmClient.send]] instead. A wrapper seeing
-    * every request overrides all four: `send`, which every attempt of an `ask`
-    * goes through, [[LlmClient.stream]], which every attempt of an
-    * `askStreamed` goes through, and [[LlmClient.count]] and
-    * [[LlmClient.warm]], which go their own ways, each passing it on through
-    * `super`.
+    * every request overrides all four: `send` and [[LlmClient.stream]], which
+    * every attempt of an `ask` goes through, one or the other by the type asked
+    * for, and [[LlmClient.count]] and [[LlmClient.warm]], which go their own
+    * ways, each passing it on through `super`.
     *
     * @tparam F
     *   The effect type.
@@ -291,23 +261,21 @@ object LlmClient:
     (protected val underlying: LlmClient[F])
     extends LlmClient[F]:
 
-    override protected def send
-      (chat: Chat, options: ReplyOptions)
-      : F[Answer[Nothing]] = underlying.send(chat, options)
+    override protected def send(chat: Chat, options: ReplyOptions): F[Reply] =
+      underlying.send(chat, options)
 
     override def count(chat: Chat, options: ReplyOptions): F[Int] = underlying
       .count(chat, options)
 
-    override def warm(chat: Chat, options: ReplyOptions): F[Answer[Nothing]] =
-      underlying.warm(chat, options)
+    override def warm(chat: Chat, options: ReplyOptions): F[Reply] = underlying
+      .warm(chat, options)
 
     override def stream(chat: Chat, options: ReplyOptions): Stream[F, Delta] =
       underlying.stream(chat, options)
 
   /**
-    * Creates a client over an existing backend, which cannot stream: its
-    * [[LlmClient.stream]] and [[LlmClient.askStreamed]] fail with
-    * [[LlmError.Unsupported]].
+    * Creates a client over an existing backend, which cannot stream: a reply
+    * that would stream arrives whole instead, once it ends.
     *
     * @tparam F
     *   The effect type.

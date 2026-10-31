@@ -60,9 +60,11 @@ listed constant for a name Iris lists. A model's `name` is its provider's and it
 
 Every reply is asked for with `ask`, whose type says what the answer is: `String`, or any type of your
 own as [below](#typed-answers). Every type is asked for alike, and every ask gives the same: an
-[`Answer`](src/main/scala/com/alecdorrington/iris/Answer.scala) holding its `value`, with the reply's `text`, why the model stopped
+[`Answer`](src/main/scala/com/alecdorrington/iris/Answer.scala) holding its `value`, and its `reply`, an effect giving the
+[`Reply`](src/main/scala/com/alecdorrington/iris/Answer.scala) it was read from: its `text`, why the model stopped
 (`stopReason`), the token `usage` of every attempt, the `toolCalls` it made, and how many `attempts` it
-took. A single-turn prompt is a chat of one message, `Chat.of`:
+took. The reply is an effect as an answer may be given before its reply ends (see [Streaming](#streaming));
+for most types it has ended already. A single-turn prompt is a chat of one message, `Chat.of`:
 
 ```scala
 import com.alecdorrington.iris.{Chat, LlmClient}
@@ -85,7 +87,8 @@ import com.alecdorrington.iris.Chat
 val chat = Chat().withSystem("You are terse.").user("Name a colour.")
 for
   first  <- client.ask[String](chat)
-  second <- client.ask[String](chat.assistant(first).user("And another."))
+  reply  <- first.reply
+  second <- client.ask[String](chat.assistant(reply).user("And another."))
 yield second.value
 ```
 
@@ -102,7 +105,7 @@ enum Mood:
 
 case class Review(summary: String, mood: Mood, score: Int, quotes: List[String] = Nil)
 
-client.ask[Review](Chat.of(s"Review this essay: $essay")) // IO[Answer[Review]]
+client.ask[Review](Chat.of(s"Review this essay: $essay")) // IO[Answer[IO, Review]]
 ```
 
 `derives Schema` derives a type's schema once, beside it, rather than wherever it is needed, and where a
@@ -132,7 +135,7 @@ name, as `{"Circle":{"radius":1.5}}`, as an `Either` holds its value under `Left
 `Int | String`, holds its value under the name of its alternative, as `{"Int":1}`. A value is written as the
 alternative its class tells, so `List[Int] | List[String]` has none. A literal type is its value, and a union
 of literal types alone, as `"low" | "high"`, one of them. A tuple is an array of its elements, and an
-fs2 `Stream` an array of its values, which `askStreamed` delivers as they are written (see
+fs2 `Stream` an array of its values, which `ask` delivers as they are written (see
 [Streaming](#streaming)). A recursive type, such as a tree, refers to itself by name, each type told
 apart by its full name and type arguments. Any other type converts to and from one that has a schema, and
 may refuse what it is given, as the model is then told. Say what it keeps to with `described`, so that the
@@ -184,7 +187,7 @@ client.ask[Review](Chat.of("Review this draft.", draft, Part.CacheBreakpoint, "B
 client.ask[Review](chat.assistant(review).user("Now make it kinder."))
 ```
 
-A value holding an fs2 `Stream`, as one `askStreamed` gave, has a schema but cannot be said, as its stream
+A value holding an fs2 `Stream`, as an answer may, has a schema but cannot be said, as its stream
 would have to be run: saying it throws. Say a list of the stream's elements instead.
 
 A type of your own is said as a given `Content` of its own says it, ahead of any `Schema` or `Encoder`, as a
@@ -203,7 +206,7 @@ provider's own structured output, so it works alike everywhere, and a cached pre
 
 Each request accepts [`ReplyOptions`](src/main/scala/com/alecdorrington/iris/ReplyOptions.scala)
 (token limit, temperature, top-p, stop sequences, effort), and each
-[`Answer`](src/main/scala/com/alecdorrington/iris/Answer.scala) carries the reply text along with a
+[`Reply`](src/main/scala/com/alecdorrington/iris/Answer.scala) carries the reply text along with a
 normalised `StopReason` and its token `Usage`, which adds up with `+`. Its counts are alike for every
 provider, and none includes another, so that each can be priced alone: tokens read afresh, read from
 the cache and written to it, audio read afresh and from the cache, and the reply's visible and
@@ -267,8 +270,8 @@ or sent as something it is not:
 ### Streaming
 
 Where a reader is waiting, a client delivers the reply as it is written, with `stream`. A client
-made by `resource` or `fromEnv` can always stream; one made over a backend of your own streams where
-that backend is an sttp `StreamBackend` for fs2, and otherwise fails with `LlmError.Unsupported`.
+made by `resource` or `fromEnv` streams it as it arrives; one made over a backend of your own does
+where that backend is an sttp `StreamBackend` for fs2, and otherwise delivers it whole, once it ends.
 
 ```scala
 import com.alecdorrington.iris.{Delta, LlmClient}
@@ -276,6 +279,7 @@ import com.alecdorrington.iris.{Delta, LlmClient}
 LlmClient.fromEnv[IO].use {
   case Some(client) => client.stream(Chat.of("Tell me a story.")).evalMap {
     case Delta.Text(text)      => IO.print(text)
+    case Delta.ToolCall(call)  => IO.println(s"\n(asks for ${call.tool})")
     case Delta.End(reason, _)  => IO.println(s"\n($reason)")
   }.compile.drain
   case None => IO.unit
@@ -283,60 +287,58 @@ LlmClient.fromEnv[IO].use {
 ```
 
 Nothing is sent until the stream is run, and a failure reaches it as an `LlmError` as it
-would anywhere else. `Delta.End` carries the reply's token counts.
+would anywhere else. A tool call arrives whole, once its arguments have, and `Delta.End` carries the
+reply's token counts.
 
-`askStreamed` asks for any type, as `ask` does, but hands the answer over while the model is
-still writing it: as soon as everything in it but its streams is read. Any
-[fs2 `Stream`](https://fs2.io) within the type, other than within a list or map, then delivers each
-of its elements as soon as the model has written it whole, which suits showing a long answer a piece
-at a time. Only streams are ever partial: every other value is read whole before it is handed over.
+An answer is streamed too, wherever its type says so: any [fs2 `Stream`](https://fs2.io) within it,
+other than within a list or map, which are read whole. `ask` then gives the answer as soon as
+everything in it but its streams is read, and each stream delivers each of its elements as soon as the
+model has written it whole, which suits showing a long answer a piece at a time. Only streams are ever
+partial: every other value is read whole before the answer is given. A type holding no stream is asked
+with one request, and answered once its reply ends.
 
 ```scala
-import com.alecdorrington.iris.Answering
 import fs2.Stream
 
 case class Word(text: String, translation: String)
 case class Page(title: String, words: Stream[IO, Word])
 
-client.askStreamed[Page](Chat.of(s"Translate: $text")).use { answering =>
-  answering.value.traverse_(page => page.words.evalMap(show).compile.drain) *>
-    answering.answer.map(_.usage)
+client.ask[Page](Chat.of(s"Translate: $text")).flatMap { answer =>
+  answer.value.traverse_(page => page.words.evalMap(show).compile.drain) *>
+    answer.reply.map(_.usage)
 }
 ```
 
 The model is told the same JSON Schema either way, a stream being an array, so its reply is plain
-JSON; only its reading differs. The answer is an
-[`Answering`](src/main/scala/com/alecdorrington/iris/Answering.scala): its `value`, and the whole
-`answer` once the reply ends. Read it within `use`, as the reply goes on being read in a fiber of its
-own only until the resource is released. A stream may be read as often as you like, each time from its
-first element, and streams may be nested, as a stream of pages each with a stream of words. A type
-holding no stream is handed over once its reply ends, exactly as a client's `ask` gives it.
+JSON; only its reading differs. The reply goes on being read in a fiber of its own once the answer is
+given, to its end, even where nothing reads its streams: cancelling the ask stops it only before then.
+A stream may be read as often as you like, each time from its first element, keeping every element as
+long as it is held, and streams may be nested, as a stream of pages each with a stream of words.
+`ask` needs `Async`, to read in a fiber.
 
-The model writes a value's fields in order, so a value holding a stream is handed over as soon as each
-field it has begun is read or begun as a stream, each it has passed over may be left out (an optional
-field is taken to be once a later one begins), and each it has yet to begin is a stream, handed over to
-begin when it does. So `Lesson(title: String, words: Stream[IO, Word], examples: Stream[IO, String])`
-is handed over as `words` begins, and both stream as they are written. A field that is not a stream
-holds back the value it is in until the reply has written it, and with it any stream before it, which
-is then whole: put streams last. A field written after its value was handed over, as one written out of
-order, or a stream that never begins, fails the answer.
+The model writes a value's fields in order, so a value holding a stream is given as soon as a stream
+in it has begun, each field it has begun is read or begun as a stream, each it has passed over may be
+left out (an optional field is taken to be once a later one begins), and each it has yet to begin is a
+required stream, given to begin when it does. So `Lesson(title: String, words: Stream[IO, Word],
+examples: Stream[IO, String])` is given as `words` begins, and both stream as they are written. Any
+other field after a stream, an optional one included, holds back the value it is in until the reply
+has written it, and with it any stream before it, which is then whole: put streams last. A field
+written after its value was given, as one written out of order, or a stream that never begins, fails
+the reply.
 
-Its JSON is read from the reply's start, or from within a code fence the reply opens with, and reading
-ends with it; what follows, which a client's `ask` would refuse, is not read. Until the answer is
-handed over, a reply that cannot be read is answered and asked again, as a client asks; a reply that
+A streamed reply's JSON is read from its start, or from within a code fence it opens with, and reading
+ends with it; what follows, which a reply read whole would be refused for, is not read. Until the
+answer is given, a reply that cannot be read is answered and asked again, as for any type; a reply that
 does not begin with its JSON, or a code fence holding it, is read only once whole. Once the answer is
-handed over it is never asked for again: what
-fails afterwards fails each of its streams not yet ended, after the elements they delivered already,
-and `answer`. A reply that cannot be read to its end, as one cut off at the token limit or with an
-element that cannot be read, fails with `LlmError.Unreadable`; a request failing partway, as on a
-timeout, fails as it would anywhere; and releasing the resource before the reply ends fails them with
-an `IllegalStateException`. A stream cannot be said to the model as JSON, as it would have to be run;
-say a list of its elements. Tool calls are not streamed, so a streamed ask offering tools fails with
-an `IllegalArgumentException` before any request.
+given it is never asked for again: what fails afterwards fails each of its streams not yet ended, after
+the elements they delivered already, and `reply`. A reply that cannot be read to its end, as one cut
+off at the token limit or with an element that cannot be read, fails with `LlmError.Unreadable`, and a
+request failing partway, as on a timeout, fails as it would anywhere. A stream cannot be said to the
+model as JSON, as it would have to be run; say a list of its elements.
 
 ### Tools
 
-Offer the model tools it may ask to have run, and it will say so in `Answer.toolCalls`, with no `value`.
+Offer the model tools it may ask to have run, and it will say so in its reply's `toolCalls`, with no `value`.
 Iris never runs a tool itself; what one does, and whether it is allowed to, is yours to decide.
 
 ```scala
@@ -346,14 +348,16 @@ val weather = Tool("weather", "Looks up the weather.", schema)
 
 for
   asked  <- client.ask[String](chat, ReplyOptions(tools = List(weather)))
-  result  = Part.ToolResult(asked.toolCalls.head.id, "weather", lookUp(asked.toolCalls.head))
-  answer <- client.ask[String](chat.assistant(asked).user(result), ReplyOptions(tools = List(weather)))
+  reply  <- asked.reply
+  call    = reply.toolCalls.head
+  result  = Part.ToolResult(call.id, "weather", lookUp(call))
+  answer <- client.ask[String](chat.assistant(reply).user(result), ReplyOptions(tools = List(weather)))
 yield answer.value
 ```
 
 A reply which asked for a tool has `StopReason.ToolCall`, on every provider, and so does a
 streamed reply's `Delta.End` — Gemini reports no such reason of its own, so the asking is what
-says so.
+says so. A streamed answer may ask for tools too, its calls in its reply's `toolCalls` once it ends.
 
 ### Counting tokens
 
@@ -406,7 +410,8 @@ configured timeout (`LlmConfig.timeout`), such as one whose reply took too long 
 partway. A client made by `resource` or `fromEnv` gives each reply that long whole, from sending the
 request to reading the reply; a stream gives each next part of its reply that long. A client over a
 backend of your own times requests out as that backend does.
-`Unreadable` is for an `ask` whose every reply was not the answer asked for. Response
+`Unreadable` is for an `ask` whose every reply was not the answer asked for, or whose reply, once
+its answer was given, could not be read to its end. Response
 bodies may contain provider detail you would rather not show to your own users, so consider logging
 them rather than passing them on.
 
@@ -415,7 +420,8 @@ them rather than passing them on.
 Iris does no throttling, retrying or logging of its own, so that each host can wrap a client in
 exactly the policy it wants. `ask` asks again only for an answer it could not read, and never after a
 request that failed. `mapK` runs every request through one transformation, as a limit on
-requests in flight does:
+requests in flight does, and each step of a stream alike, so a policy holding a stream as a whole goes
+in a wrapper's `stream` instead:
 
 ```scala
 Semaphore[IO](16).map(permits => client.mapK(permits.permit.surroundK))
@@ -423,16 +429,21 @@ Semaphore[IO](16).map(permits => client.mapK(permits.permit.surroundK))
 
 A wrapper that treats requests differently extends `LlmClient.Forwarding`, which passes every
 request on, and overrides only what it changes. Each attempt of an `ask` is made through the protected
-`send`; `count` and `warm` go their own ways. So a wrapper seeing every request overrides all three,
-passing each on through `super`:
+`send`, or through `stream` for a type holding a stream; `count` and `warm` go their own ways. So a
+wrapper seeing every request overrides all four, passing each on through `super`:
 
 ```scala
 def logged(client: LlmClient[IO]): LlmClient[IO] = new LlmClient.Forwarding(client):
-  override protected def send(chat: Chat, options: ReplyOptions): IO[Answer[Nothing]] =
+  override protected def send(chat: Chat, options: ReplyOptions): IO[Reply] =
     super.send(chat, options).flatTap(reply => IO.println(reply.usage))
+  override def stream(chat: Chat, options: ReplyOptions): Stream[IO, Delta] =
+    super.stream(chat, options).evalTap {
+      case Delta.End(_, usage) => IO.println(usage)
+      case _                   => IO.unit
+    }
   override def count(chat: Chat, options: ReplyOptions): IO[Int] =
     super.count(chat, options).flatTap(tokens => IO.println(tokens))
-  override def warm(chat: Chat, options: ReplyOptions): IO[Answer[Nothing]] =
+  override def warm(chat: Chat, options: ReplyOptions): IO[Reply] =
     super.warm(chat, options).flatTap(reply => IO.println(reply.usage))
 ```
 
@@ -441,7 +452,14 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
 
 ### Upgrading from 0.4
 
-- `Answer.usage` and `Delta.End.usage` are a `Usage`, never `None`: a count the provider did not
+- `ask` gives an `Answer[F, A]`: its `value` as before, and its `reply`, an effect giving the reply's
+  `text`, `stopReason`, `usage`, `toolCalls` and `attempts`. Read `answer.reply.map(_.usage)` where you read
+  `answer.usage`, and append `reply` to a chat, where you appended the answer.
+- A reply as the provider gave it, an `Answer[Nothing]`, is a `Reply`: `send` and `warm` give one, a
+  chat's `assistant` takes one, and `LlmError.Unreadable` keeps them, as `replies`.
+- `ask` needs `Async`, as it reads a streamed reply in a fiber of its own, so a client in `SyncIO` can
+  no longer ask.
+- `Reply.usage` and `Delta.End.usage` are a `Usage`, never `None`: a count the provider did not
   report is `0`, and an ask's usage is that of every attempt, summed. Read `usage` where you matched
   `Some(usage)`.
 - `Usage` is made of seven counts, named as you make one (`Usage(uncachedTokens = 10, visibleTokens = 2)`).
@@ -458,9 +476,11 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
 - `LlmStreamer` is gone, as every client streams: `LlmStreamer.resource`, `fromEnv` and `apply` are
   `LlmClient.resource`, `fromEnv` and `apply`, and `streamer.stream(chat)` is `client.stream(chat)`.
   `LlmClient(config, backend)` over an sttp `StreamBackend` for fs2 streams too; over any other backend,
-  `stream` and `askStreamed` fail with `LlmError.Unsupported`.
-- A class implementing `LlmClient` itself, rather than through `LlmClient.Forwarding`, implements
-  `stream` too, and a wrapper that sees every request overrides it as it does `send`.
+  a stream delivers its reply whole, once it ends.
+- `Delta` has a new case, `ToolCall`, which a match over every case must take.
+- A class implementing `LlmClient` itself, rather than through `LlmClient.Forwarding`, may implement
+  `stream`, which unless it does delivers each reply whole, through `send`. A wrapper that sees every
+  request overrides it as it does `send`.
 
 ### Upgrading from 0.3
 

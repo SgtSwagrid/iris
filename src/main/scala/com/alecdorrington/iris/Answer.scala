@@ -1,42 +1,57 @@
 package com.alecdorrington.iris
 
 /**
-  * The model's answer to a [[Chat]], with its value read from what the model
-  * wrote: everything [[LlmClient.ask]] gives, alike for every type. Its text,
-  * stop reason and tool calls are those of the last reply asked for. A reply as
-  * the provider gave it, before any value is read, as `send` and `warm` give it
-  * and [[LlmError.Unreadable]] keeps it, is an `Answer[Nothing]`, whose usage
-  * is its own, with no value and one attempt.
+  * The model's answer to a [[Chat]], as [[LlmClient.ask]] gives it, alike for
+  * every type: its value, as soon as everything in it but its streams is read,
+  * and the reply it was read from, once that reply ends.
+  *
+  * @tparam F
+  *   The effect type.
   *
   * @tparam A
   *   The type of the value.
   *
+  * @param value
+  *   The value read from the last reply, or `None` where the model asked for
+  *   tools instead. Each `fs2.Stream` within it delivers its elements as the
+  *   model writes them, each time it is read, from the first.
+  *
+  * @param reply
+  *   The last reply, once it ends, with the usage of every reply asked for.
+  *   Where the reply cannot be read to its end after its value was given, it
+  *   fails as the value's streams not yet ended do: with
+  *   [[LlmError.Unreadable]] where what the model wrote cannot be read, and as
+  *   the request fails where that fails partway.
+  */
+final case class Answer[F[_], +A](value: Option[A], reply: F[Reply])
+
+/**
+  * A reply of the model's as the provider gave it, before any value is read
+  * from it: what [[LlmClient.ask]] gives of the reply its answer was read from,
+  * what `send` and `warm` give, and what [[LlmError.Unreadable]] keeps.
+  *
   * @param text
-  *   The text of the last reply, as the model wrote it.
+  *   The text of the reply, as the model wrote it.
   *
   * @param stopReason
-  *   The reason the model stopped the last reply.
+  *   The reason the model stopped.
   *
   * @param usage
-  *   The token counts of every reply asked for, together.
+  *   The token counts of the reply, or of every reply an answer was asked for
+  *   in, together.
   *
   * @param toolCalls
   *   The tools the model asks to have run before it goes on, if any.
   *
-  * @param value
-  *   The value read from the last reply, or `None` where the model asked for
-  *   tools instead. A reply from which no value can be read fails the ask.
-  *
   * @param attempts
-  *   The number of replies asked for, this one included.
+  *   The number of replies an answer was asked for in, this one included.
   */
-final case class Answer[+A]
+final case class Reply
   (
     text: String,
     stopReason: StopReason = StopReason.Completed,
     usage: Usage = Usage(),
     toolCalls: List[Part.ToolCall] = List.empty,
-    value: Option[A] = None,
     attempts: Int = 1,
   )
 

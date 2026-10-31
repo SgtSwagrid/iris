@@ -2,7 +2,7 @@ package com.alecdorrington.iris
 
 import cats.effect.{Ref, SyncIO}
 import com.alecdorrington.example.{Colour, Person}
-import com.alecdorrington.iris.Fixtures.{config, json}
+import com.alecdorrington.iris.Fixtures.{askWhole, config, json}
 import io.circe.Json
 import io.circe.syntax.*
 import munit.FunSuite
@@ -85,8 +85,8 @@ class AskSuite extends FunSuite:
       attempts: Int = Question.attempts,
     )
     : Either[Throwable, Option[A]] = client
-    .ask[A](prompt, attempts = attempts)
-    .map(_.value)
+    .askWhole[A](prompt, attempts = attempts)
+    .map(_._1)
     .attempt
     .unsafeRunSync()
 
@@ -116,7 +116,11 @@ class AskSuite extends FunSuite:
       else said("Not told."),
     )
     assertEquals(
-      told.ask[Person](chat, attempts = 1).map(_.value).attempt.unsafeRunSync(),
+      told
+        .askWhole[Person](chat, attempts = 1)
+        .map(_._1)
+        .attempt
+        .unsafeRunSync(),
       Right(Some(ada)),
     )
 
@@ -276,27 +280,27 @@ class AskSuite extends FunSuite:
     List(
       (
         "a person asked of anthropic",
-        client(_ => calling).ask[Person](prompt),
+        client(_ => calling).askWhole[Person](prompt),
         "Let me look.",
         StopReason.ToolCall,
       ),
       (
         "text asked of anthropic",
-        client(_ => calling).ask[String](prompt),
+        client(_ => calling).askWhole[String](prompt),
         "Let me look.",
         StopReason.ToolCall,
       ),
       (
         "a person asked of openai",
-        answering(LlmModel.Gpt5, forced).ask[Person](prompt),
+        answering(LlmModel.Gpt5, forced).askWhole[Person](prompt),
         "",
         StopReason.Completed,
       ),
     ).foreach: (row, asking, text, stopReason) =>
       asking.attempt.unsafeRunSync() match
-        case Right(reply) => assertEquals(
+        case Right((value, reply)) => assertEquals(
             (
-              reply.value,
+              value,
               reply.text,
               reply.stopReason,
               reply.toolCalls.map(_.tool),
@@ -353,8 +357,8 @@ class AskSuite extends FunSuite:
     )
     assertEquals(
       told
-        .ask[Person](Chat.of(ada), ReplyOptions())
-        .map(_.value)
+        .askWhole[Person](Chat.of(ada), ReplyOptions())
+        .map(_._1)
         .attempt
         .unsafeRunSync(),
       Right(Some(ada)),
@@ -377,14 +381,15 @@ class AskSuite extends FunSuite:
       else said("Ada, 36.", cost = Some((10, 2))),
     )
     assertEquals(
-      corrected.ask[Person](prompt).attempt.unsafeRunSync(),
-      Right(Answer(
-        text = adaJson,
-        stopReason = StopReason.Completed,
-        usage = Usage(uncachedTokens = 30, visibleTokens = 7),
-        value = Some(ada),
-        attempts = 2,
-      )),
+      corrected.askWhole[Person](prompt).attempt.unsafeRunSync(),
+      Right(
+        Some(ada) -> Reply(
+          text = adaJson,
+          stopReason = StopReason.Completed,
+          usage = Usage(uncachedTokens = 30, visibleTokens = 7),
+          attempts = 2,
+        ),
+      ),
     )
     // A tool asked for on a later attempt is given with every attempt's usage.
     val withUsage = """{"content":[{"type":"tool_use","id":"call_1",
@@ -396,8 +401,8 @@ class AskSuite extends FunSuite:
     )
     assertEquals(
       later
-        .ask[Person](prompt)
-        .map(reply => (reply.value, reply.attempts, reply.usage))
+        .askWhole[Person](prompt)
+        .map((value, reply) => (value, reply.attempts, reply.usage))
         .attempt
         .unsafeRunSync(),
       Right((None, 2, Usage(uncachedTokens = 30, visibleTokens = 7))),
@@ -408,7 +413,7 @@ class AskSuite extends FunSuite:
       else said("Ada, 36."),
     )
     assertEquals(
-      partly.ask[Person](prompt).map(_.usage).attempt.unsafeRunSync(),
+      partly.askWhole[Person](prompt).map(_._2.usage).attempt.unsafeRunSync(),
       Right(Usage(uncachedTokens = 20, visibleTokens = 5)),
     )
     // Usage adds up count by count, and so do its totals.
@@ -428,11 +433,10 @@ class AskSuite extends FunSuite:
         counting = new LlmClient.Forwarding(corrected):
           override protected def send
             (chat: Chat, options: ReplyOptions)
-            : SyncIO[Answer[Nothing]] = sent.update(_ + 1) *>
-            super.send(chat, options)
-        reply <- counting.ask[Person](prompt)
-        total <- sent.get
-      yield (reply.value, total)
+            : SyncIO[Reply] = sent.update(_ + 1) *> super.send(chat, options)
+        (value, _) <- counting.askWhole[Person](prompt)
+        total      <- sent.get
+      yield (value, total)
     assertEquals(counted.unsafeRunSync(), (Some(ada), 2))
 
   /** A client failing the test if it is ever asked to send. */
@@ -451,7 +455,7 @@ class AskSuite extends FunSuite:
       )
     do
       assertEquals(
-        never.ask[String](chat).attempt.unsafeRunSync(),
+        never.askWhole[String](chat).attempt.unsafeRunSync(),
         Left(LlmError.Unsendable("Anthropic", why)),
         chat,
       )
@@ -469,7 +473,7 @@ class AskSuite extends FunSuite:
     val calling  = Part.ToolCall("call_1", "weather", Json.obj())
     val answered = Chat()
       .user("What is the weather?")
-      .assistant(Answer(
+      .assistant(Reply(
         "",
         StopReason.ToolCall,
         toolCalls = List(calling),
@@ -502,8 +506,8 @@ class AskSuite extends FunSuite:
     )
     assertEquals(
       checked
-        .ask[String](answered, attempts = 1)
-        .map(_.value)
+        .askWhole[String](answered, attempts = 1)
+        .map(_._1)
         .attempt
         .unsafeRunSync(),
       Right(Some("Snowing in Zug.")),
@@ -531,12 +535,13 @@ class AskSuite extends FunSuite:
       )
     do
       assertEquals(
-        answering(model, body).ask[Person](prompt).attempt.unsafeRunSync(),
-        Right(Answer(
-          adaJson,
-          StopReason.Completed,
-          Usage(uncachedTokens = 5, visibleTokens = 3),
-          value = Some(ada),
-        )),
+        answering(model, body).askWhole[Person](prompt).attempt.unsafeRunSync(),
+        Right(
+          Some(ada) -> Reply(
+            adaJson,
+            StopReason.Completed,
+            Usage(uncachedTokens = 5, visibleTokens = 3),
+          ),
+        ),
         model,
       )

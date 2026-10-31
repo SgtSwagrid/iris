@@ -27,8 +27,8 @@ private[iris] object GeminiApi extends ProviderApi:
   override def credentials(config: LlmConfig): Seq[Header] =
     Seq(Header("x-goog-api-key", config.apiKey))
 
-  override val answers: Decoder[Either[LlmError, Answer[Nothing]]] =
-    Decoder[Response].map(_.toAnswer)
+  override val replies: Decoder[Either[LlmError, Reply]] = Decoder[Response]
+    .map(_.toReply)
 
   override def counting
     (
@@ -143,9 +143,11 @@ private[iris] object GeminiApi extends ProviderApi:
     .getOrElse(List.empty)
 
   private def deltas(event: Json, asked: Boolean): List[Delta] =
-    val said = carried(event).flatMap(_.text).mkString
+    val parts = carried(event)
+    val said  = parts.flatMap(_.text).mkString
     List.concat(
       Option.when(said.nonEmpty)(Delta.Text(said)),
+      parts.flatMap(_.functionCall).map(call => Delta.ToolCall(call.toPart)),
       event
         .hcursor
         .downField("candidates")
@@ -304,7 +306,7 @@ private[iris] object GeminiApi extends ProviderApi:
       * This response as a reply, failing without a candidate: a blocked prompt
       * gets `200` and none, which would pass for an empty reply.
       */
-    def toAnswer: Either[LlmError, Answer[Nothing]] = candidates
+    def toReply: Either[LlmError, Reply] = candidates
       .flatMap(_.headOption)
       .toRight(LlmError.Malformed(
         LlmProvider.Gemini.displayName,
@@ -312,7 +314,7 @@ private[iris] object GeminiApi extends ProviderApi:
       ))
       .map: candidate =>
         val calls = toolCalls(candidate)
-        Answer(
+        Reply(
           text = text(candidate),
           stopReason = stopped(calls.nonEmpty, candidate.finishReason),
           usage = usageMetadata.fold(Usage())(_.toUsage),

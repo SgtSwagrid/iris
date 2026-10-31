@@ -15,13 +15,17 @@ This is Iris, a Scala 3 library giving one provider-agnostic interface to the AP
 adapters for Anthropic, OpenAI and Google Gemini, built on Cats Effect, sttp and Circe. It is still a prototype.
 
 It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js. `LlmClient` is the public interface: callers `ask` a `Chat`
-for an answer of any type with a `Schema`, `String` included, as a uniform `Answer[A]`, and `send` is the protected request every
-`ask` makes, which `JsonClient` implements and wrappers override (`LlmClient.Forwarding`, `mapK`). The same client
-streams: `stream` gives a reply's text as it arrives, through an `SseClient` where its backend can stream, and
-`askStreamed` is to `stream` what `ask` is to `send`. The user chose one client for both over a streamer apart, so a
-client over a backend that cannot stream (`LlmClient(config, backend: Backend[F])`, as the SyncIO tests build) fails to
-stream with `LlmError.Unsupported` at run time; `resource` and `fromEnv` always stream. `ask` and `askStreamed` stay
-two methods, as an `Answer`'s text, stop reason and usage are known only once a reply ends. Each `LlmProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
+for an answer of any type with a `Schema`, `String` included, as a uniform `Answer[F, A]`: its `value` as soon as all
+but its streams is read, and its `reply`, an `F[Reply]`, once the reply ends (the user chose one `ask` with the
+reply's details lazy over a second, streamed ask). A `Reply` is a reply as the provider gave it (once
+`Answer[Nothing]`): what `send` and `warm` give and `LlmError.Unreadable` keeps. `send` is the protected request every
+ask of a type holding no stream makes (`Schema.gradual` false), and `stream` (text and tool calls as they arrive,
+through an `SseClient` where the backend can stream) the one every other makes; `JsonClient` implements both, and
+wrappers override them (`LlmClient.Forwarding`, `mapK`). `stream` defaults to `send`'s reply whole, so a client over
+a backend that cannot stream (`LlmClient(config, backend: Backend[F])`, as the SyncIO tests build), or one a host
+writes with `send` alone, still answers a type holding a stream, all at once. `ask` needs `Async`, as it reads a
+streamed reply in a fiber of its own (unscoped: read to its end once the answer is given, by the user's choice);
+tests in `SyncIO` ask through `Fixtures.askWhole`, which is `Question.ask` over `send`. Each `LlmProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
 `JsonHttp`), which tells the one `JsonClient` and the one `SseClient` all they need to know of it: its endpoints,
 request bodies, credentials, the chats it refuses, how its replies read, and how it counts tokens. Anything
 provider-specific goes there, never in the clients. `LlmConfig` holds a model (and so its provider), key, token limit and an optional base URL, and
@@ -195,19 +199,21 @@ longer.
   `ProviderApi.reply` reads the whole stream of events, remembering across them what it must (`zipWithScan1`):
   Gemini's whether a tool was asked for, as it may say so before it says it stopped, Anthropic's the counts it
   started with, and OpenAI's how it stopped until its usage comes.
-- `LlmClient.askStreamed[A : Schema]` gives a `Resource` of an `Answering` (`value`, then the whole `answer`), handed over
-  as soon as all of `A` but its `fs2.Stream`s is read; each stream (not within a list or map, which are read whole)
+- An ask of a type holding an `fs2.Stream` (`Unfolding`) gives its `Answer` as soon as all of `A` but its streams is
+  read; each stream (not within a list or map, which are read whole)
   is then fed as its elements close. The user chose live streams in the value over snapshots of a partial value,
   knowing the costs: `Schema[Stream[F, A]]`'s encoder throws (a stream cannot be said without being run), nothing is
-  asked again once handed over (a later failure fails the unfinished streams and `answer`: `Unreadable` for a reply,
-  a request's own error, `IllegalStateException` on release), and `F` must be the client's (the cast is
-  unchecked). Tools are refused, as `Delta` carries no tool calls. The model is told a stream as an array, the same
-  schema as a `List`. Each schema's `Arrival` says how it is read early (`Whole`, `Streamed`, or `Assembled` from
+  asked again once handed over (a later failure fails the unfinished streams and `reply`: `Unreadable` for a reply,
+  a request's own error), and `F` must be the client's (the cast is unchecked). Tool calls stream as
+  `Delta.ToolCall`, each once whole (Anthropic's and OpenAI's argument fragments gathered by a `Calling`), so a streamed
+  ask takes tools as any does. The model is told a stream as an array, the same schema as a `List`. Each schema's `Arrival` says how it is read early (`Whole`, `Streamed`, or `Assembled` from
   members, by key or index, `ready` once those begun have settled, giving the streams still to come); fields are
   taken to be written in order (`Schema.awaited`), so an optional one absent before a begun one is left out, and
   required streams after the last begun are handed over before they begin (`Frame.coming`), so that every trailing
-  stream of a value is live. Once a value is handed over (`Frame.taken`), a member it knows arriving later, or a
-  reserved stream never begun, fails the answer rather than be lost. `Unfinished` follows only brackets, strings,
+  stream of a value is live. A value is handed over before it is whole only while a member it is writing is open and
+  read already (`Unfinished.open`): until a stream begins, a reply that cannot be read can still be asked again, and
+  a union whose case is whole waits to be whole itself. Once a value is handed over (`Frame.taken`), a member it
+  knows arriving later, or a reserved stream never begun, fails the reply rather than be lost. `Unfinished` follows only brackets, strings,
   escapes, commas and colons
   (circe parses each value once whole, and the schema's own decoder reads it, so every value is decoded by the
   same code as a whole reply), standing in for each open stream with a placeholder `Json` found by identity

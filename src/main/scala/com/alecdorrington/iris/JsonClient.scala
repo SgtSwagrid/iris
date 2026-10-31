@@ -9,7 +9,8 @@ import sttp.model.Uri
 
 /**
   * An [[LlmClient]] for any provider's JSON API, as its [[ProviderApi]] says,
-  * streaming through an [[SseClient]] where its backend can.
+  * streaming through an [[SseClient]] where its backend can, and otherwise
+  * giving each reply whole.
   */
 private[iris] final class JsonClient[F[_] : MonadThrow]
   (
@@ -20,21 +21,20 @@ private[iris] final class JsonClient[F[_] : MonadThrow]
   )
   extends LlmClient[F]:
 
-  override protected def send
-    (chat: Chat, options: ReplyOptions)
-    : F[Answer[Nothing]] = MonadThrow[F]
-    .fromEither(
-      api
-        .acceptable(config, chat, options)
-        .flatMap(_ => api.endpoint(config, options, false)),
-    )
-    .flatMap(endpoint =>
-      ask[Either[LlmError, Answer[Nothing]]](
-        endpoint,
-        api.body(config, chat, options),
-      )(using api.answers),
-    )
-    .flatMap(MonadThrow[F].fromEither(_))
+  override protected def send(chat: Chat, options: ReplyOptions): F[Reply] =
+    MonadThrow[F]
+      .fromEither(
+        api
+          .acceptable(config, chat, options)
+          .flatMap(_ => api.endpoint(config, options, false)),
+      )
+      .flatMap(endpoint =>
+        ask[Either[LlmError, Reply]](
+          endpoint,
+          api.body(config, chat, options),
+        )(using api.replies),
+      )
+      .flatMap(MonadThrow[F].fromEither(_))
 
   override def count(chat: Chat, options: ReplyOptions): F[Int] = MonadThrow[F]
     .fromEither(api.counting(config, chat, options))
@@ -43,17 +43,13 @@ private[iris] final class JsonClient[F[_] : MonadThrow]
     )
 
   override def stream(chat: Chat, options: ReplyOptions): Stream[F, Delta] =
-    streamer.fold(Stream.raiseError[F](LlmError.Unsupported(
-      api.provider.displayName,
-      "streaming, through a backend that cannot stream",
-    )))(_.stream(chat, options))
+    streamer.fold(super.stream(chat, options))(_.stream(chat, options))
 
   /** Warms with the shortest reply the provider allows. */
-  override def warm(chat: Chat, options: ReplyOptions): F[Answer[Nothing]] =
-    send(
-      chat.cacheable,
-      options.copy(maxTokens = Some(api.leastReply)),
-    )
+  override def warm(chat: Chat, options: ReplyOptions): F[Reply] = send(
+    chat.cacheable,
+    options.copy(maxTokens = Some(api.leastReply)),
+  )
 
   /**
     * Posts JSON with the provider's credentials, reading an `A` back, failing

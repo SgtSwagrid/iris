@@ -72,9 +72,21 @@ class UnfoldingSuite extends FunSuite:
     Ref.of[IO, List[Chat]](Nil),
   ).mapN((left, sent) =>
     val scripted = new LlmClient[IO]:
+      // A type holding no stream is asked whole: the next reply, gathered.
       override protected def send
         (chat: Chat, options: ReplyOptions)
-        : IO[Answer[Nothing]] = IO.raiseError(Exception("Not streamed."))
+        : IO[Reply] = stream(chat, options)
+        .compile
+        .toList
+        .map(deltas =>
+          Reply(
+            text = deltas.collect { case Delta.Text(text) => text }.mkString,
+            stopReason = deltas
+              .collectFirst { case Delta.End(stop, _) => stop }
+              .getOrElse(StopReason.Unknown),
+            toolCalls = deltas.collect { case Delta.ToolCall(call) => call },
+          ),
+        )
 
       override def count(chat: Chat, options: ReplyOptions): IO[Int] = IO
         .raiseError(Exception("Not counted."))
@@ -100,8 +112,8 @@ class UnfoldingSuite extends FunSuite:
     (read: A => IO[B])
     : IO[B] = streamer(reply).flatMap((llm, _) =>
     llm
-      .askStreamed[A](Chat.of("Translate."))
-      .use(answering =>
+      .ask[A](Chat.of("Translate."))
+      .flatMap(answering =>
         answering.value.liftTo[IO](Exception("No value.")).flatMap(read),
       ),
   )
@@ -118,8 +130,8 @@ class UnfoldingSuite extends FunSuite:
           written("""{"text":"b","gloss":"be"}]}""", 8)
         (llm, _) <- streamer(reply)
         read     <- llm
-          .askStreamed[Page](Chat.of("Translate."))
-          .use: answering =>
+          .ask[Page](Chat.of("Translate."))
+          .flatMap: answering =>
             answering
               .value
               .traverse(page =>
@@ -130,7 +142,7 @@ class UnfoldingSuite extends FunSuite:
                   .toList
                   .map(page.title -> _),
               )
-              .product(answering.answer.map(_.attempts))
+              .product(answering.reply.map(_.attempts))
       yield assertEquals(
         read,
         (Some("Hi" -> List(Word("a"), Word("b", Some("be")))), 1),
@@ -182,8 +194,8 @@ class UnfoldingSuite extends FunSuite:
       (llm, _) <-
         streamer(part(first, 3) ++ Stream.exec(gate.get) ++ written(rest, 3))
       read <- llm
-        .askStreamed[A](Chat.of("Translate."))
-        .use(
+        .ask[A](Chat.of("Translate."))
+        .flatMap(
           _.value
             .liftTo[IO](Exception("No value."))
             .flatMap(elements(_).evalTap(_ => gate.complete(())).compile.toList),
@@ -224,14 +236,12 @@ class UnfoldingSuite extends FunSuite:
         """{"title":"Hi","words":[{"text":"a"}],"words":[]}""" -> "words",
         """{"first":[1]}"""                                    -> "second",
       ).traverse_((reply, why) =>
-        streamer(written(reply, 4))
+        // A character at a time, so that each stream is seen open.
+        streamer(written(reply))
           .flatMap((llm, _) =>
             if why == "second" then
-              llm.askStreamed[Two](Chat.of("Count.")).use(_.answer.attempt)
-            else
-              llm
-                .askStreamed[Gloss](Chat.of("Translate."))
-                .use(_.answer.attempt),
+              llm.ask[Two](Chat.of("Count.")).flatMap(_.reply.attempt)
+            else llm.ask[Gloss](Chat.of("Translate.")).flatMap(_.reply.attempt),
           )
           .map:
             case Left(LlmError.Unreadable(_, detail, _)) =>
@@ -306,12 +316,12 @@ class UnfoldingSuite extends FunSuite:
           written("""{"title":"Hi","words":[{"text":"a"}]}"""),
         )
         read <- llm
-          .askStreamed[Page](Chat.of("Translate."))
-          .use(answering =>
+          .ask[Page](Chat.of("Translate."))
+          .flatMap(answering =>
             answering
               .value
               .traverse(_.words.compile.toList)
-              .product(answering.answer.map(_.attempts)),
+              .product(answering.reply.map(_.attempts)),
           )
         chats <- sent
       yield
@@ -346,11 +356,11 @@ class UnfoldingSuite extends FunSuite:
         streamer(reply)
           .flatMap((llm, _) =>
             llm
-              .askStreamed[Page](Chat.of("Translate."))
-              .use(answering =>
+              .ask[Page](Chat.of("Translate."))
+              .flatMap(answering =>
                 (
                   answering.value.get.words.attempt.compile.toList,
-                  answering.answer.attempt,
+                  answering.reply.attempt,
                   answering.value.get.words.attempt.compile.toList,
                 ).tupled,
               ),
@@ -389,11 +399,11 @@ class UnfoldingSuite extends FunSuite:
         ) ++ Stream.raiseError[IO](timedOut),
       ).flatMap((llm, _) =>
         llm
-          .askStreamed[Page](Chat.of("Translate."))
-          .use(answering =>
+          .ask[Page](Chat.of("Translate."))
+          .flatMap(answering =>
             (
               answering.value.get.words.attempt.compile.toList,
-              answering.answer.attempt,
+              answering.reply.attempt,
             ).tupled,
           )
           .map((words, answer) =>
@@ -413,8 +423,8 @@ class UnfoldingSuite extends FunSuite:
         3,
       )).flatMap((llm, _) =>
           llm
-            .askStreamed[Stream[IO, Verse]](Chat.of("Translate."))
-            .use(
+            .ask[Stream[IO, Verse]](Chat.of("Translate."))
+            .flatMap(
               _.value
                 .get
                 .evalMap(_.lines.attempt.compile.toList)
@@ -446,15 +456,15 @@ class UnfoldingSuite extends FunSuite:
         ) ++ Stream.exec(gate.get) ++ written("""{"text":"b"}]}""", 8)
         (llm, _) <- streamer(reply)
         read     <- llm
-          .askStreamed[Page](Chat.of("Translate."))
-          .use: answering =>
+          .ask[Page](Chat.of("Translate."))
+          .flatMap: answering =>
             val words = answering.value.get.words
             for
               both <- (
                 words.evalTap(_ => gate.complete(())).compile.toList,
                 words.take(1).compile.toList,
               ).parTupled
-              ended <- answering.answer.map(_.value.map(_.title))
+              ended <- answering.reply.as(answering.value.map(_.title))
               again <- words.compile.toList
             yield (both, ended, again)
       yield assertEquals(
@@ -467,48 +477,65 @@ class UnfoldingSuite extends FunSuite:
       ),
     )
 
-  test("a released answer fails its streams and answer, not waits for good"):
+  test("a tool asked for in a streamed reply is in its reply, with no value"):
+    val look = Part.ToolCall(
+      "call_1",
+      "look",
+      Json.obj("word" -> Json.fromString("Hi")),
+    )
     run(
-      streamer(part("""{"title":"Hi","words":[""", 4) ++ Stream.never[IO])
+      streamer(Stream(
+        Delta.Text("Let me look."),
+        Delta.ToolCall(look),
+        Delta.End(StopReason.ToolCall, Usage()),
+      )).flatMap((llm, _) =>
+        llm
+          .ask[Page](
+            Chat.of("Translate."),
+            ReplyOptions(tools = List(Tool("look", "Looks up.", Json.obj()))),
+          )
+          .flatMap(answer =>
+            answer.reply.map(reply => (answer.value.isEmpty, reply.toolCalls)),
+          )
+          .map(read => assertEquals(read, (true, List(look)))),
+      ),
+    )
+
+  test("a reply is read to its end though nothing reads its streams"):
+    val page = """{"title":"Hi","words":[{"text":"a"},{"text":"b"}]}"""
+    run(
+      streamer(written(page, 4))
         .flatMap((llm, _) =>
-          llm.askStreamed[Page](Chat.of("Translate.")).use(IO.pure),
+          llm
+            .ask[Page](Chat.of("Translate."))
+            .flatMap(answer =>
+              answer
+                .reply
+                .product(answer.value.traverse(_.words.compile.toList)),
+            ),
         )
-        .flatMap(answering =>
-          (
-            answering.value.get.words.compile.toList.attempt,
-            answering.answer.attempt,
-          ).tupled,
-        )
-        .map((words, answer) =>
-          List(words, answer).foreach:
-            case Left(error: IllegalStateException) => assert(
-                error.getMessage.contains("released"),
-                error,
-              )
-            case other => fail(s"Not released: $other"),
+        .map((reply, words) =>
+          assertEquals(
+            (reply.text, reply.attempts, words),
+            (page, 1, Some(List(Word("a"), Word("b")))),
+          ),
         ),
     )
 
-  test("a streamed ask offering tools is refused before any request"):
+  test("a client that cannot stream gives a streamed type's answer whole"):
+    val whole = new LlmClient[IO]:
+      override protected def send
+        (chat: Chat, options: ReplyOptions)
+        : IO[Reply] =
+        IO.pure(Reply("""{"title":"Hi","words":[{"text":"a"},{"text":"b"}]}"""))
+
+      override def count(chat: Chat, options: ReplyOptions): IO[Int] = IO
+        .raiseError(Exception("Not counted."))
     run(
-      streamer()
-        .flatMap((llm, sent) =>
-          llm
-            .askStreamed[Page](
-              Chat.of("Translate."),
-              ReplyOptions(tools = List(Tool("look", "Looks up.", Json.obj()))),
-            )
-            .use(IO.pure)
-            .attempt
-            .product(sent),
-        )
-        .map((read, chats) =>
-          assert(
-            read.left.exists(_.isInstanceOf[IllegalArgumentException]),
-            read,
-          )
-          assertEquals(chats, Nil),
-        ),
+      whole
+        .ask[Page](Chat.of("Translate."))
+        .flatMap(_.value.traverse(_.words.compile.toList))
+        .map(words => assertEquals(words, Some(List(Word("a"), Word("b"))))),
     )
 
   test("a stream is asked for as a list, and read from a whole reply as one"):

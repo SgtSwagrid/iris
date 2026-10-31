@@ -220,13 +220,19 @@ private[iris] final class Unfinished(schema: Schema[?], live: Int => Any):
     val frame = path(index)
     frame.arrival match
       case Arrival.Streamed(_)         => true
-      case Arrival.Assembled(_, ready) => ready(
-          frame.settled(
-            path.isDefinedAt(index + 1) && settles(path, index + 1),
-          ),
-          frame.begun,
-        ).isDefined
+      case Arrival.Assembled(_, ready) => open(path, index) &&
+        ready(frame.settled(true), frame.begun).isDefined
       case Arrival.Whole => false
+
+  /**
+    * Whether the member a value is writing is itself read already, though not
+    * whole: a stream begun, or a value holding one. A value is read before it
+    * is whole only while one is, as until a stream begins within it, a reply
+    * that cannot be read can still be asked for again, and once the member is
+    * whole the value soon will be.
+    */
+  private def open(path: Vector[Frame], index: Int): Boolean =
+    path.isDefinedAt(index + 1) && settles(path, index + 1)
 
   /**
     * Hands over the element being written of the stream at `index`, opening
@@ -268,7 +274,7 @@ private[iris] final class Unfinished(schema: Schema[?], live: Int => Any):
     frame.arrival match
       case Arrival.Streamed(element)   => opened(frame, element, opening, holes)
       case Arrival.Assembled(_, ready) =>
-        val current = path.isDefinedAt(index + 1) && settles(path, index + 1)
+        val current = open(path, index)
         frame.taken = true
         (
           frame
