@@ -50,7 +50,7 @@ final case class Rates
     * Prices one request's token counts, at the rates for the length of its
     * prompt. Counts summed over several requests may be priced at the wrong
     * rates, where the provider charges more for a long prompt, so each request
-    * is priced alone, as [[Reply.cost]] is.
+    * is priced alone, as [[ModelResponse.cost]] is.
     *
     * @param usage
     *   The request's token counts.
@@ -130,6 +130,6 @@ object Rates:
     * @return
     *   The rates, or `None` for a model Iris does not list.
     */
-  def listed(model: LlmModel, at: FiniteDuration): Option[Rates] = ProviderApi
+  def listed(model: Model, at: FiniteDuration): Option[Rates] = ProviderApi
     .of(model.provider)
     .rates(model, at)

@@ -2,7 +2,7 @@ package com.alecdorrington.iris
 
 import cats.effect.{Ref, SyncIO}
 import com.alecdorrington.example.{Colour, Person}
-import com.alecdorrington.iris.Fixtures.{askWhole, config, json}
+import com.alecdorrington.iris.Fixtures.{askWhole, config, json, totals}
 import io.circe.Json
 import io.circe.syntax.*
 import munit.FunSuite
@@ -15,13 +15,13 @@ class AskSuite extends FunSuite:
 
   private val asking = "Invent a person."
 
-  private val prompt = Chat.of(asking)
+  private val prompt = Chat.userSays(asking)
 
   private val ada = Person("Ada", 36, None)
 
   private val adaJson = """{"name":"Ada","age":36}"""
 
-  private val instructions = Question.instructions(Schema[Person])
+  private val instructions = WholeAsker.schemaPrompt(Schema[Person])
 
   /** Anthropic's answer of the text, stopping as said, costing as said. */
   private def said
@@ -51,8 +51,8 @@ class AskSuite extends FunSuite:
     .noSpaces
 
   /** A client answering each request as `answer` does its messages. */
-  private def client(answer: List[Message] => String): LlmClient[SyncIO] =
-    LlmClient[SyncIO](
+  private def client(answer: List[Message] => String): ModelClient[SyncIO] =
+    ModelClient[SyncIO](
       config,
       BackendStub(CatsMonadError[SyncIO]())
         .whenAnyRequest
@@ -73,7 +73,7 @@ class AskSuite extends FunSuite:
     .map(message =>
       Message(
         if message.hcursor.get[String]("role").contains("user") then Role.User
-        else Role.Assistant,
+        else Role.Model,
         message.hcursor.get[String]("content").getOrElse(""),
       ),
     )
@@ -81,8 +81,8 @@ class AskSuite extends FunSuite:
   /** The answer an ask gives, or why it gave none. */
   private def asked[A : Schema]
     (
-      client: LlmClient[SyncIO],
-      attempts: Int = Question.attempts,
+      client: ModelClient[SyncIO],
+      attempts: Int = WholeAsker.attempts,
     )
     : Either[Throwable, Option[A]] = client
     .askWhole[A](prompt, attempts = attempts)
@@ -109,7 +109,7 @@ class AskSuite extends FunSuite:
     )
 
   test("a chat the assistant ended is followed by the instructions"):
-    val chat = Chat().user("Invent a person.").assistant("Let me think.")
+    val chat = Chat().userSays("Invent a person.").modelSays("Let me think.")
     val told = client(sent =>
       if sent.lastOption.contains(Message(Role.User, instructions)) then
         said(adaJson)
@@ -129,8 +129,8 @@ class AskSuite extends FunSuite:
     asked[Person](client(_ => said(written)), attempts = 1)
       .left
       .map:
-        case LlmError.Unreadable(_, detail, _) => detail
-        case other                             => other.toString
+        case ModelError.UnreadableResponse(detail, _) => detail
+        case other                                    => other.toString
 
   test("JSON is read from the whole reply, else its last fence, and no other"):
     List(
@@ -154,9 +154,9 @@ class AskSuite extends FunSuite:
     val corrected = client: sent =>
       val again = sent.drop(1) match
         case List(
-            Message(Role.Assistant, reply),
+            Message(Role.Model, reply),
             Message(Role.User, why),
-          ) => reply == List(Part.Text("Ada, 36.")) &&
+          ) => reply == List(MessagePart.Text("Ada, 36.")) &&
           Message(Role.User, why)
             .text
             .startsWith("That reply could not be read:\nIt is not JSON")
@@ -170,8 +170,8 @@ class AskSuite extends FunSuite:
   test("the last unreadable reply fails the ask, keeping every reply"):
     // Text is no exception: unquoted, it is not JSON.
     asked[String](client(_ => said("Paris"))) match
-      case Left(LlmError.Unreadable(attempts, detail, answers)) =>
-        assertEquals(attempts, 3)
+      case Left(ModelError.UnreadableResponse(detail, answers)) =>
+        assertEquals(answers.size, 3)
         assertEquals(detail, "It is not JSON.")
         assertEquals(
           answers.map(_.text),
@@ -223,7 +223,7 @@ class AskSuite extends FunSuite:
       ),
     ).foreach: (row, result, told, withheld) =>
       result match
-        case Left(failure @ LlmError.Unreadable(_, detail, _)) =>
+        case Left(failure @ ModelError.UnreadableResponse(detail, _)) =>
           told.foreach(field =>
             assert(
               detail.contains(field),
@@ -299,19 +299,19 @@ class AskSuite extends FunSuite:
       ),
       (
         "a person asked of openai",
-        answering(LlmModel.Gpt5, forced).askWhole[Person](prompt),
+        answering(Model.Gpt5, forced).askWhole[Person](prompt),
         "",
         StopReason.Completed,
       ),
     ).foreach: (row, asking, text, stopReason) =>
       asking.attempt.unsafeRunSync() match
-        case Right((value, reply)) => assertEquals(
+        case Right((value, responses)) => assertEquals(
             (
               value,
-              reply.text,
-              reply.stopReason,
-              reply.toolCalls.map(_.tool),
-              reply.attempts,
+              responses.last.text,
+              responses.last.stopReason,
+              responses.last.toolCalls.map(_.tool),
+              responses.size,
             ),
             (None, text, stopReason, List("weather"), 1),
             row,
@@ -338,7 +338,7 @@ class AskSuite extends FunSuite:
     )
 
   test("text is asked for as JSON, as every type is"):
-    val schema = Question.instructions(Schema[String])
+    val schema = WholeAsker.schemaPrompt(Schema[String])
     assert(
       schema.endsWith("""{"type":"string"}"""),
       schema,
@@ -364,7 +364,10 @@ class AskSuite extends FunSuite:
     )
     assertEquals(
       told
-        .askWhole[Person](Chat.of(ada), ReplyOptions())
+        .askWhole[Person](
+          Chat.userSays(ada),
+          ModelRequest.Options(),
+        )
         .map(_._1)
         .attempt
         .unsafeRunSync(),
@@ -382,22 +385,36 @@ class AskSuite extends FunSuite:
       Right(Some(42)),
     )
 
-  test("every ask gives the last reply whole, its usage that of every attempt"):
+  test("every ask gives every response, its usage and cost theirs together"):
     val corrected = client(sent =>
       if sent.size > 1 then said(adaJson, cost = Some((20, 5)))
       else said("Ada, 36.", cost = Some((10, 2))),
     )
+    val (value, responses) = corrected.askWhole[Person](prompt).unsafeRunSync()
+    assertEquals(value, Some(ada))
     assertEquals(
-      corrected.askWhole[Person](prompt).attempt.unsafeRunSync(),
-      Right(
-        Some(ada) -> Reply(
+      responses,
+      List(
+        ModelResponse(
+          text = "Ada, 36.",
+          stopReason = StopReason.Completed,
+          usage = Usage(uncachedTokens = 10, visibleTokens = 2),
+          // Claude Haiku 4.5's $1 and $5 per million tokens.
+          cost = Some(Usd(BigDecimal("0.00002"))),
+        ),
+        ModelResponse(
           text = adaJson,
           stopReason = StopReason.Completed,
-          usage = Usage(uncachedTokens = 30, visibleTokens = 7),
-          // Claude Haiku 4.5's $1 and $5 per million tokens.
-          cost = Some(Usd(BigDecimal("0.000065"))),
-          attempts = 2,
+          usage = Usage(uncachedTokens = 20, visibleTokens = 5),
+          cost = Some(Usd(BigDecimal("0.000045"))),
         ),
+      ),
+    )
+    assertEquals(
+      totals(responses),
+      (
+        Usage(uncachedTokens = 30, visibleTokens = 7),
+        Some(Usd(BigDecimal("0.000065"))),
       ),
     )
     // A tool asked for on a later attempt is given with every attempt's usage.
@@ -411,7 +428,9 @@ class AskSuite extends FunSuite:
     assertEquals(
       later
         .askWhole[Person](prompt)
-        .map((value, reply) => (value, reply.attempts, reply.usage))
+        .map((value, responses) =>
+          (value, responses.size, totals(responses)._1),
+        )
         .attempt
         .unsafeRunSync(),
       Right((None, 2, Usage(uncachedTokens = 30, visibleTokens = 7))),
@@ -424,7 +443,7 @@ class AskSuite extends FunSuite:
     assertEquals(
       partly
         .askWhole[Person](prompt)
-        .map((_, reply) => (reply.usage, reply.cost))
+        .map((_, responses) => totals(responses))
         .attempt
         .unsafeRunSync(),
       Right((
@@ -446,56 +465,55 @@ class AskSuite extends FunSuite:
     val counted =
       for
         sent <- Ref.of[SyncIO, Int](0)
-        counting = new LlmClient.Forwarding(corrected):
+        counting = new ModelClient.Forwarding(corrected):
           override protected def send
-            (chat: Chat, options: ReplyOptions)
-            : SyncIO[Reply] = sent.update(_ + 1) *> super.send(chat, options)
+            (request: ModelRequest)
+            : SyncIO[ModelResponse] = sent.update(_ + 1) *> super.send(request)
         (value, _) <- counting.askWhole[Person](prompt)
         total      <- sent.get
       yield (value, total)
     assertEquals(counted.unsafeRunSync(), (Some(ada), 2))
 
   /** A client failing the test if it is ever asked to send. */
-  private def never: LlmClient[SyncIO] =
+  private def never: ModelClient[SyncIO] =
     client(_ => throw AssertionError("A request was made."))
 
   test("a chat in which the user says nothing is refused before any request"):
     for (chat, why) <- List(
-        Chat()                                 -> "it has no messages",
-        Chat().withSystem("Answer in French.") -> "it has no messages",
-        Chat().user(Part.CacheBreakpoint) -> "one of its messages says nothing",
-        // Not the last message alone: any of them saying nothing.
-        Chat().user(Part.CacheBreakpoint).user("Hi") ->
+        Chat()                                       -> "it has no messages",
+        Chat().withInstructions("Answer in French.") -> "it has no messages",
+        Chat().userSays(MessagePart.CacheBreakpoint) ->
           "one of its messages says nothing",
-        Chat().assistant("Bonjour.") -> "the user says nothing in it",
+        // Not the last message alone: any of them saying nothing.
+        Chat().userSays(MessagePart.CacheBreakpoint).userSays("Hi") ->
+          "one of its messages says nothing",
+        Chat().modelSays("Bonjour.") -> "the user says nothing in it",
       )
     do
       assertEquals(
         never.askWhole[String](chat).attempt.unsafeRunSync(),
-        Left(LlmError.Unsendable("Anthropic", why)),
+        Left(ModelError.Unsendable("Anthropic", why)),
         chat,
       )
 
   /** Whether a reply fails an ask of a type at once. */
   private def failsAtOnceAs[A : Schema](answer: String, detail: String): Unit =
     asked[A](client(_ => answer)) match
-      case Left(LlmError.Unreadable(attempts, said, answers)) => assertEquals(
-          (attempts, said, answers.size),
-          (1, detail, 1),
-        )
+      case Left(ModelError.UnreadableResponse(said, answers)) =>
+        assertEquals((said, answers.size), (detail, 1))
       case other => fail(s"Expected the ask to fail at once, not $other.")
 
   test("the request after a tool's result carries it, then the instructions"):
-    val calling  = Part.ToolCall("call_1", "weather", Json.obj())
+    val calling  = MessagePart.ToolCall("call_1", "weather", Json.obj())
     val answered = Chat()
-      .user("What is the weather?")
-      .assistant(Reply(
+      .userSays("What is the weather?")
+      .modelSays(ModelResponse(
         "",
         StopReason.ToolCall,
         toolCalls = List(calling),
       ))
-      .user(Part.ToolResult("call_1", "weather", "Snowing."))
-    val checked = LlmClient[SyncIO](
+      .userSays(MessagePart.ToolResult("call_1", "weather", "Snowing."))
+    val checked = ModelClient[SyncIO](
       config,
       BackendStub(CatsMonadError[SyncIO]())
         .whenAnyRequest
@@ -530,8 +548,8 @@ class AskSuite extends FunSuite:
     )
 
   /** A client of a provider answering every request with the body. */
-  private def answering(model: LlmModel, body: String): LlmClient[SyncIO] =
-    LlmClient[SyncIO](
+  private def answering(model: Model, body: String): ModelClient[SyncIO] =
+    ModelClient[SyncIO](
       config.copy(model = model),
       BackendStub(CatsMonadError[SyncIO]())
         .whenAnyRequest
@@ -546,33 +564,33 @@ class AskSuite extends FunSuite:
       "finishReason":"STOP"}],
       "usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3}}"""
     for (model, body, cost) <- List(
-        (LlmModel.Gpt5, openAi, "0.00003625"),
-        (LlmModel.Gemini2_5Flash, gemini, "0.000009"),
+        (Model.Gpt5, openAi, "0.00003625"),
+        (Model.Gemini2_5Flash, gemini, "0.000009"),
       )
     do
       assertEquals(
         answering(model, body).askWhole[Person](prompt).attempt.unsafeRunSync(),
         Right(
-          Some(ada) -> Reply(
+          Some(ada) -> List(ModelResponse(
             adaJson,
             StopReason.Completed,
             Usage(uncachedTokens = 5, visibleTokens = 3),
             Some(Usd(BigDecimal(cost))),
-          ),
+          )),
         ),
         model,
       )
 
   test("a model iris does not list costs nothing known, unless configured"):
-    val next = LlmModel.of(LlmProvider.Anthropic, "claude-next").get
-    def costing(configured: LlmConfig) = LlmClient[SyncIO](
+    val next = Model.of(ModelProvider.Anthropic, "claude-next").get
+    def costing(configured: ModelConfig) = ModelClient[SyncIO](
       configured,
       BackendStub(CatsMonadError[SyncIO]())
         .whenAnyRequest
         .thenRespond(ResponseStub.adjust(
           said(adaJson, cost = Some((1000, 100))),
         )),
-    ).askWhole[Person](prompt).map(_._2.cost).attempt.unsafeRunSync()
+    ).askWhole[Person](prompt).map(_._2.last.cost).attempt.unsafeRunSync()
     assertEquals(
       costing(config.copy(model = next)),
       Right(None),

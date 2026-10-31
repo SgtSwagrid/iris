@@ -11,27 +11,31 @@ import sttp.model.{Header, StatusCode}
 
 class ClientSuite extends FunSuite:
 
-  private val prompt = Chat.of("Hello")
+  private val prompt = Chat.userSays("Hello")
 
   private def client
     (
       body: String,
       status: StatusCode = StatusCode.Ok,
       headers: Seq[Header] = Seq.empty,
-      config: LlmConfig = config,
+      config: ModelConfig = config,
     )
-    : LlmClient[SyncIO] = LlmClient[SyncIO](
+    : ModelClient[SyncIO] = ModelClient[SyncIO](
     config,
     BackendStub(CatsMonadError[SyncIO]())
       .whenAnyRequest
       .thenRespond(ResponseStub.adjust(body, status, headers)),
   )
 
-  private def result(client: LlmClient[SyncIO]): Either[Throwable, Reply] =
-    Sending(client).sent(prompt).attempt.unsafeRunSync()
+  private def result
+    (client: ModelClient[SyncIO])
+    : Either[Throwable, ModelResponse] = Sending(client)
+    .sent(prompt)
+    .attempt
+    .unsafeRunSync()
 
   test("a request no answer comes to in time is an error saying so"):
-    val slow = LlmClient[SyncIO](
+    val slow = ModelClient[SyncIO](
       config,
       BackendStub(CatsMonadError[SyncIO]())
         .whenAnyRequest
@@ -44,20 +48,22 @@ class ClientSuite extends FunSuite:
     )
     assertEquals(
       result(slow),
-      Left(LlmError.TimedOut("Anthropic", config.timeout)),
+      Left(ModelError.TimedOut("Anthropic", config.timeout)),
     )
 
   test("a client over a backend that cannot stream streams its reply whole"):
     assertEquals(
       client("""{"content":[{"type":"text","text":"Hi"},{"type":"tool_use",
           "id":"call_1","name":"look","input":{}}],"stop_reason":"tool_use"}""")
-        .stream(prompt)
+        .stream(ModelRequest(prompt))
         .compile
         .toList
         .unsafeRunSync(),
       List(
         Delta.Text("Hi"),
-        Delta.ToolCall(Part.ToolCall("call_1", "look", io.circe.Json.obj())),
+        Delta.ToolCall(
+          MessagePart.ToolCall("call_1", "look", io.circe.Json.obj()),
+        ),
         // Priced as it came, at Claude Haiku 4.5's rates, though it reports none.
         Delta.End(
           StopReason.ToolCall,
@@ -78,7 +84,7 @@ class ClientSuite extends FunSuite:
           StatusCode.TooManyRequests,
           headers,
         )),
-        Left(LlmError.Unsuccessful(
+        Left(ModelError.Unsuccessful(
           "Anthropic",
           StatusCode.TooManyRequests,
           delay,
@@ -92,8 +98,8 @@ class ClientSuite extends FunSuite:
       result(client("<html>down for maintenance</html>"))
         .left
         .exists:
-          case LlmError.Malformed("Anthropic", _) => true
-          case _                                  => false,
+          case ModelError.Malformed("Anthropic", _) => true
+          case _                                    => false,
     )
 
   test("a base url which is not a url fails the effect, never the call"):
@@ -102,24 +108,24 @@ class ClientSuite extends FunSuite:
       result(client("{}", config = broken))
         .left
         .exists:
-          case LlmError.Misconfigured("Anthropic", _) => true
-          case _                                      => false,
+          case ModelError.Misconfigured("Anthropic", _) => true
+          case _                                        => false,
     )
 
   test("a chat is counted before it is sent, where its provider can count"):
     List(
-      (LlmModel.ClaudeHaiku4_5, """{"input_tokens":42}""", Right(42)),
-      (LlmModel.Gemini2_5Flash, """{"totalTokens":17}""", Right(17)),
+      (Model.ClaudeHaiku4_5, """{"input_tokens":42}""", Right(42)),
+      (Model.Gemini2_5Flash, """{"totalTokens":17}""", Right(17)),
       // OpenAI says it cannot count rather than guessing.
       (
-        LlmModel.Gpt5,
+        Model.Gpt5,
         "{}",
-        Left(LlmError.Unsupported("OpenAI", "counting tokens")),
+        Left(ModelError.Unsupported("OpenAI", "counting tokens")),
       ),
     ).foreach: (model, body, count) =>
       assertEquals(
         client(body, config = config.copy(model = model))
-          .count(prompt)
+          .countTokens(ModelRequest(prompt))
           .attempt
           .unsafeRunSync(),
         count,
@@ -127,7 +133,7 @@ class ClientSuite extends FunSuite:
       )
 
   test("each provider serves its default model, and is sent its key"):
-    LlmProvider
+    ModelProvider
       .values
       .foreach(provider =>
         assertEquals(
@@ -137,25 +143,25 @@ class ClientSuite extends FunSuite:
       )
     List(
       (
-        LlmProvider.Anthropic,
+        ModelProvider.Anthropic,
         "x-api-key",
         "key",
         """{"content":[],"stop_reason":"end_turn"}""",
       ),
       (
-        LlmProvider.OpenAi,
+        ModelProvider.OpenAi,
         "Authorization",
         "Bearer key",
         """{"choices":[{"message":{"content":"Hi"},"finish_reason":"stop"}]}""",
       ),
       (
-        LlmProvider.Gemini,
+        ModelProvider.Gemini,
         "x-goog-api-key",
         "key",
         """{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}""",
       ),
     ).foreach: (provider, name, key, body) =>
-      val keyed = LlmClient[SyncIO](
+      val keyed = ModelClient[SyncIO](
         config.copy(model = provider.defaultModel),
         BackendStub(CatsMonadError[SyncIO]())
           .whenRequestMatches(_.header(name).contains(key))

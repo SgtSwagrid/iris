@@ -28,11 +28,11 @@ class BudgetSuite extends FunSuite:
     */
   private def client
     (
-      configured: LlmConfig,
+      configured: ModelConfig,
       sent: Ref[SyncIO, Int],
       replies: String*,
     )
-    : LlmClient[SyncIO] = LlmClient[SyncIO](
+    : ModelClient[SyncIO] = ModelClient[SyncIO](
     configured,
     BackendStub(CatsMonadError[SyncIO]())
       .whenAnyRequest
@@ -57,8 +57,11 @@ class BudgetSuite extends FunSuite:
 
   /** What a meter of the client saw, once the client had done what it did. */
   private def metering
-    (configured: LlmConfig, replies: String*)
-    (doing: LlmClient[SyncIO] => SyncIO[Any])
+    (
+      configured: ModelConfig,
+      replies: String*,
+    )
+    (doing: ModelClient[SyncIO] => SyncIO[Any])
     : List[(Usage, Option[Usd])] = (for
     sent <- Ref.of[SyncIO, Int](0)
     seen <- Ref.of[SyncIO, List[(Usage, Option[Usd])]](List.empty)
@@ -72,33 +75,39 @@ class BudgetSuite extends FunSuite:
     // The first reply is prose, not JSON, so it is asked for again.
     assertEquals(
       metering(config, said("Hi"), hi)(client =>
-        client.askWhole[String](Chat.of("Hi")) >> client.warm(Chat.of(
-          Part.of("A document."),
-          Part.CacheBreakpoint,
-        )) >> client.count(Chat.of("Hi")),
+        client.askWhole[String](Chat.userSays("Hi")) >>
+          client.warmCache(ModelRequest(Chat.userSays(
+            MessagePart.of("A document."),
+            MessagePart.CacheBreakpoint,
+          ))) >> client.countTokens(ModelRequest(Chat.userSays("Hi"))),
       ),
       List.fill(3)(usage -> Some(usd("0.2"))),
     )
     // An ask that never reads is metered for every attempt, before it fails.
     assertEquals(
-      metering(config, said("Hi"))(_.askWhole[String](Chat.of("Hi"))).size,
+      metering(config, said("Hi"))(_.askWhole[String](Chat.userSays("Hi")))
+        .size,
       3,
     )
 
   test("a meter sees a stream once, at its end, and none stopped before it"):
     assertEquals(
-      metering(config, hi)(_.stream(Chat.of("Hi")).compile.drain),
+      metering(config, hi)(
+        _.stream(ModelRequest(Chat.userSays("Hi"))).compile.drain,
+      ),
       List(usage -> Some(usd("0.2"))),
     )
     assertEquals(
-      metering(config, hi)(_.stream(Chat.of("Hi")).take(1).compile.drain),
+      metering(config, hi)(
+        _.stream(ModelRequest(Chat.userSays("Hi"))).take(1).compile.drain,
+      ),
       List.empty,
     )
 
   test("a meter is told no cost for a model iris cannot price"):
-    val next = LlmModel.of(LlmProvider.Anthropic, "claude-next").get
+    val next = Model.of(ModelProvider.Anthropic, "claude-next").get
     assertEquals(
-      metering(config.copy(model = next), hi)(_.askWhole[String](Chat.of(
+      metering(config.copy(model = next), hi)(_.askWhole[String](Chat.userSays(
         "Hi",
       ))),
       List(usage -> None),
@@ -110,7 +119,7 @@ class BudgetSuite extends FunSuite:
     )
     assertEquals(
       failing
-        .askWhole[String](Chat.of("Hi"))
+        .askWhole[String](Chat.userSays("Hi"))
         .attempt
         .unsafeRunSync()
         .left
@@ -124,8 +133,8 @@ class BudgetSuite extends FunSuite:
       budget <- Budget[SyncIO](usd("0.5"))
       limited = budget.limits(client(config, sent, hi))
       // Each ask costs $0.20; the third takes the spending past the limit.
-      _        <- limited.askWhole[String](Chat.of("Hi")).replicateA(3)
-      refused  <- limited.askWhole[String](Chat.of("Hi")).attempt
+      _        <- limited.askWhole[String](Chat.userSays("Hi")).replicateA(3)
+      refused  <- limited.askWhole[String](Chat.userSays("Hi")).attempt
       spent    <- budget.spent
       left     <- budget.remaining
       requests <- sent.get
@@ -134,7 +143,7 @@ class BudgetSuite extends FunSuite:
     assertEquals(remaining, Usd.zero)
     assertEquals(
       refused,
-      Left(LlmError.OverBudget(usd("0.5"), usd("0.6"))),
+      Left(ModelError.OverBudget(usd("0.5"), usd("0.6"))),
     )
     // The refused request was never sent.
     assertEquals(requests, 3)
@@ -145,14 +154,14 @@ class BudgetSuite extends FunSuite:
       budget <- Budget[SyncIO](usd("10"))
       // The first reply is prose, not JSON, so it is asked for again.
       limited = budget.limits(client(config, sent, said("Hi"), hi))
-      _     <- limited.askWhole[String](Chat.of("Hi"))
+      _     <- limited.askWhole[String](Chat.userSays("Hi"))
       asked <- budget.spent
-      _     <- limited.warm(Chat.of(
-        Part.of("A document."),
-        Part.CacheBreakpoint,
-      ))
+      _     <- limited.warmCache(ModelRequest(Chat.userSays(
+        MessagePart.of("A document."),
+        MessagePart.CacheBreakpoint,
+      )))
       warmed  <- budget.spent
-      _       <- limited.count(Chat.of("Hi"))
+      _       <- limited.countTokens(ModelRequest(Chat.userSays("Hi")))
       counted <- budget.spent
     yield (asked, warmed, counted)).unsafeRunSync()
     assertEquals(asked, usd("0.4"))
@@ -167,14 +176,18 @@ class BudgetSuite extends FunSuite:
       budget <- Budget[SyncIO](usd("0.1"))
       limited = budget.limits(client(config, sent, hi))
       // The first stream runs, so is charged in full, past the limit.
-      _        <- limited.stream(Chat.of("Hi")).compile.drain
-      refused  <- limited.stream(Chat.of("Hi")).compile.drain.attempt
+      _       <- limited.stream(ModelRequest(Chat.userSays("Hi"))).compile.drain
+      refused <- limited
+        .stream(ModelRequest(Chat.userSays("Hi")))
+        .compile
+        .drain
+        .attempt
       spent    <- budget.spent
       requests <- sent.get
     yield (refused, spent, requests)).unsafeRunSync()
     assertEquals(
       refused,
-      Left(LlmError.OverBudget(usd("0.1"), usd("0.2"))),
+      Left(ModelError.OverBudget(usd("0.1"), usd("0.2"))),
     )
     assertEquals(spent, usd("0.2"))
     assertEquals(requests, 1)
@@ -197,11 +210,11 @@ class BudgetSuite extends FunSuite:
         _ => ran.update(_ + 1).as("Found."),
       )
       limited = Fixtures.Sending(budget.limits(client(config, sent, looking)))
-      refused <- Question
+      refused <- WholeAsker
         .ask[SyncIO, String](
           limited.sent(_),
-          Chat.of("Look up hi."),
-          Question.attempts,
+          Chat.userSays("Look up hi."),
+          WholeAsker.attempts,
           Toolbox(List(look)),
         )
         .attempt
@@ -211,7 +224,7 @@ class BudgetSuite extends FunSuite:
     // Three rounds of $0.20 pass the $0.50 limit, and the fourth is refused.
     assertEquals(
       refused,
-      Some(LlmError.OverBudget(usd("0.5"), usd("0.6"))),
+      Some(ModelError.OverBudget(usd("0.5"), usd("0.6"))),
     )
     assertEquals(spent, usd("0.6"))
     assertEquals(runs, 3)
@@ -223,14 +236,14 @@ class BudgetSuite extends FunSuite:
       haiku = budget.limits(client(config, sent, hi))
       // Claude Sonnet 4.6's $3 and $15 per million tokens make $0.60.
       sonnet = budget.limits(client(
-        config.copy(model = LlmModel.ClaudeSonnet4_6),
+        config.copy(model = Model.ClaudeSonnet4_6),
         sent,
         hi,
       ))
-      _       <- haiku.askWhole[String](Chat.of("Hi"))
-      _       <- sonnet.askWhole[String](Chat.of("Hi"))
+      _       <- haiku.askWhole[String](Chat.userSays("Hi"))
+      _       <- sonnet.askWhole[String](Chat.userSays("Hi"))
       spent   <- budget.spent
-      counted <- haiku.count(Chat.of("Hi"))
+      counted <- haiku.countTokens(ModelRequest(Chat.userSays("Hi")))
     yield (spent, counted)).unsafeRunSync()
     assertEquals(spent, usd("0.8"))
     assertEquals(counted, 12)
@@ -238,30 +251,30 @@ class BudgetSuite extends FunSuite:
   test(
     "a reply with no cost fails a budgeted request, and none spends nothing",
   ):
-    val next = LlmModel.of(LlmProvider.Anthropic, "claude-next").get
+    val next = Model.of(ModelProvider.Anthropic, "claude-next").get
     val (unpriced, spent, nothing) = (for
       sent     <- Ref.of[SyncIO, Int](0)
       budget   <- Budget[SyncIO](usd("1"))
       unpriced <- budget
         .limits(client(config.copy(model = next), sent, hi))
-        .askWhole[String](Chat.of("Hi"))
+        .askWhole[String](Chat.userSays("Hi"))
         .attempt
       spent   <- budget.spent
       none    <- Budget[SyncIO](Usd.zero)
       nothing <- none
         .limits(client(config, sent, hi))
-        .askWhole[String](Chat.of("Hi"))
+        .askWhole[String](Chat.userSays("Hi"))
         .attempt
     yield (unpriced, spent, nothing)).unsafeRunSync()
-    assertEquals(unpriced, Left(LlmError.Unpriced))
+    assertEquals(unpriced, Left(ModelError.Unpriced))
     assertEquals(spent, Usd.zero)
     assertEquals(
       nothing,
-      Left(LlmError.OverBudget(Usd.zero, Usd.zero)),
+      Left(ModelError.OverBudget(Usd.zero, Usd.zero)),
     )
 
   test("a refusal says what was spent, in dollars"):
     assertEquals(
-      LlmError.OverBudget(usd("5"), usd("5.25")).getMessage,
+      ModelError.OverBudget(usd("5"), usd("5.25")).getMessage,
       "Over budget: US$5.25 of US$5 spent",
     )

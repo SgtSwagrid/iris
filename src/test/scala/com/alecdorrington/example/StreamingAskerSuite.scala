@@ -52,7 +52,7 @@ final case class Listed(items: Stream[IO, Int]) extends Listing
 
 final case class Refused(why: String) extends Listing
 
-class UnfoldingSuite extends FunSuite:
+class StreamingAskerSuite extends FunSuite:
 
   /** A reply written `size` characters at a time, ending as said. */
   private def written
@@ -71,35 +71,33 @@ class UnfoldingSuite extends FunSuite:
   /** A client streaming each reply in turn, keeping each chat it was sent. */
   private def streamer
     (replies: Stream[IO, Delta]*)
-    : IO[(LlmClient[IO], IO[List[Chat]])] = (
+    : IO[(ModelClient[IO], IO[List[Chat]])] = (
     Ref.of[IO, List[Stream[IO, Delta]]](replies.toList),
     Ref.of[IO, List[Chat]](Nil),
   ).mapN((left, sent) =>
-    val scripted = new LlmClient[IO]:
+    val scripted = new ModelClient[IO]:
       // A type holding no stream is asked whole: the next reply, gathered.
-      override protected def send
-        (chat: Chat, options: ReplyOptions)
-        : IO[Reply] = stream(chat, options)
-        .compile
-        .toList
-        .map(deltas =>
-          Reply(
-            text = deltas.collect { case Delta.Text(text) => text }.mkString,
-            stopReason = deltas
-              .collectFirst { case Delta.End(stop, _, _) => stop }
-              .getOrElse(StopReason.Unknown),
-            toolCalls = deltas.collect { case Delta.ToolCall(call) => call },
-          ),
-        )
+      override protected def send(request: ModelRequest): IO[ModelResponse] =
+        stream(request)
+          .compile
+          .toList
+          .map(deltas =>
+            ModelResponse(
+              text = deltas.collect { case Delta.Text(text) => text }.mkString,
+              stopReason = deltas
+                .collectFirst { case Delta.End(stop, _, _) => stop }
+                .getOrElse(StopReason.Unknown),
+              toolCalls = deltas.collect { case Delta.ToolCall(call) => call },
+            ),
+          )
 
-      override def count(chat: Chat, options: ReplyOptions): IO[Int] = IO
-        .raiseError(Exception("Not counted."))
+      override def countTokens(request: ModelRequest): IO[Int] =
+        IO.raiseError(Exception("Not counted."))
 
-      override def stream
-        (chat: Chat, options: ReplyOptions)
-        : Stream[IO, Delta] = Stream
+      override def stream(request: ModelRequest): Stream[IO, Delta] = Stream
         .eval(
-          sent.update(_ :+ chat) *> left.modify(all => (all.tail, all.head)),
+          sent.update(_ :+ request.chat) *>
+            left.modify(all => (all.tail, all.head)),
         )
         .flatten
     (scripted, sent.get),
@@ -116,7 +114,7 @@ class UnfoldingSuite extends FunSuite:
     (read: A => IO[B])
     : IO[B] = streamer(reply).flatMap((llm, _) =>
     llm
-      .ask[A](Chat.of("Translate."))
+      .ask[A](Chat.userSays("Translate."))
       .flatMap(answering =>
         answering.value.liftTo[IO](Exception("No value.")).flatMap(read),
       ),
@@ -134,7 +132,7 @@ class UnfoldingSuite extends FunSuite:
           written("""{"text":"b","gloss":"be"}]}""", 8)
         (llm, _) <- streamer(reply)
         read     <- llm
-          .ask[Page](Chat.of("Translate."))
+          .ask[Page](Chat.userSays("Translate."))
           .flatMap: answering =>
             answering
               .value
@@ -146,7 +144,7 @@ class UnfoldingSuite extends FunSuite:
                   .toList
                   .map(page.title -> _),
               )
-              .product(answering.reply.map(_.attempts))
+              .product(answering.responses.map(_.size))
       yield assertEquals(
         read,
         (Some("Hi" -> List(Word("a"), Word("b", Some("be")))), 1),
@@ -198,7 +196,7 @@ class UnfoldingSuite extends FunSuite:
       (llm, _) <-
         streamer(part(first, 3) ++ Stream.exec(gate.get) ++ written(rest, 3))
       read <- llm
-        .ask[A](Chat.of("Translate."))
+        .ask[A](Chat.userSays("Translate."))
         .flatMap(
           _.value
             .liftTo[IO](Exception("No value."))
@@ -244,11 +242,14 @@ class UnfoldingSuite extends FunSuite:
         streamer(written(reply))
           .flatMap((llm, _) =>
             if why == "second" then
-              llm.ask[Two](Chat.of("Count.")).flatMap(_.reply.attempt)
-            else llm.ask[Gloss](Chat.of("Translate.")).flatMap(_.reply.attempt),
+              llm.ask[Two](Chat.userSays("Count.")).flatMap(_.responses.attempt)
+            else
+              llm
+                .ask[Gloss](Chat.userSays("Translate."))
+                .flatMap(_.responses.attempt),
           )
           .map:
-            case Left(LlmError.Unreadable(_, detail, _)) =>
+            case Left(ModelError.UnreadableResponse(detail, _)) =>
               assert(detail.contains(s"`$why`"), detail)
             case other => fail(s"Not unreadable: $other"),
       ),
@@ -320,12 +321,12 @@ class UnfoldingSuite extends FunSuite:
           written("""{"title":"Hi","words":[{"text":"a"}]}"""),
         )
         read <- llm
-          .ask[Page](Chat.of("Translate."))
+          .ask[Page](Chat.userSays("Translate."))
           .flatMap(answering =>
             answering
               .value
               .traverse(_.words.compile.toList)
-              .product(answering.reply.map(_.attempts)),
+              .product(answering.responses.map(_.size)),
           )
         chats <- sent
       yield
@@ -360,11 +361,11 @@ class UnfoldingSuite extends FunSuite:
         streamer(reply)
           .flatMap((llm, _) =>
             llm
-              .ask[Page](Chat.of("Translate."))
+              .ask[Page](Chat.userSays("Translate."))
               .flatMap(answering =>
                 (
                   answering.value.get.words.attempt.compile.toList,
-                  answering.reply.attempt,
+                  answering.responses.attempt,
                   answering.value.get.words.attempt.compile.toList,
                 ).tupled,
               ),
@@ -378,7 +379,7 @@ class UnfoldingSuite extends FunSuite:
             assertEquals(words.size, 2, why)
             assertEquals(again, words, why)
             List(words.last, answer).foreach:
-              case Left(LlmError.Unreadable(_, detail, _)) =>
+              case Left(ModelError.UnreadableResponse(detail, _)) =>
                 assert(detail.contains(why), detail)
               case other => fail(s"Not unreadable: $other"),
           ),
@@ -394,7 +395,7 @@ class UnfoldingSuite extends FunSuite:
     )
 
   test("a request failing after its answer is handed over fails as it does"):
-    val timedOut = LlmError.TimedOut("Anthropic", 1.second)
+    val timedOut = ModelError.TimedOut("Anthropic", 1.second)
     run(
       streamer(
         part(
@@ -403,11 +404,11 @@ class UnfoldingSuite extends FunSuite:
         ) ++ Stream.raiseError[IO](timedOut),
       ).flatMap((llm, _) =>
         llm
-          .ask[Page](Chat.of("Translate."))
+          .ask[Page](Chat.userSays("Translate."))
           .flatMap(answering =>
             (
               answering.value.get.words.attempt.compile.toList,
-              answering.reply.attempt,
+              answering.responses.attempt,
             ).tupled,
           )
           .map((words, answer) =>
@@ -427,7 +428,7 @@ class UnfoldingSuite extends FunSuite:
         3,
       )).flatMap((llm, _) =>
           llm
-            .ask[Stream[IO, Verse]](Chat.of("Translate."))
+            .ask[Stream[IO, Verse]](Chat.userSays("Translate."))
             .flatMap(
               _.value
                 .get
@@ -442,10 +443,10 @@ class UnfoldingSuite extends FunSuite:
               Right(
                 List(
                   Right("a"),
-                  Left(_: LlmError.Unreadable),
+                  Left(_: ModelError.UnreadableResponse),
                 ),
               ),
-              Left(_: LlmError.Unreadable),
+              Left(_: ModelError.UnreadableResponse),
             ) => ()
           case other => fail(s"Not failed within and without: $other"),
     )
@@ -460,7 +461,7 @@ class UnfoldingSuite extends FunSuite:
         ) ++ Stream.exec(gate.get) ++ written("""{"text":"b"}]}""", 8)
         (llm, _) <- streamer(reply)
         read     <- llm
-          .ask[Page](Chat.of("Translate."))
+          .ask[Page](Chat.userSays("Translate."))
           .flatMap: answering =>
             val words = answering.value.get.words
             for
@@ -468,7 +469,7 @@ class UnfoldingSuite extends FunSuite:
                 words.evalTap(_ => gate.complete(())).compile.toList,
                 words.take(1).compile.toList,
               ).parTupled
-              ended <- answering.reply.as(answering.value.map(_.title))
+              ended <- answering.responses.as(answering.value.map(_.title))
               again <- words.compile.toList
             yield (both, ended, again)
       yield assertEquals(
@@ -482,7 +483,7 @@ class UnfoldingSuite extends FunSuite:
     )
 
   test("a tool asked for in a streamed reply is in its reply, with no value"):
-    val look = Part.ToolCall(
+    val look = MessagePart.ToolCall(
       "call_1",
       "look",
       Json.obj("word" -> Json.fromString("Hi")),
@@ -495,11 +496,17 @@ class UnfoldingSuite extends FunSuite:
       )).flatMap((llm, _) =>
         llm
           .ask[Page](
-            Chat.of("Translate."),
-            ReplyOptions(tools = List(Tool("look", "Looks up.", Json.obj()))),
+            Chat.userSays("Translate."),
+            ModelRequest.Options(tools =
+              List(Tool("look", "Looks up.", Json.obj())),
+            ),
           )
           .flatMap(answer =>
-            answer.reply.map(reply => (answer.value.isEmpty, reply.toolCalls)),
+            answer
+              .responses
+              .map(responses =>
+                (answer.value.isEmpty, responses.last.toolCalls),
+              ),
           )
           .map(read => assertEquals(read, (true, List(look)))),
       ),
@@ -511,33 +518,33 @@ class UnfoldingSuite extends FunSuite:
       streamer(written(page, 4))
         .flatMap((llm, _) =>
           llm
-            .ask[Page](Chat.of("Translate."))
+            .ask[Page](Chat.userSays("Translate."))
             .flatMap(answer =>
               answer
-                .reply
+                .responses
                 .product(answer.value.traverse(_.words.compile.toList)),
             ),
         )
-        .map((reply, words) =>
+        .map((responses, words) =>
           assertEquals(
-            (reply.text, reply.attempts, words),
+            (responses.last.text, responses.size, words),
             (page, 1, Some(List(Word("a"), Word("b")))),
           ),
         ),
     )
 
   test("a client that cannot stream gives a streamed type's answer whole"):
-    val whole = new LlmClient[IO]:
-      override protected def send
-        (chat: Chat, options: ReplyOptions)
-        : IO[Reply] =
-        IO.pure(Reply("""{"title":"Hi","words":[{"text":"a"},{"text":"b"}]}"""))
+    val whole = new ModelClient[IO]:
+      override protected def send(request: ModelRequest): IO[ModelResponse] = IO
+        .pure(ModelResponse(
+          """{"title":"Hi","words":[{"text":"a"},{"text":"b"}]}""",
+        ))
 
-      override def count(chat: Chat, options: ReplyOptions): IO[Int] = IO
-        .raiseError(Exception("Not counted."))
+      override def countTokens(request: ModelRequest): IO[Int] =
+        IO.raiseError(Exception("Not counted."))
     run(
       whole
-        .ask[Page](Chat.of("Translate."))
+        .ask[Page](Chat.userSays("Translate."))
         .flatMap(_.value.traverse(_.words.compile.toList))
         .map(words => assertEquals(words, Some(List(Word("a"), Word("b"))))),
     )
@@ -551,19 +558,19 @@ class UnfoldingSuite extends FunSuite:
           written("""{"first":[1],"second":[2]}"""),
         )
         read <- llm
-          .ask[Two](Chat.of("Count."))
+          .ask[Two](Chat.userSays("Count."))
           .flatMap(two =>
             two
               .value
               .traverse(two => (two.first ++ two.second).compile.toList)
-              .product(two.reply.map(_.attempts)),
+              .product(two.responses.map(_.size)),
           )
         // A case whole before another begins waits, and reads as a whole reply.
         (unions, _) <- streamer(
           written("""{"Refused":{"why":"x"},"Listed":{"items":[1]}}"""),
         )
         listed <- unions
-          .ask[Listing](Chat.of("List."))
+          .ask[Listing](Chat.userSays("List."))
           .flatMap(
             _.value
               .traverse {
@@ -578,7 +585,7 @@ class UnfoldingSuite extends FunSuite:
 
   test("a given answer's reply is checked as a whole reply would be"):
     val page = """{"title":"Hi","words":[{"text":"a"}]}"""
-    val look = Part.ToolCall("call_1", "look", Json.obj())
+    val look = MessagePart.ToolCall("call_1", "look", Json.obj())
     run(
       List(
         // A character at a time, so that the stream is seen open.
@@ -602,18 +609,18 @@ class UnfoldingSuite extends FunSuite:
         streamer(reply)
           .flatMap((llm, _) =>
             llm
-              .ask[Page](Chat.of("Translate."))
+              .ask[Page](Chat.userSays("Translate."))
               .flatMap(answer =>
                 (
                   answer.value.traverse(_.words.compile.toList),
-                  answer.reply.attempt,
+                  answer.responses.attempt,
                 ).tupled,
               ),
           )
           .map((words, reply) =>
             assertEquals(words, Some(List(Word("a"))), why)
             reply match
-              case Left(LlmError.Unreadable(_, detail, _)) =>
+              case Left(ModelError.UnreadableResponse(detail, _)) =>
                 assert(detail.contains(why), detail)
               case other => fail(s"Not unreadable ($why): $other"),
           ),
@@ -631,7 +638,7 @@ class UnfoldingSuite extends FunSuite:
             ended.complete(exit == Resource.ExitCase.Canceled).void,
           )
         (llm, _)  <- streamer(reply)
-        asking    <- llm.ask[Page](Chat.of("Translate.")).start
+        asking    <- llm.ask[Page](Chat.userSays("Translate.")).start
         _         <- begun.get
         _         <- asking.cancel
         cancelled <- ended.get
@@ -650,10 +657,10 @@ class UnfoldingSuite extends FunSuite:
             ended.complete(exit == Resource.ExitCase.Canceled).void,
           )
         (llm, _) <- streamer(reply)
-        answer   <- llm.ask[Page](Chat.of("Translate."))
+        answer   <- llm.ask[Page](Chat.userSays("Translate."))
         _        <- answer.cancel
         words    <- answer.value.get.words.attempt.compile.toList
-        whole    <- answer.reply.attempt
+        whole    <- answer.responses.attempt
         stopped  <- ended.get
       yield
         assert(stopped)
@@ -666,8 +673,8 @@ class UnfoldingSuite extends FunSuite:
     )
 
   test("a type holding no stream is asked of a client with one request"):
-    val anthropic = LlmClient[IO](
-      LlmConfig(LlmModel.ClaudeHaiku4_5, "key", 512),
+    val anthropic = ModelClient[IO](
+      ModelConfig(Model.ClaudeHaiku4_5, "key", 512),
       BackendStub(CatsMonadAsyncError[IO]())
         .whenAnyRequest
         .thenRespond(ResponseStub.adjust(
@@ -677,10 +684,8 @@ class UnfoldingSuite extends FunSuite:
     )
     run(
       anthropic
-        .ask[Person](Chat.of("Invent a person."))
-        .flatMap(answer =>
-          answer.reply.map(answer.value -> _.usage.outputTokens),
-        )
+        .ask[Person](Chat.userSays("Invent a person."))
+        .flatMap(answer => answer.usage.map(answer.value -> _.outputTokens))
         .map(read => assertEquals(read, (Some(Person("Ada", 36, None)), 2))),
     )
 
@@ -691,49 +696,47 @@ class UnfoldingSuite extends FunSuite:
     )
 
   private def emit(text: String, id: String = ""): Delta =
-    Delta.ToolCall(Part.ToolCall(
+    Delta.ToolCall(MessagePart.ToolCall(
       if id.isEmpty then s"emit-$text" else id,
       "emit",
       Json.obj("element" -> Json.obj("text" -> Json.fromString(text))),
     ))
 
   /** An emitted element that cannot be read, its text a number. */
-  private def garbled(id: String): Delta = Delta.ToolCall(Part.ToolCall(
+  private def garbled(id: String): Delta = Delta.ToolCall(MessagePart.ToolCall(
     id,
     "emit",
     Json.obj("element" -> Json.obj("text" -> Json.fromInt(5))),
   ))
 
   private def look(word: String, id: String = ""): Delta =
-    Delta.ToolCall(Part.ToolCall(
+    Delta.ToolCall(MessagePart.ToolCall(
       if id.isEmpty then s"look-$word" else id,
       "look",
       Json.obj("word" -> Json.fromString(word)),
     ))
 
   /** A client streaming a list as JSON, keeping the options it was sent. */
-  private def offering(offered: Ref[IO, List[ReplyOptions]]): LlmClient[IO] =
-    new LlmClient[IO]:
-      override protected def send
-        (chat: Chat, options: ReplyOptions)
-        : IO[Reply] = IO.raiseError(Exception("Not sent."))
+  private def offering
+    (offered: Ref[IO, List[ModelRequest.Options]])
+    : ModelClient[IO] = new ModelClient[IO]:
+    override protected def send(request: ModelRequest): IO[ModelResponse] = IO
+      .raiseError(Exception("Not sent."))
 
-      override def count(chat: Chat, options: ReplyOptions): IO[Int] = IO
-        .raiseError(Exception("Not counted."))
+    override def countTokens(request: ModelRequest): IO[Int] =
+      IO.raiseError(Exception("Not counted."))
 
-      override def stream
-        (chat: Chat, options: ReplyOptions)
-        : Stream[IO, Delta] = Stream.exec(offered.update(_ :+ options)) ++
-        written("[]")
+    override def stream(request: ModelRequest): Stream[IO, Delta] =
+      Stream.exec(offered.update(_ :+ request.options)) ++ written("[]")
 
   /** Asks for a stream of words given through emit, the dictionary run. */
   private def emitted
-    (llm: LlmClient[IO], attempts: Int = 3)
-    : IO[Answer[IO, Stream[IO, Word]]] = Ref
+    (llm: ModelClient[IO], attempts: Int = 3)
+    : IO[ValidatedResponse[IO, Stream[IO, Word]]] = Ref
     .of[IO, List[String]](Nil)
     .flatMap(asked =>
       llm.ask[Stream[IO, Word]](
-        Chat.of("Translate."),
+        Chat.userSays("Translate."),
         attempts = attempts,
         tools = List(dictionary(asked)),
       ),
@@ -755,7 +758,7 @@ class UnfoldingSuite extends FunSuite:
         )
         read <- llm
           .ask[Stream[IO, Word]](
-            Chat.of("Translate."),
+            Chat.userSays("Translate."),
             tools = List(dictionary(asked)),
           )
           .flatMap(answer =>
@@ -765,7 +768,7 @@ class UnfoldingSuite extends FunSuite:
               .evalTap(_ => gate.complete(()))
               .compile
               .toList
-              .product(answer.reply.map(_.attempts)),
+              .product(answer.responses.map(_.size)),
           )
         looked <- asked.get
         chats  <- sent
@@ -786,7 +789,7 @@ class UnfoldingSuite extends FunSuite:
       for
         asked       <- Ref.of[IO, List[String]](Nil)
         (llm, sent) <- streamer(
-          Stream(Delta.ToolCall(Part.ToolCall(
+          Stream(Delta.ToolCall(MessagePart.ToolCall(
             "emit-1",
             "emit",
             Json.obj("element" -> Json.obj("text" -> Json.fromInt(5))),
@@ -796,7 +799,7 @@ class UnfoldingSuite extends FunSuite:
         )
         words <- llm
           .ask[Stream[IO, Word]](
-            Chat.of("Translate."),
+            Chat.userSays("Translate."),
             tools = List(dictionary(asked)),
           )
           .flatMap(_.value.get.compile.toList)
@@ -822,7 +825,7 @@ class UnfoldingSuite extends FunSuite:
         (llm, _) <- streamer(written("""[{"text":"a"},{"text":"b"}]"""))
         words    <- llm
           .ask[Stream[IO, Word]](
-            Chat.of("Translate."),
+            Chat.userSays("Translate."),
             tools = List(dictionary(asked)),
           )
           .flatMap(_.value.get.compile.toList)
@@ -839,10 +842,10 @@ class UnfoldingSuite extends FunSuite:
         )
         person <- llm
           .ask[Person](
-            Chat.of("Invent a person."),
+            Chat.userSays("Invent a person."),
             tools = List(dictionary(asked)),
           )
-          .flatMap(answer => answer.reply.map(answer.value -> _.attempts))
+          .flatMap(answer => answer.responses.map(answer.value -> _.size))
         looked <- asked.get
         chats  <- sent
       yield
@@ -865,7 +868,7 @@ class UnfoldingSuite extends FunSuite:
           streamer().flatMap((llm, _) =>
             llm
               .ask[Stream[IO, Word]](
-                Chat.of("Translate."),
+                Chat.userSays("Translate."),
                 tools = List(
                   dictionary(asked),
                   RunnableTool[IO](
@@ -895,8 +898,8 @@ class UnfoldingSuite extends FunSuite:
           streamer().flatMap((llm, _) =>
             llm
               .ask[Stream[IO, Word]](
-                Chat.of("Translate."),
-                ReplyOptions(tools =
+                Chat.userSays("Translate."),
+                ModelRequest.Options(tools =
                   List(Tool(
                     "weather",
                     "Says the weather.",
@@ -920,7 +923,7 @@ class UnfoldingSuite extends FunSuite:
   test("emit is offered beside the tools run, taking an element of the stream"):
     run(
       for
-        offered <- Ref.of[IO, List[ReplyOptions]](Nil)
+        offered <- Ref.of[IO, List[ModelRequest.Options]](Nil)
         words <- emitted(offering(offered)).flatMap(_.value.get.compile.toList)
         options <- offered.get
       yield
@@ -987,7 +990,7 @@ class UnfoldingSuite extends FunSuite:
         )
         words <- llm
           .ask[Stream[IO, Word]](
-            Chat.of("Translate."),
+            Chat.userSays("Translate."),
             tools = List(dictionary(asked)),
           )
           .flatMap(_.value.get.compile.toList)
@@ -1022,10 +1025,10 @@ class UnfoldingSuite extends FunSuite:
       yield words match
         case List(
             Right(word),
-            Left(error: LlmError.Unreadable),
+            Left(error: ModelError.UnreadableResponse),
           ) =>
           assertEquals(word, Word("a"))
-          assertEquals(error.attempts, 4)
+          assertEquals(error.responses.size, 4)
           assert(
             error.detail.contains("2 times in a row"),
             error.detail,
@@ -1048,15 +1051,15 @@ class UnfoldingSuite extends FunSuite:
               .attempt
               .compile
               .toList
-              .product(answer.reply.attempt),
+              .product(answer.responses.attempt),
           )
         yield read match
           case (
               List(
                 Right(word),
-                Left(_: LlmError.Unreadable),
+                Left(_: ModelError.UnreadableResponse),
               ),
-              Left(_: LlmError.Unreadable),
+              Left(_: ModelError.UnreadableResponse),
             ) => assertEquals(word, Word("a"))
           case other => fail(s"Not failed on $stopped: $other"),
       ),
@@ -1072,7 +1075,7 @@ class UnfoldingSuite extends FunSuite:
         (llm, sent) <- streamer(Stream(emit("a"), look("b")) ++ toolStop)
         read        <- llm
           .ask[Stream[IO, Word]](
-            Chat.of("Translate."),
+            Chat.userSays("Translate."),
             tools = List(broken),
           )
           .flatMap(answer =>
@@ -1082,7 +1085,7 @@ class UnfoldingSuite extends FunSuite:
               .attempt
               .compile
               .toList
-              .product(answer.reply.attempt),
+              .product(answer.responses.attempt),
           )
         chats <- sent
       yield
@@ -1115,7 +1118,7 @@ class UnfoldingSuite extends FunSuite:
         )
         (llm, _) <- streamer(Stream(emit("a"), look("b")) ++ toolStop)
         answer   <- llm.ask[Stream[IO, Word]](
-          Chat.of("Translate."),
+          Chat.userSays("Translate."),
           tools = List(waiting),
         )
         _     <- started.get
@@ -1157,11 +1160,19 @@ class UnfoldingSuite extends FunSuite:
       for
         (llm, _) <- streamer(written(""))
         read     <- emitted(llm).flatMap(answer =>
-          answer.value.get.compile.toList.attempt.product(answer.reply.attempt),
+          answer
+            .value
+            .get
+            .compile
+            .toList
+            .attempt
+            .product(answer.responses.attempt),
         )
       yield read match
-        case (Left(error: LlmError.Unreadable), Left(_: LlmError.Unreadable)) =>
-          assert(
+        case (
+            Left(error: ModelError.UnreadableResponse),
+            Left(_: ModelError.UnreadableResponse),
+          ) => assert(
             error.detail.contains("said nothing"),
             error.detail,
           )
@@ -1184,9 +1195,11 @@ class UnfoldingSuite extends FunSuite:
             Usage(uncachedTokens = 7, visibleTokens = 2),
           )),
         )
-        reply <- emitted(llm).flatMap(_.reply)
+        answer    <- emitted(llm)
+        usage     <- answer.usage
+        responses <- answer.responses
       yield assertEquals(
-        (reply.usage, reply.attempts),
+        (usage, responses.size),
         (Usage(uncachedTokens = 10, visibleTokens = 2), 2),
       ),
     )

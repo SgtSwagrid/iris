@@ -4,8 +4,8 @@ import io.circe.Json
 import io.circe.parser.parse
 
 /**
-  * A piece of a reply arriving through [[LlmClient.stream]]: a run of [[Text]]
-  * and [[ToolCall]]s, followed by one [[End]].
+  * A piece of a reply arriving through [[ModelClient.stream]]: a run of
+  * [[Text]] and [[ToolCall]]s, followed by one [[End]].
   */
 enum Delta:
 
@@ -23,7 +23,7 @@ enum Delta:
     * @param call
     *   The call.
     */
-  case ToolCall(call: Part.ToolCall)
+  case ToolCall(call: MessagePart.ToolCall)
 
   /**
     * The end of the reply.
@@ -35,7 +35,7 @@ enum Delta:
     *   The token counts of the whole reply.
     *
     * @param cost
-    *   What the reply cost, as [[Reply.cost]] says.
+    *   What the reply cost, as [[ModelResponse.cost]] says.
     */
   case End
     (
@@ -61,13 +61,13 @@ private[iris] final case class Calling
     * The whole call, its arguments an empty object where none were given, or
     * why it is malformed, where they are no JSON, as a call cut short is not.
     */
-  def whole(provider: LlmProvider): Either[LlmError, Delta] =
+  def whole(provider: ModelProvider): Either[ModelError, Delta] =
     (if arguments.isEmpty then Right(Json.obj()) else parse(arguments))
       .left
       .map(_ =>
-        LlmError.Malformed(
+        ModelError.Malformed(
           provider.displayName,
           s"the arguments of a call of `$tool` are not JSON",
         ),
       )
-      .map(json => Delta.ToolCall(Part.ToolCall(id, tool, json)))
+      .map(json => Delta.ToolCall(MessagePart.ToolCall(id, tool, json)))

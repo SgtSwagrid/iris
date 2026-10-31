@@ -12,20 +12,15 @@ enum Role:
   case User
 
   /** The model itself. */
-  case Assistant
-
-  /** The role's name on the wire, where a provider uses this one. */
-  def code: String = this match
-    case User      => "user"
-    case Assistant => "assistant"
+  case Model
 
 /**
   * A part of a message. A message is a list of parts, so that text and media
   * travel together in reading order.
   */
-sealed trait Part
+sealed trait MessagePart
 
-object Part:
+object MessagePart:
 
   /**
     * A part of written text. Two in a row, with nothing but breakpoints between
@@ -35,13 +30,13 @@ object Part:
     * @param text
     *   The text.
     */
-  final case class Text(text: String) extends Part
+  final case class Text(text: String) extends MessagePart
 
   /**
     * Creates a part saying a value, as its [[Content]] says it: text as text,
     * and a value with a schema or an encoder as JSON. A value given to a chat
     * or message is said so already; this makes parts of a list of values to
-    * give it, as `chat.user(values.map(Part.of)*)`.
+    * give it, as `chat.userSays(values.map(MessagePart.of)*)`.
     *
     * @tparam A
     *   The type of the value.
@@ -52,7 +47,7 @@ object Part:
     * @return
     *   A part saying the value.
     */
-  def of[A : Content as A](value: A): Part = A.part(value)
+  def of[A : Content as A](value: A): MessagePart = A.part(value)
 
   /**
     * Says a value as a part wherever a chat or message takes one, as its
@@ -66,16 +61,16 @@ object Part:
     * @return
     *   The conversion of a value to the part saying it.
     */
-  inline given fromContent[A]: Conversion[A, Part] =
+  inline given fromContent[A]: Conversion[A, MessagePart] =
     converted(summonInline[Content[A]])
 
   /** Converts by a content, so that no function is inlined where one is used. */
-  private def converted[A](content: Content[A]): Conversion[A, Part] =
+  private def converted[A](content: Content[A]): Conversion[A, MessagePart] =
     content.part(_)
 
   /**
     * A picture, document or other media for the model to look at. A provider
-    * refuses media it cannot take with [[LlmError.Unsupported]], before any
+    * refuses media it cannot take with [[ModelError.Unsupported]], before any
     * request: Anthropic takes every [[MediaType]] Iris lists, and OpenAI its
     * pictures alone. Gemini is sent any media, and judges it itself.
     *
@@ -85,7 +80,7 @@ object Part:
     * @param data
     *   The content, Base64 encoded.
     */
-  final case class Media(mediaType: MediaType, data: String) extends Part
+  final case class Media(mediaType: MediaType, data: String) extends MessagePart
 
   object Media:
 
@@ -132,7 +127,7 @@ object Part:
       arguments: Json,
       signature: Option[String] = None,
     )
-    extends Part
+    extends MessagePart
 
   /**
     * The output of a tool, answering a [[ToolCall]] in the user's next message.
@@ -153,7 +148,7 @@ object Part:
       tool: String,
       output: String,
     )
-    extends Part
+    extends MessagePart
 
   /**
     * The end of a prefix for the provider to cache: everything before it, the
@@ -161,12 +156,12 @@ object Part:
     * the model.
     *
     * Anthropic caches only at breakpoints, and refuses a chat whose breakpoints
-    * mark more than four blocks with [[LlmError.Unsendable]]; OpenAI and Gemini
-    * cache long prefixes by themselves. A prefix too short for the provider is
-    * not cached. Requests sent at once cannot read one another's writes, so
-    * call [[LlmClient.warm]] before a batch.
+    * mark more than four blocks with [[ModelError.Unsendable]]; OpenAI and
+    * Gemini cache long prefixes by themselves. A prefix too short for the
+    * provider is not cached. Requests sent at once cannot read one another's
+    * writes, so call [[ModelClient.warmCache]] before a batch.
     */
-  case object CacheBreakpoint extends Part
+  case object CacheBreakpoint extends MessagePart
 
 /**
   * A single message in a [[Chat]].
@@ -174,27 +169,28 @@ object Part:
   * @param role
   *   The author of the message.
   *
-  * @param content
+  * @param parts
   *   The parts of the message, in reading order.
   */
-final case class Message(role: Role, content: List[Part]):
+final case class Message(role: Role, parts: List[MessagePart]):
 
   /** The text of this message, a paragraph per text part, media left out. */
-  def text: String = content
+  def text: String = parts
     .collect:
-      case Part.Text(text) if text.nonEmpty => text
+      case MessagePart.Text(text) if text.nonEmpty => text
     .mkString(Message.paragraphBreak)
 
   /** This message without its cache breakpoints. */
-  def uncached: Message =
-    copy(content = content.filterNot(_ == Part.CacheBreakpoint))
+  def withoutBreakpoints: Message =
+    copy(parts = parts.filterNot(_ == MessagePart.CacheBreakpoint))
 
   /** Whether this message holds only breakpoints, which no provider accepts. */
-  private[iris] def silent: Boolean = content.forall(_ == Part.CacheBreakpoint)
+  private[iris] def silent: Boolean =
+    parts.forall(_ == MessagePart.CacheBreakpoint)
 
   /** The tool results this message carries. */
-  def toolResults: List[Part.ToolResult] = content.collect:
-    case result: Part.ToolResult => result
+  def toolResults: List[MessagePart.ToolResult] = parts.collect:
+    case result: MessagePart.ToolResult => result
 
 object Message:
 
@@ -211,7 +207,7 @@ object Message:
     * @return
     *   A message of a part per value.
     */
-  def apply(role: Role, content: into[Part]*): Message =
+  def apply(role: Role, content: into[MessagePart]*): Message =
     new Message(role, content.toList)
 
   /** What is sent between two text parts in a row. */
@@ -223,16 +219,19 @@ object Message:
     * breakpoints between. A part is sent as the parts before it decide, never
     * those after it, so that a cached prefix is sent alike whatever follows.
     */
-  private[iris] def separated(parts: List[Part]): List[Part] = parts
-    .foldLeft((Vector.empty[Part], false)):
-      case ((sent, afterText), Part.Text(text)) if text.nonEmpty =>
-        val opened = if afterText then paragraphBreak + text else text
-        (sent :+ Part.Text(opened), true)
-      case ((sent, afterText), part @ (Part.Text(_) | Part.CacheBreakpoint)) =>
-        (sent :+ part, afterText)
-      case ((sent, _), part) => (sent :+ part, false)
-    ._1
-    .toList
+  private[iris] def separated(parts: List[MessagePart]): List[MessagePart] =
+    parts
+      .foldLeft((Vector.empty[MessagePart], false)):
+        case ((sent, afterText), MessagePart.Text(text)) if text.nonEmpty =>
+          val opened = if afterText then paragraphBreak + text else text
+          (sent :+ MessagePart.Text(opened), true)
+        case (
+            (sent, afterText),
+            part @ (MessagePart.Text(_) | MessagePart.CacheBreakpoint),
+          ) => (sent :+ part, afterText)
+        case ((sent, _), part) => (sent :+ part, false)
+      ._1
+      .toList
 
 /**
   * The full history of a conversation with a model, sent whole with every
@@ -241,28 +240,30 @@ object Message:
   *
   * {{{
   * for
-  *   first  <- client.ask[String](chat)
-  *   next    = chat.assistant(first).user("Tell me more.")
-  *   second <- client.ask[String](next)
+  *   first     <- client.ask[String](chat)
+  *   responses <- first.responses
+  *   next       = chat.modelSays(responses.last).userSays("Tell me more.")
+  *   second    <- client.ask[String](next)
   * yield second.value
   * }}}
   *
-  * Asked of a chat ending with the assistant's message, the model is told what
-  * to answer in a message of the user's after it, and so answers afresh rather
+  * Asked of a chat ending with the model's message, the model is told what to
+  * answer in a message of the user's after it, and so answers afresh rather
   * than continuing its own reply. A chat with no messages, a message of
   * breakpoints alone, or no message of the user's fails with
-  * [[LlmError.Unsendable]] before any request is made.
+  * [[ModelError.Unsendable]] before any request is made.
   *
   * @param messages
   *   The messages exchanged so far, oldest first.
   *
-  * @param system
-  *   The system message, if any, setting the model's general behaviour.
+  * @param instructions
+  *   The instructions, if any, setting the model's general behaviour, sent as
+  *   the provider's system message.
   */
 final case class Chat
   (
     messages: List[Message] = List.empty,
-    system: Option[String] = None,
+    instructions: Option[String] = None,
   ):
 
   /**
@@ -280,7 +281,8 @@ final case class Chat
     * Appends a user message saying each value as its [[Content]] says it: text
     * as text, a part as itself, such as the result of a tool the model called,
     * and any other value as JSON, of any kinds together. A list of parts is
-    * given as `parts*`, and one of other values as `values.map(Part.of)*`.
+    * given as `parts*`, and one of other values as
+    * `values.map(MessagePart.of)*`.
     *
     * @param content
     *   The values, in reading order.
@@ -288,11 +290,12 @@ final case class Chat
     * @return
     *   A copy of this chat ending with the message.
     */
-  def user(content: into[Part]*): Chat = appended(Message(Role.User, content*))
+  def userSays(content: into[MessagePart]*): Chat =
+    appended(Message(Role.User, content*))
 
   /**
-    * Appends an assistant message saying each value as its [[Content]] says it,
-    * as of an answer [[LlmClient.ask]] gave, to continue from.
+    * Appends a message of the model's saying each value as its [[Content]] says
+    * it, as of a value [[ModelClient.ask]] gave, to continue from.
     *
     * @param content
     *   The values, in reading order.
@@ -300,34 +303,36 @@ final case class Chat
     * @return
     *   A copy of this chat ending with the message.
     */
-  def assistant(content: into[Part]*): Chat =
-    appended(Message(Role.Assistant, content*))
+  def modelSays(content: into[MessagePart]*): Chat =
+    appended(Message(Role.Model, content*))
 
   /**
-    * Appends the model's reply, tool calls included.
+    * Appends the model's response, tool calls included.
     *
-    * @param reply
-    *   The reply to append.
+    * @param response
+    *   The response to append.
     *
     * @return
-    *   A copy of this chat ending with the reply.
+    *   A copy of this chat ending with the response.
     */
-  def assistant(reply: Reply): Chat = appended(Message(
-    Role.Assistant,
-    Option.when(reply.text.nonEmpty)(Part.Text(reply.text)).toList ++
-      reply.toolCalls,
+  def modelSays(response: ModelResponse): Chat = appended(Message(
+    Role.Model,
+    Option
+      .when(response.text.nonEmpty)(MessagePart.Text(response.text))
+      .toList ++ response.toolCalls,
   ))
 
   /**
     * Sets the system message.
     *
-    * @param system
+    * @param instructions
     *   The system message.
     *
     * @return
     *   A copy of this chat with the system message.
     */
-  def withSystem(system: String): Chat = copy(system = Some(system))
+  def withInstructions(instructions: String): Chat =
+    copy(instructions = Some(instructions))
 
   /** Why no provider would answer this chat, where none would. */
   private[iris] def unanswerable: Option[String] =
@@ -340,21 +345,22 @@ final case class Chat
 
   /**
     * The prefix of this chat to cache: everything up to and including its last
-    * [[Part.CacheBreakpoint]], followed where needed by a minimal user message
-    * so that it can be sent. Without a breakpoint, it holds no messages and so
-    * cannot be sent.
+    * [[MessagePart.CacheBreakpoint]], followed where needed by a minimal user
+    * message so that it can be sent. Without a breakpoint, it holds no messages
+    * and so cannot be sent.
     */
-  def cacheable: Chat =
-    val last = messages.lastIndexWhere(_.content.contains(Part.CacheBreakpoint))
+  def cachePrefix: Chat =
+    val last =
+      messages.lastIndexWhere(_.parts.contains(MessagePart.CacheBreakpoint))
     copy(messages =
       if last < 0 then List.empty
       else
         val message = messages(last)
         asked(
-          messages.take(last) :+ message.copy(content =
+          messages.take(last) :+ message.copy(parts =
             message
-              .content
-              .take(message.content.lastIndexOf(Part.CacheBreakpoint) + 1),
+              .parts
+              .take(message.parts.lastIndexOf(MessagePart.CacheBreakpoint) + 1),
           ),
         ),
     )
@@ -365,20 +371,23 @@ final case class Chat
     * message.
     */
   private def asked(prefix: List[Message]): List[Message] =
-    val (said, breakpoints) = prefix.lastOption.filter(_.silent) match
-      case Some(empty) => (prefix.init, empty.content)
+    val (leading, breakpoints) = prefix.lastOption.filter(_.silent) match
+      case Some(empty) => (prefix.init, empty.parts)
       case None        => (prefix, List.empty)
-    said.lastOption.filter(_.role == Role.User) match
-      case Some(last) => said.init :+
-          last.copy(content = last.content ++ breakpoints)
-      case None => said :+ Message(Role.User, breakpoints :+ Part.Text("."))
+    leading.lastOption.filter(_.role == Role.User) match
+      case Some(last) => leading.init :+
+          last.copy(parts = last.parts ++ breakpoints)
+      case None => leading :+ Message(
+          Role.User,
+          breakpoints :+ MessagePart.Text("."),
+        )
 
 object Chat:
 
   /**
     * Creates a chat of one user message, as a single-turn prompt, saying each
-    * value as its [[Content]] says it, as [[Chat.user]] does. A system message
-    * is set with [[Chat.withSystem]].
+    * value as its [[Content]] says it, as [[Chat.userSays]] does. A system
+    * message is set with [[Chat.withInstructions]].
     *
     * @param content
     *   What the user says, in reading order: text, parts, or values said as
@@ -387,4 +396,4 @@ object Chat:
     * @return
     *   A chat of one user message.
     */
-  def of(content: into[Part]*): Chat = Chat().user(content*)
+  def userSays(content: into[MessagePart]*): Chat = Chat().userSays(content*)

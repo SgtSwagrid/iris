@@ -20,7 +20,7 @@ class StallSuite extends FunSuite:
     */
   private def serving
     (reply: String, stalls: Boolean)
-    (test: LlmConfig => Unit)
+    (test: ModelConfig => Unit)
     : Unit =
     val over    = CountDownLatch(1)
     val threads = Executors.newCachedThreadPool()
@@ -48,12 +48,12 @@ class StallSuite extends FunSuite:
       threads.shutdownNow()
       ()
 
-  private def asked(configured: LlmConfig) = LlmClient
+  private def asked(configured: ModelConfig) = ModelClient
     .resource[IO](configured)
-    .use(_.ask[String](Chat.of("Hello")).attempt)
+    .use(_.ask[String](Chat.userSays("Hello")).attempt)
     .unsafeRunTimed(30.seconds)
 
-  private val timedOut = LlmError.TimedOut("Anthropic", 1.second)
+  private val timedOut = ModelError.TimedOut("Anthropic", 1.second)
 
   test("a reply that arrives whole is read as before"):
     serving(
@@ -77,9 +77,9 @@ class StallSuite extends FunSuite:
       stalls = false,
     )(configured =>
       assertEquals(
-        LlmClient
+        ModelClient
           .resource[IO](configured)
-          .use(_.stream(Chat.of("Hello")).compile.toList)
+          .use(_.stream(ModelRequest(Chat.userSays("Hello"))).compile.toList)
           .unsafeRunTimed(30.seconds),
         // Claude Haiku 4.5's $1 and $5 per million tokens.
         Some(List(Delta.End(
@@ -108,9 +108,14 @@ class StallSuite extends FunSuite:
       stalls = true,
     )(configured =>
       assertEquals(
-        LlmClient
+        ModelClient
           .resource[IO](configured)
-          .use(_.stream(Chat.of("Hello")).attempt.compile.toList)
+          .use(
+            _.stream(ModelRequest(Chat.userSays("Hello")))
+              .attempt
+              .compile
+              .toList,
+          )
           .unsafeRunTimed(30.seconds),
         Some(List(
           Right(Delta.Text("Hel")),

@@ -14,37 +14,38 @@ private[iris] object JsonHttp:
   /** Resolves an endpoint beneath an origin, failing on one that is no URL. */
   def endpoint
     (
-      provider: LlmProvider,
+      provider: ModelProvider,
       origin: String,
       path: String*,
     )
-    : Either[LlmError, Uri] = Uri
+    : Either[ModelError, Uri] = Uri
     .parse(origin)
     .bimap(
-      LlmError.Misconfigured(provider.displayName, _),
+      ModelError.Misconfigured(provider.displayName, _),
       _.addPath(path),
     )
 
   /** Refuses a chat no provider would answer, as [[Chat.unanswerable]] says. */
-  def answerable(provider: LlmProvider, chat: Chat): Either[LlmError, Unit] =
-    chat
-      .unanswerable
-      .map(LlmError.Unsendable(provider.displayName, _))
-      .toLeft(())
+  def refuseUnanswerable
+    (provider: ModelProvider, chat: Chat)
+    : Either[ModelError, Unit] = chat
+    .unanswerable
+    .map(ModelError.Unsendable(provider.displayName, _))
+    .toLeft(())
 
   /** Refuses a chat holding media of a kind the provider does not take. */
-  def viewable
+  def refuseUnsupportedMedia
     (
-      provider: LlmProvider,
+      provider: ModelProvider,
       chat: Chat,
       taken: Set[MediaType],
     )
-    : Either[LlmError, Unit] = chat
+    : Either[ModelError, Unit] = chat
     .messages
-    .flatMap(_.content)
+    .flatMap(_.parts)
     .collectFirst:
-      case Part.Media(mediaType, _) if !taken.contains(mediaType) =>
-        LlmError.Unsupported(
+      case MessagePart.Media(mediaType, _) if !taken.contains(mediaType) =>
+        ModelError.Unsupported(
           provider.displayName,
           s"sending ${ mediaType.name } in a chat",
         )
@@ -66,10 +67,10 @@ private[iris] object JsonHttp:
     * The text of parts already [[Message.separated]], where they are text
     * alone.
     */
-  def plain(parts: Seq[Part]): Option[String] =
+  def plain(parts: Seq[MessagePart]): Option[String] =
     val texts = parts.collect:
-      case Part.Text(text) => text
-    Option.when(parts.forall(_.isInstanceOf[Part.Text]))(texts.mkString)
+      case MessagePart.Text(text) => text
+    Option.when(parts.forall(_.isInstanceOf[MessagePart.Text]))(texts.mkString)
 
   /** A tool's declaration, its schema under the field the provider reads. */
   def declared(tool: Tool, schema: String): Json = Json.obj(
@@ -80,11 +81,11 @@ private[iris] object JsonHttp:
 
   def unsuccessful
     (
-      provider: LlmProvider,
+      provider: ModelProvider,
       response: Response[?],
       detail: String,
     )
-    : LlmError = LlmError.Unsuccessful(
+    : ModelError = ModelError.Unsuccessful(
     provider.displayName,
     response.code,
     retryAfter(response.header("Retry-After")),
@@ -98,12 +99,12 @@ private[iris] object JsonHttp:
   /** Decodes a response's body, failing on an unsuccessful or unreadable one. */
   def parse[R : Decoder]
     (
-      provider: LlmProvider,
+      provider: ModelProvider,
       response: Response[Either[String, String]],
     )
-    : Either[LlmError, R] = response
+    : Either[ModelError, R] = response
     .body
     .leftMap(unsuccessful(provider, response, _))
     .flatMap: body =>
       decode[R](body).leftMap: error =>
-        LlmError.Malformed(provider.displayName, error.getMessage)
+        ModelError.Malformed(provider.displayName, error.getMessage)

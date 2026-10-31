@@ -9,7 +9,7 @@ import sttp.model.StatusCode
   * @param message
   *   The error's message.
   */
-enum LlmError(message: String) extends Exception(message):
+enum ModelError(message: String) extends Exception(message):
 
   /**
     * An unsuccessful HTTP status from the provider.
@@ -33,7 +33,7 @@ enum LlmError(message: String) extends Exception(message):
       status: StatusCode,
       retryAfter: Option[FiniteDuration],
       detail: String,
-    ) extends LlmError(s"$provider request failed ($status): $detail")
+    ) extends ModelError(s"$provider request failed ($status): $detail")
 
   /**
     * A response body that could not be decoded.
@@ -45,7 +45,7 @@ enum LlmError(message: String) extends Exception(message):
     *   The description of the decoding failure.
     */
   case Malformed(provider: String, detail: String)
-    extends LlmError(s"Unexpected $provider response: $detail")
+    extends ModelError(s"Unexpected $provider response: $detail")
 
   /**
     * A configuration that cannot be used, such as a base URL that is no URL. No
@@ -58,7 +58,7 @@ enum LlmError(message: String) extends Exception(message):
     *   The description of what cannot be used.
     */
   case Misconfigured(provider: String, detail: String)
-    extends LlmError(s"Cannot address $provider: $detail")
+    extends ModelError(s"Cannot address $provider: $detail")
 
   /**
     * A chat the provider would refuse. No request is made.
@@ -70,7 +70,7 @@ enum LlmError(message: String) extends Exception(message):
     *   The description of what the provider would refuse.
     */
   case Unsendable(provider: String, detail: String)
-    extends LlmError(s"$provider will not answer this chat: $detail")
+    extends ModelError(s"$provider will not answer this chat: $detail")
 
   /**
     * An operation the provider's API does not offer, which fails every time. No
@@ -83,7 +83,7 @@ enum LlmError(message: String) extends Exception(message):
     *   The description of what the provider cannot do.
     */
   case Unsupported(provider: String, detail: String)
-    extends LlmError(s"$provider cannot do this: $detail")
+    extends ModelError(s"$provider cannot do this: $detail")
 
   /**
     * A request the provider did not answer within the configured timeout, such
@@ -96,7 +96,7 @@ enum LlmError(message: String) extends Exception(message):
     *   How long the request was waited for.
     */
   case TimedOut(provider: String, after: FiniteDuration)
-    extends LlmError(s"$provider did not answer within $after")
+    extends ModelError(s"$provider did not answer within $after")
 
   /**
     * A request a [[Budget]] refused, as as much as its limit was spent. No
@@ -109,7 +109,7 @@ enum LlmError(message: String) extends Exception(message):
     *   What they had spent when this one was refused.
     */
   case OverBudget(limit: Usd, spent: Usd)
-    extends LlmError(
+    extends ModelError(
       s"Over budget: US$$${ spent.amount } of US$$${ limit.amount } spent",
     )
 
@@ -119,17 +119,14 @@ enum LlmError(message: String) extends Exception(message):
     * charged for the request by then, and its reply is lost.
     */
   case Unpriced
-    extends LlmError(
+    extends ModelError(
       "A budget cannot charge a reply with no cost: give the configuration rates for a model Iris does not list",
     )
 
   /**
-    * A reply that could not be read as the answer [[LlmClient.ask]] asked for:
-    * after the model was told why as often as allowed, or at once where asking
-    * again could not help, as for a reply cut off at the token limit.
-    *
-    * @param attempts
-    *   The number of replies asked for.
+    * A reply that could not be read as the answer [[ModelClient.ask]] asked
+    * for: after the model was told why as often as allowed, or at once where
+    * asking again could not help, as for a reply cut off at the token limit.
     *
     * @param detail
     *   The description of why the last reply could not be read, as the model
@@ -137,16 +134,16 @@ enum LlmError(message: String) extends Exception(message):
     *   refusal of a value may or a map's keys do, and so is kept out of the
     *   message.
     *
-    * @param replies
-    *   The replies asked for, oldest first, with their usage, also kept out of
-    *   the message.
+    * @param responses
+    *   Every response asked for, oldest first, with their usage, also kept out
+    *   of the message: as many as the ask made attempts.
     */
-  case Unreadable
+  case UnreadableResponse
     (
-      attempts: Int,
       detail: String,
-      replies: List[Reply],
+      responses: List[ModelResponse],
     )
-    extends LlmError(
-      s"The model's reply could not be read as asked (attempts: $attempts)",
+    extends ModelError(
+      s"The model's reply could not be read as asked (attempts: ${ responses
+          .size })",
     )

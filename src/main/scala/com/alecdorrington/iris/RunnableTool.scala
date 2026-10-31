@@ -6,7 +6,7 @@ import io.circe.Json
 
 /**
   * A tool the model may ask to have run, with what running it does: given to
-  * [[LlmClient.ask]], it is offered to the model and run wherever the model
+  * [[ModelClient.ask]], it is offered to the model and run wherever the model
   * asks for it, the model then told its output and asked to go on. What the
   * tool does, and whether it may, is the host's, as `run` decides.
   *
@@ -62,7 +62,7 @@ object RunnableTool:
     : RunnableTool[F] = RunnableTool(
     Tool(name, description, A.json),
     arguments =>
-      Question
+      WholeAsker
         .decoded(A, arguments)
         .fold(
           why => s"The arguments could not be read:\n$why".pure[F],
@@ -74,21 +74,24 @@ object RunnableTool:
 private[iris] final case class Toolbox[F[_]](tools: List[RunnableTool[F]]):
 
   /** The options, offering these tools beside those offered already. */
-  def offered(options: ReplyOptions): ReplyOptions =
-    options.copy(tools = options.tools ++ tools.map(_.tool))
+  def offered(options: ModelRequest.Options): ModelRequest.Options = options
+    .copy(tools = options.tools ++ tools.map(_.tool))
 
   /** Whether the calls are some, and every one of a tool in this box. */
-  def runs(calls: List[Part.ToolCall]): Boolean = calls.nonEmpty &&
+  def runs(calls: List[MessagePart.ToolCall]): Boolean = calls.nonEmpty &&
     calls.forall(call => tools.exists(_.tool.name == call.tool))
 
   /** The result of each call, of a tool in this box, in order. */
   def ran
-    (calls: List[Part.ToolCall])
+    (calls: List[MessagePart.ToolCall])
     (using Applicative[F])
-    : F[List[Part.ToolResult]] = calls.traverse(run)
+    : F[List[MessagePart.ToolResult]] = calls.traverse(run)
 
   /** The result of a call of a tool in this box. */
-  def run(call: Part.ToolCall)(using Applicative[F]): F[Part.ToolResult] = tools
+  def run
+    (call: MessagePart.ToolCall)
+    (using Applicative[F])
+    : F[MessagePart.ToolResult] = tools
     .find(_.tool.name == call.tool)
     .fold(s"No tool is named `${ call.tool }`.".pure[F])(_.run(call.arguments))
-    .map(Part.ToolResult(call.id, call.tool, _))
+    .map(MessagePart.ToolResult(call.id, call.tool, _))

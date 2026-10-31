@@ -34,44 +34,47 @@ libraryDependencies += "com.alecdorrington" %% "iris" % "{version}"
 
 ## 🚀 Usage
 
-The public interface is [`LlmClient`](src/main/scala/com/alecdorrington/iris/LlmClient.scala).
-Build one for an explicit [`LlmConfig`](src/main/scala/com/alecdorrington/iris/LlmConfig.scala) with `LlmClient.resource`,
-over an sttp backend of your own with `LlmClient(config, backend)`,
-or from the environment (see [Configuration](#%EF%B8%8F-configuration)) with `LlmClient.fromEnv`.
+The public interface is [`ModelClient`](src/main/scala/com/alecdorrington/iris/ModelClient.scala).
+Build one for an explicit [`ModelConfig`](src/main/scala/com/alecdorrington/iris/ModelConfig.scala) with `ModelClient.resource`,
+over an sttp backend of your own with `ModelClient(config, backend)`,
+or from the environment (see [Configuration](#%EF%B8%8F-configuration)) with `ModelClient.fromEnv`.
 
-Models are named by [`LlmModel`](src/main/scala/com/alecdorrington/iris/LlmModel.scala), each served by one provider,
+Models are named by [`Model`](src/main/scala/com/alecdorrington/iris/Model.scala), each served by one provider,
 which is the one a configuration speaks to:
 
 ```scala
-import com.alecdorrington.iris.{LlmClient, LlmConfig, LlmModel}
+import com.alecdorrington.iris.{Model, ModelClient, ModelConfig}
 
-LlmClient.resource[IO](LlmConfig(LlmModel.ClaudeOpus5_5, apiKey, maxTokens = 4096))
+ModelClient.resource[IO](ModelConfig(Model.ClaudeOpus5_5, apiKey, maxTokens = 4096))
 ```
 
 A client prompts its configuration's model alone. For another model, build another client; several
-may share one backend through `LlmClient(config, backend)`.
+may share one backend through `ModelClient(config, backend)`.
 
 A model Iris does not list yet is named with its provider, as
-`LlmModel.of(LlmProvider.Anthropic, "claude-...")`, which gives `None` for a blank name, and the
+`Model.of(ModelProvider.Anthropic, "claude-...")`, which gives `None` for a blank name, and the
 listed constant for a name Iris lists. A model's `name` is its provider's and its own, as
 `anthropic:claude-opus-5-5`, which is how a configuration logs it.
 
 ### Asking
 
-Every reply is asked for with `ask`, whose type says what the answer is: `String`, or any type of your
-own as [below](#typed-answers). Every type is asked for alike, and every ask gives the same: an
-[`Answer`](src/main/scala/com/alecdorrington/iris/Answer.scala) holding its `value`, and its `reply`, an effect giving the
-[`Reply`](src/main/scala/com/alecdorrington/iris/Answer.scala) it was read from: its `text`, why the model stopped
-(`stopReason`), the token `usage` of every attempt, the `toolCalls` it made, and how many `attempts` it
-took. The reply is an effect as an answer may be given before its reply ends (see [Streaming](#streaming));
-for most types it has ended already. Being an effect, it makes answers equal only where they are the same
-answer: compare their values and replies instead. A single-turn prompt is a chat of one message, `Chat.of`:
+Every response is asked for with `ask`, whose type says what its value is: `String`, or any type of your
+own as [below](#typed-answers). Every type is asked for alike, and every ask gives the same: a
+[`ValidatedResponse`](src/main/scala/com/alecdorrington/iris/ModelResponse.scala), holding its `value`, read and
+validated against the type's schema, and its `responses`, an effect giving every
+[`ModelResponse`](src/main/scala/com/alecdorrington/iris/ModelResponse.scala) the ask took, the last the one the value
+was read from: each with its `text`, why the model stopped (`stopReason`), its token `usage`, its `cost` and the
+`toolCalls` it made. An ask may take several, each a request of its own, where the model is asked again or tools are
+run; `usage` and `cost` total them, and `responses.map(_.size)` counts them. The responses are an effect as a value
+may be given before the last ends (see [Streaming](#streaming)); for most types it has ended already. Being an
+effect, they make validated responses equal only where they are the same one: compare their values and responses
+instead. A single-turn prompt is a chat of one message, `Chat.userSays`:
 
 ```scala
-import com.alecdorrington.iris.{Chat, LlmClient}
+import com.alecdorrington.iris.{Chat, ModelClient}
 
-LlmClient.fromEnv[IO].use {
-  case Some(client) => client.ask[String](Chat.of("Hello!")).map(_.value)
+ModelClient.fromEnv[IO].use {
+  case Some(client) => client.ask[String](Chat.userSays("Hello!")).map(_.value)
   case None         => // No provider configured.
 }
 ```
@@ -80,16 +83,16 @@ LlmClient.fromEnv[IO].use {
 
 Conversations are stateless: nothing is remembered between calls, and the full history
 travels with every request as a [`Chat`](src/main/scala/com/alecdorrington/iris/Chat.scala).
-To continue a conversation, append the model's reply and the next user message, then send the chat again:
+To continue a conversation, append what the model said and the next user message, then send the chat again:
 
 ```scala
 import com.alecdorrington.iris.Chat
 
-val chat = Chat().withSystem("You are terse.").user("Name a colour.")
+val chat = Chat().withInstructions("You are terse.").userSays("Name a colour.")
 for
-  first  <- client.ask[String](chat)
-  reply  <- first.reply
-  second <- client.ask[String](chat.assistant(reply).user("And another."))
+  first     <- client.ask[String](chat)
+  responses <- first.responses
+  second    <- client.ask[String](chat.modelSays(responses.last).userSays("And another."))
 yield second.value
 ```
 
@@ -106,7 +109,7 @@ enum Mood:
 
 case class Review(summary: String, mood: Mood, score: Int, quotes: List[String] = Nil)
 
-client.ask[Review](Chat.of(s"Review this essay: $essay")) // IO[Answer[IO, Review]]
+client.ask[Review](Chat.userSays(s"Review this essay: $essay")) // IO[ValidatedResponse[IO, Review]]
 ```
 
 `derives Schema` derives a type's schema once, beside it, rather than wherever it is needed, and where a
@@ -122,8 +125,8 @@ fence, though the model is asked for JSON alone; JSON amid prose with no fence i
 is told what was wrong as circe says it. A reply asking for a tool is given at once, with no `value`. A reply
 that asking again could not help fails at once: one cut off at the token limit, which is never read, as what
 parses may be cut short, one the provider stopped, as on a refusal, and one saying nothing. A chat in which
-the user says nothing fails with `LlmError.Unsendable` before any request. The last unreadable reply fails
-with `LlmError.Unreadable`, which keeps every reply asked for, usage included, and what the model was told was
+the user says nothing fails with `ModelError.Unsendable` before any request. The last unreadable reply fails
+with `ModelError.UnreadableResponse`, which keeps every reply asked for, usage included, and what the model was told was
 wrong with the last, which may repeat what it said; both are kept out of its message, so that it may be
 logged. Each attempt is a request of its own, so a wrapper (see [Wrapping a client](#wrapping-a-client)) sees
 every one too.
@@ -177,15 +180,15 @@ no comment written on a parameter itself, so describe a field with `@param`.
 `String` is asked for as every type is: the model is told the schema `{"type":"string"}` and replies with a
 JSON string, which is read back as any other answer.
 
-What goes in is alike everywhere: `Chat.of`, a chat's `user` and `assistant` messages and `Message` each
+What goes in is alike everywhere: `Chat.userSays`, a chat's `userSays` and `modelSays` and `Message` each
 take any values with a [`Content`](src/main/scala/com/alecdorrington/iris/Content.scala), of any kinds together, as parts of one message in
 reading order. Text is said as it is, a part as itself, and any other value as JSON, as its `Schema` writes it,
 or else, where it has none, as its circe `Encoder` does:
 
 ```scala
-client.ask[Review](Chat.of(essay).withSystem("Review the essay you are given."))
-client.ask[Review](Chat.of("Review this draft.", draft, Part.CacheBreakpoint, "Be brief.")) // draft: Draft
-client.ask[Review](chat.assistant(review).user("Now make it kinder."))
+client.ask[Review](Chat.userSays(essay).withInstructions("Review the essay you are given."))
+client.ask[Review](Chat.userSays("Review this draft.", draft, MessagePart.CacheBreakpoint, "Be brief.")) // draft: Draft
+client.ask[Review](chat.modelSays(review).userSays("Now make it kinder."))
 ```
 
 A value holding an fs2 `Stream`, as an answer may, has a schema but cannot be said, as its stream
@@ -195,19 +198,19 @@ A type of your own is said as a given `Content` of its own says it, ahead of any
 picture may be:
 
 ```scala
-given Content[Scan] = scan => Part.Media("image/png", scan.base64)
+given Content[Scan] = scan => MessagePart.Media(MediaType.Png, scan.base64)
 ```
 
-A list of parts is given as `chat.user(parts*)`, and a list of other values as `chat.user(values.map(Part.of)*)`.
+A list of parts is given as `chat.userSays(parts*)`, and a list of other values as `chat.userSays(values.map(MessagePart.of)*)`.
 
 The schema is asked for in words, at the close of the user's last message, rather than through any
 provider's own structured output, so it works alike everywhere, and a cached prefix is sent as it was.
 
 ### Tuning and metadata
 
-Each request accepts [`ReplyOptions`](src/main/scala/com/alecdorrington/iris/ReplyOptions.scala)
+Each request accepts [`ModelRequest.Options`](src/main/scala/com/alecdorrington/iris/ModelRequest.scala)
 (token limit, temperature, top-p, stop sequences, effort), and each
-[`Reply`](src/main/scala/com/alecdorrington/iris/Answer.scala) carries the reply text along with a
+[`ModelResponse`](src/main/scala/com/alecdorrington/iris/ModelResponse.scala) carries the reply text along with a
 normalised `StopReason` and its token `Usage`, which adds up with `+`. Its counts are alike for every
 provider, and none includes another, so that each can be priced alone: tokens read afresh, read from
 the cache and written to it, audio read afresh and from the cache, and the reply's visible and
@@ -215,7 +218,7 @@ thinking tokens. A count the provider does not report, or never charges for apar
 `inputTokens`, `cachedTokens` and `outputTokens` total them.
 
 ```scala
-client.ask[String](chat, ReplyOptions(maxTokens = Some(1024), temperature = Some(0.2)))
+client.ask[String](chat, ModelRequest.Options(maxTokens = Some(1024), temperature = Some(0.2)))
 ```
 
 A stop sequence stops the model in the text it writes, which for `ask` is JSON: one inside a JSON string,
@@ -236,15 +239,15 @@ OpenAI's `reasoning_effort` and a Gemini thinking budget; a model that cannot be
 refuses the request.
 
 ```scala
-client.ask[String](chat, ReplyOptions(effort = Some(Effort.Medium)))
+client.ask[String](chat, ModelRequest.Options(effort = Some(Effort.Medium)))
 ```
 
 ### Costs
 
-Each `Reply`, and so each answer's `reply`, also says what it `cost`, in US dollars, as a
-[`Usd`](src/main/scala/com/alecdorrington/iris/Usd.scala): each reply priced as it came, at the
-[`Rates`](src/main/scala/com/alecdorrington/iris/Rates.scala) Iris lists for its model, and summed over
-an ask's attempts as its usage is. Rates are per million tokens, one for each of `Usage`'s counts,
+Each `ModelResponse` also says what it `cost`, in US dollars, as a
+[`Usd`](src/main/scala/com/alecdorrington/iris/Usd.scala): each response priced as it came, at the
+[`Rates`](src/main/scala/com/alecdorrington/iris/Rates.scala) Iris lists for its model, and a
+`ValidatedResponse`'s `cost` totals every response the ask took, as its `usage` does. Rates are per million tokens, one for each of `Usage`'s counts,
 as the provider charges on its standard tier, and a model charging more for a long prompt has
 rates `above` a number of prompt tokens, which then apply to the whole request. A price change
 the provider has announced is listed from midnight UTC on its day (Iris's assumption, as Google names
@@ -255,7 +258,7 @@ rates of its own, which also stand in for those listed, as for a proxy charging 
 a discount:
 
 ```scala
-LlmConfig(model, apiKey, maxTokens = 4096, rates = Some(Rates.of(Usd(BigDecimal(3)), Usd(BigDecimal(15)))))
+ModelConfig(model, apiKey, maxTokens = 4096, rates = Some(Rates.of(Usd(BigDecimal(3)), Usd(BigDecimal(15)))))
 ```
 
 `Rates.listed(model, at)` gives the rates Iris lists ahead of any request, as for estimating one.
@@ -284,7 +287,7 @@ client.metered((_, cost) => cost.traverse_(spent => total.update(_ + spent)))
 
 A [`Budget`](src/main/scala/com/alecdorrington/iris/Budget.scala) limits what requests may cost
 together, in US dollars, as for a session: every client it `limits` spends from it, whatever its
-model or provider. A request is refused with `LlmError.OverBudget` once as much as the limit has
+model or provider. A request is refused with `ModelError.OverBudget` once as much as the limit has
 been spent, before anything is sent, a stream before it starts, and is charged what its reply cost when the reply comes. Every
 attempt of an `ask` is charged, and so is warming, as `metered` meters them; counting tokens costs
 nothing, so goes on. Each round of an `ask` that runs tools is a request of its own, so a budget is
@@ -307,32 +310,32 @@ charge for what it wrote. What is spent never resets: a budget for each day, or 
 `Budget` for each.
 
 A budget needs prices: a reply with no cost, from a model Iris does not list whose configuration
-gives no rates, fails its request with `LlmError.Unpriced`. By then the provider has charged for
+gives no rates, fails its request with `ModelError.Unpriced`. By then the provider has charged for
 it and the reply is lost, as is every later one from that model, so give such a model `rates` in
-its `LlmConfig` before limiting it. A budget is never needed: a client without one spends without
+its `ModelConfig` before limiting it. A budget is never needed: a client without one spends without
 limit.
 
 ### Pictures and documents
 
-A message is a list of [`Part`](src/main/scala/com/alecdorrington/iris/Chat.scala)s, so text may travel beside
+A message is a list of [`MessagePart`](src/main/scala/com/alecdorrington/iris/Chat.scala)s, so text may travel beside
 the media it refers to. A message of text alone is still sent as plain text, so nothing
 changes for a conversation which carries none.
 
 Text parts in a row are sent as paragraphs of their own, a blank line apart, since every
-provider would otherwise run them together: `Part.Text("BOOK 1: notes.txt")` followed by
-`Part.Text("Chapter one.")` would reach the model as `BOOK 1: notes.txtChapter one.`. Only
+provider would otherwise run them together: `MessagePart.Text("BOOK 1: notes.txt")` followed by
+`MessagePart.Text("Chapter one.")` would reach the model as `BOOK 1: notes.txtChapter one.`. Only
 breakpoints may lie between them; a picture, a document or a tool call between two texts
 already keeps them apart, and they are sent as they are.
 
 ```scala
-import com.alecdorrington.iris.{MediaType, Part}
+import com.alecdorrington.iris.{MediaType, MessagePart}
 
-chat.user("What is in this picture?", Part.Media(MediaType.Png, bytes)) // or its Base64, as a String
+chat.userSays("What is in this picture?", MessagePart.Media(MediaType.Png, bytes)) // or its Base64, as a String
 ```
 
 Media is of a [`MediaType`](src/main/scala/com/alecdorrington/iris/MediaType.scala): `Png`, `Jpeg`, `Gif`,
 `Webp` or `Pdf`, or any other, such as `audio/mp3`, named by `MediaType.of`. Each provider is sent only what
-it takes, and anything else fails with `LlmError.Unsupported` before any request, rather than being dropped
+it takes, and anything else fails with `ModelError.Unsupported` before any request, rather than being dropped
 or sent as something it is not:
 
 | Provider  | Takes                                                                      |
@@ -348,10 +351,10 @@ made by `resource` or `fromEnv` streams it as it arrives; one made over a backen
 where that backend is an sttp `StreamBackend` for fs2, and otherwise delivers it whole, once it ends.
 
 ```scala
-import com.alecdorrington.iris.{Delta, LlmClient}
+import com.alecdorrington.iris.{Delta, ModelClient, ModelRequest}
 
-LlmClient.fromEnv[IO].use {
-  case Some(client) => client.stream(Chat.of("Tell me a story.")).evalMap {
+ModelClient.fromEnv[IO].use {
+  case Some(client) => client.stream(ModelRequest(Chat.userSays("Tell me a story."))).evalMap {
     case Delta.Text(text)        => IO.print(text)
     case Delta.ToolCall(call)    => IO.println(s"\n(asks for ${call.tool})")
     case Delta.End(reason, _, _) => IO.println(s"\n($reason)")
@@ -360,7 +363,7 @@ LlmClient.fromEnv[IO].use {
 }
 ```
 
-Nothing is sent until the stream is run, and a failure reaches it as an `LlmError` as it
+Nothing is sent until the stream is run, and a failure reaches it as a `ModelError` as it
 would anywhere else. A tool call arrives whole, once its arguments have, and `Delta.End` carries the
 reply's token counts.
 
@@ -377,17 +380,17 @@ import fs2.Stream
 case class Word(text: String, translation: String)
 case class Page(title: String, words: Stream[IO, Word])
 
-client.ask[Page](Chat.of(s"Translate: $text")).flatMap { answer =>
+client.ask[Page](Chat.userSays(s"Translate: $text")).flatMap { answer =>
   answer.value.traverse_(page => page.words.evalMap(show).compile.drain) *>
-    answer.reply.map(_.usage)
+    answer.usage
 }
 ```
 
 The model is told the same JSON Schema either way, a stream being an array, so its reply is plain
 JSON; only its reading differs. The reply goes on being read in a fiber of its own once the answer is
 given, to its end, even where nothing reads its streams, so its tokens are spent and its connection
-held to its end, unless `answer.cancel` stops it: its streams not yet ended, and its `reply`, then fail
-with an `IllegalStateException`. A failure of the reply reaches only its streams and `reply`, unseen
+held to its end, unless `answer.cancel` stops it: its streams not yet ended, and its `responses`, then fail
+with an `IllegalStateException`. A failure of the reply reaches only its streams and `responses`, unseen
 where neither is read.
 A stream may be read as often as you like, each time from its first element, keeping every element as
 long as it is held, and streams may be nested, as a stream of pages each with a stream of words.
@@ -410,9 +413,9 @@ ends with it; what follows, which a reply read whole would be refused for, is no
 answer is given, a reply that cannot be read is answered and asked again, as for any type; a reply that
 does not begin with its JSON, or a code fence holding it, is read only once whole. Once the answer is
 given it is never asked for again: what fails afterwards fails each of its streams not yet ended, after
-the elements they delivered already, and `reply`. A reply that cannot be read to its end, as one cut
+the elements they delivered already, and `responses`. A reply that cannot be read to its end, as one cut
 off at the token limit, stopped by the provider, asking for a tool, or with an element that cannot be
-read, fails with `LlmError.Unreadable`, as a whole reply would, and a request failing partway, as on a
+read, fails with `ModelError.UnreadableResponse`, as a whole reply would, and a request failing partway, as on a
 timeout, fails as it would anywhere. A stream cannot be said to the
 model as JSON, as it would have to be run; say a list of its elements.
 
@@ -446,30 +449,34 @@ element reaches the stream as soon as its call has, in order, and the stream goe
 run. An element that cannot be read is answered with why, and the model emits it again, and those after it,
 up to `attempts` times for each element. A model writing its elements as a JSON array instead has them read
 from its reply once it ends, and is asked again where they cannot be. A reply cut off at the token limit,
-or stopped, ends the stream with `LlmError.Unreadable` after the elements it gave, as a failing `run` ends
+or stopped, ends the stream with `ModelError.UnreadableResponse` after the elements it gave, as a failing `run` ends
 it with its error. Taking only some of the elements does not stop the model writing the rest, nor the tools
-it asks for running: `answer.cancel` does. Tools for you to run, in `ReplyOptions.tools`, cannot be offered
+it asks for running: `answer.cancel` does. Tools for you to run, in `ModelRequest.Options.tools`, cannot be offered
 beside such a stream, whose answer, given already, could not end at their calls. Nested streams are
 streamed this way only without tools.
 
-Or offer the model tools for you to run yourself, through `ReplyOptions.tools`, and it will say so in its
+Or offer the model tools for you to run yourself, through `ModelRequest.Options.tools`, and it will say so in its
 reply's `toolCalls`, with no `value`: append the reply and each tool's result, and ask again.
 
 ```scala
-import com.alecdorrington.iris.{Part, Tool}
+import com.alecdorrington.iris.{MessagePart, Tool}
 
 val weather = Tool("weather", "Looks up the weather.", schema)
 
 for
-  asked  <- client.ask[String](chat, ReplyOptions(tools = List(weather)))
-  reply  <- asked.reply
-  call    = reply.toolCalls.head
-  result  = Part.ToolResult(call.id, "weather", lookUp(call))
-  answer <- client.ask[String](chat.assistant(reply).user(result), ReplyOptions(tools = List(weather)))
+  asked     <- client.ask[String](chat, ModelRequest.Options(tools = List(weather)))
+  responses <- asked.responses
+  response   = responses.last
+  call       = response.toolCalls.head
+  result     = MessagePart.ToolResult(call.id, "weather", lookUp(call))
+  answer    <- client.ask[String](
+                 chat.modelSays(response).userSays(result),
+                 ModelRequest.Options(tools = List(weather)),
+               )
 yield answer.value
 ```
 
-Append the reply itself, with `chat.assistant(reply)`, so that each call goes back as it came: its
+Append the response itself, with `chat.modelSays(response)`, so that each call goes back as it came: its
 `id` is the provider's, by which its result is matched (where Gemini gives a call none, the tool's
 name stands in), and Gemini's thinking models need back the thought signature a call carries, its
 `signature`, to go on with their reasoning.
@@ -480,36 +487,36 @@ says so. A streamed answer may ask for tools too, its calls in its reply's `tool
 
 ### Counting tokens
 
-`count` asks the provider what a chat would cost to send, so a conversation can be
-checked against a budget or a context window before a reply is spent finding out.
+`countTokens` asks the provider what a request would cost to send, so a conversation can be
+checked against a budget or a context window before a response is spent finding out.
 
 ```scala
-client.count(Chat.of("How long is a piece of string?"))
+client.countTokens(ModelRequest(Chat.userSays("How long is a piece of string?")))
 ```
 
-OpenAI offers no such endpoint, and fails with `LlmError.Unsupported` rather than
+OpenAI offers no such endpoint, and fails with `ModelError.Unsupported` rather than
 guessing with a tokeniser of its own.
 
 ### Caching
 
 When many requests begin alike, as when one document is asked several questions, put what
-they share first and end it with a `Part.CacheBreakpoint`, so that the provider can keep what it
+they share first and end it with a `MessagePart.CacheBreakpoint`, so that the provider can keep what it
 made of the prefix rather than read it afresh every time. `Usage.cachedTokens` says how much of a
 prompt was read from the cache, and `cacheWriteTokens` how much was written to it, where the provider
 charges for writing it (Anthropic, and OpenAI from GPT-5.6).
 
 ```scala
 val asking = (question: String) =>
-  Chat().withSystem("Answer from the document.")
-    .user(document, Part.CacheBreakpoint, question)
+  Chat().withInstructions("Answer from the document.")
+    .userSays(document, MessagePart.CacheBreakpoint, question)
 
 for
-  _       <- client.warm(asking(""))
+  _       <- client.warmCache(ModelRequest(asking("")))
   answers <- questions.parTraverse(question => client.ask[String](asking(question)))
 yield answers.flatMap(_.value)
 ```
 
-Requests sent at once cannot read what none of them has written yet, so `warm` writes the prefix
+Requests sent at once cannot read what none of them has written yet, so `warmCache` writes the prefix
 first: everything up to the last breakpoint, asking for as little reply as the provider allows.
 A provider answers only a chat which ends with the user saying something, so a prefix which does
 not, as when the last breakpoint opens a message to cache only what came before it, is followed
@@ -522,14 +529,14 @@ Each provider keeps a cache per model, and caches nothing shorter than its own m
 
 ### Errors
 
-A provider's refusal fails the effect with an [`LlmError`](src/main/scala/com/alecdorrington/iris/LlmError.scala):
+A provider's refusal fails the effect with a [`ModelError`](src/main/scala/com/alecdorrington/iris/ModelError.scala):
 `Unsuccessful` for an unsuccessful response, carrying its status and body, `Malformed` for a
 response that could not be understood, and `TimedOut` for a request no answer came to within the
-configured timeout (`LlmConfig.timeout`), such as one whose reply took too long to write or stalled
+configured timeout (`ModelConfig.timeout`), such as one whose reply took too long to write or stalled
 partway. A client made by `resource` or `fromEnv` gives each reply that long whole, from sending the
 request to reading the reply; a stream gives each next part of its reply that long. A client over a
 backend of your own times requests out as that backend does.
-`Unreadable` is for an `ask` whose every reply was not the answer asked for, or whose reply, once
+`UnreadableResponse` is for an `ask` whose every reply was not the answer asked for, or whose reply, once
 its answer was given, could not be read to its end. Response
 bodies may contain provider detail you would rather not show to your own users, so consider logging
 them rather than passing them on.
@@ -546,67 +553,100 @@ in a wrapper's `stream` instead:
 Semaphore[IO](16).map(permits => client.mapK(permits.permit.surroundK))
 ```
 
-A wrapper that treats requests differently extends `LlmClient.Forwarding`, which passes every
+A wrapper that treats requests differently extends `ModelClient.Forwarding`, which passes every
 request on, and overrides only what it changes. Each attempt of an `ask` is made through the protected
-`send`, or through `stream` for a type holding a stream; `count` and `warm` go their own ways. So a
-wrapper seeing every request overrides all four, passing each on through `super`:
+`send`, or through `stream` for a type holding a stream; `countTokens` and `warmCache` go their own ways.
+Each takes one [`ModelRequest`](src/main/scala/com/alecdorrington/iris/ModelRequest.scala), a chat and its
+options. So a wrapper seeing every request overrides all four, passing each on through `super`:
 
 ```scala
-def logged(client: LlmClient[IO]): LlmClient[IO] = new LlmClient.Forwarding(client):
-  override protected def send(chat: Chat, options: ReplyOptions): IO[Reply] =
-    super.send(chat, options).flatTap(reply => IO.println(reply.usage))
-  override def stream(chat: Chat, options: ReplyOptions): Stream[IO, Delta] =
-    super.stream(chat, options).evalTap {
+def logged(client: ModelClient[IO]): ModelClient[IO] = new ModelClient.Forwarding(client):
+  override protected def send(request: ModelRequest): IO[ModelResponse] =
+    super.send(request).flatTap(response => IO.println(response.usage))
+  override def stream(request: ModelRequest): Stream[IO, Delta] =
+    super.stream(request).evalTap {
       case Delta.End(_, usage, _) => IO.println(usage)
-      case _                   => IO.unit
+      case _                      => IO.unit
     }
-  override def count(chat: Chat, options: ReplyOptions): IO[Int] =
-    super.count(chat, options).flatTap(tokens => IO.println(tokens))
-  override def warm(chat: Chat, options: ReplyOptions): IO[Reply] =
-    super.warm(chat, options).flatTap(reply => IO.println(reply.usage))
+  override def countTokens(request: ModelRequest): IO[Int] =
+    super.countTokens(request).flatTap(tokens => IO.println(tokens))
+  override def warmCache(request: ModelRequest): IO[ModelResponse] =
+    super.warmCache(request).flatTap(response => IO.println(response.usage))
 ```
 
-Both pass `warm` on to the client they wrap, as a wrapper must: the default `warm` sends through
-`send`, which would lose however the provider itself warms.
+Both pass `warmCache` on to the client they wrap, as a wrapper must: the default `warmCache` sends
+through `send`, which would lose however the provider itself warms.
 
 ### Upgrading from 0.4
 
-- `ask` gives an `Answer[F, A]`: its `value` as before, its `reply`, an effect giving the reply's
-  `text`, `stopReason`, `usage`, `toolCalls` and `attempts`, and `cancel`, which stops a streamed reply. Read `answer.reply.map(_.usage)` where you read
-  `answer.usage`, and append `reply` to a chat, where you appended the answer.
-- A reply as the provider gave it, an `Answer[Nothing]`, is a `Reply`: `send` and `warm` give one, a
-  chat's `assistant` takes one, and `LlmError.Unreadable` keeps them, as `replies`.
-- `ask` needs `Async`, as it reads a streamed reply in a fiber of its own, so a client in `SyncIO` can
+Names are plainer in 0.5, and the roles in a chat are the user and the model. Most changes are renames,
+which find and replace makes:
+
+| 0.4                                               | 0.5                                                         |
+|---------------------------------------------------|-------------------------------------------------------------|
+| `LlmClient`, `LlmConfig`, `LlmError`, `LlmProvider` | `ModelClient`, `ModelConfig`, `ModelError`, `ModelProvider` |
+| `LlmModel`                                        | `Model`                                                     |
+| `LlmStreamer`                                     | `ModelClient`, as every client streams                      |
+| `ReplyOptions`                                    | `ModelRequest.Options`                                      |
+| `Answer[A]`, as `ask` gives it                    | `ValidatedResponse[F, A]`                                   |
+| `Answer[Nothing]`, a reply as the provider gave it | `ModelResponse`                                            |
+| `Part`                                            | `MessagePart`                                               |
+| `message.content`                                 | `message.parts`                                             |
+| `message.uncached`                                | `message.withoutBreakpoints`                                |
+| `Role.Assistant`                                  | `Role.Model`                                                |
+| `Chat.of(...)`                                    | `Chat.userSays(...)`                                        |
+| `chat.user(...)`, `chat.assistant(...)`           | `chat.userSays(...)`, `chat.modelSays(...)`                 |
+| `chat.withSystem(text)`, `chat.system`, `Chat(system = …)` | `chat.withInstructions(text)`, `chat.instructions`, `Chat(instructions = …)` |
+| `chat.cacheable`                                  | `chat.cachePrefix`                                          |
+| `client.count(chat, options)`                     | `client.countTokens(ModelRequest(chat, options))`           |
+| `client.warm(chat, options)`                      | `client.warmCache(ModelRequest(chat, options))`             |
+| `streamer.stream(chat, options)`                  | `client.stream(ModelRequest(chat, options))`                |
+| `LlmProvider.key`                                 | `ModelProvider.id`                                          |
+| `LlmError.Unreadable(attempts, detail, answers)`  | `ModelError.UnreadableResponse(detail, responses)`; `attempts` is `responses.size` |
+
+- `send`, `stream`, `countTokens` and `warmCache` take one `ModelRequest`, a chat and its options, where they
+  took the two apart; `ask` still takes them apart. A wrapper overrides `send(request: ModelRequest)` and passes
+  the request on with `super.send(request)`.
+- `ask` gives a `ValidatedResponse[F, A]`: its `value` as before, its `responses`, an effect giving every
+  `ModelResponse` the ask took (each with its `text`, `stopReason`, `usage`, `cost` and `toolCalls`), and
+  `cancel`, which stops a streamed response. `answer.usage` is now an effect totalling every response's, as
+  `answer.cost` is. Read `answer.responses.map(_.size)` where you read `answer.attempts`, and the last
+  response's fields where you read the answer's `text`, `stopReason` or `toolCalls`. Append the last
+  response to a chat, `chat.modelSays(responses.last)`, where you appended the answer.
+- `send` and `warmCache` give a `ModelResponse`, one response as the provider gave it, which has no
+  `attempts`; `ModelError.UnreadableResponse` keeps every one, as `responses`.
+- `Role.code` is gone: each provider names a role as its own API does.
+- `ask` needs `Async`, as it reads a streamed response in a fiber of its own, so a client in `SyncIO` can
   no longer ask.
-- `Reply.usage` and `Delta.End.usage` are a `Usage`, never `None`: a count the provider did not
-  report is `0`, and an ask's usage is that of every attempt, summed. Read `usage` where you matched
-  `Some(usage)`.
+- `ModelResponse.usage` and `Delta.End.usage` are a `Usage`, never `None`: a count the provider did not
+  report is `0`. Read `usage` where you matched `Some(usage)`.
 - `Usage` is made of seven counts, named as you make one (`Usage(uncachedTokens = 10, visibleTokens = 2)`).
   `inputTokens`, `cachedTokens` and `outputTokens` are now totals of them, meaning what they did.
 - `outputTokens` now counts Gemini's thinking, which it left out, and streams from Anthropic and
   OpenAI now count their usage, so totals may be higher than before.
-- `Chat.of`, a chat's `user` and `assistant` messages and `Message` take values of any kinds together, so
-  `chat.user(Part.of("Review this."), Part.of(draft))` is now `chat.user("Review this.", draft)`. A spliced
-  list must be of parts: where you spliced other values, write `chat.user(values.map(Part.of)*)`.
-- `Part.Media` takes a `MediaType`, where it took a string: write `Part.Media(MediaType.Png, data)`, or
-  `MediaType.of(name)` for a name read at runtime, which is `None` where the name is no media type. It
-  also takes the content's bytes, encoding them itself. Anthropic now refuses media other than pictures
-  and PDFs before sending it, where its API refused it.
+- `Chat.userSays`, a chat's `userSays` and `modelSays` and `Message` take values of any kinds together, so
+  `chat.user(Part.of("Review this."), Part.of(draft))` is now `chat.userSays("Review this.", draft)`. A
+  spliced list must be of parts: where you spliced other values, write
+  `chat.userSays(values.map(MessagePart.of)*)`.
+- `MessagePart.Media` takes a `MediaType`, where `Part.Media` took a string: write
+  `MessagePart.Media(MediaType.Png, data)`, or `MediaType.of(name)` for a name read at runtime, which is
+  `None` where the name is no media type. It also takes the content's bytes, encoding them itself.
+  Anthropic now refuses media other than pictures and PDFs before sending it, where its API refused it.
 - `LlmStreamer` is gone, as every client streams: `LlmStreamer.resource`, `fromEnv` and `apply` are
-  `LlmClient.resource`, `fromEnv` and `apply`, and `streamer.stream(chat)` is `client.stream(chat)`.
-  `LlmClient(config, backend)` over an sttp `StreamBackend` for fs2 streams too; over any other backend,
-  a stream delivers its reply whole, once it ends.
+  `ModelClient.resource`, `fromEnv` and `apply`. `ModelClient(config, backend)` over an sttp
+  `StreamBackend` for fs2 streams too; over any other backend, a stream delivers its response whole, once
+  it ends.
 - `Delta` has a new case, `ToolCall`, which a match over every case must take.
-- `Part.ToolCall` has a fourth field, `signature`, Gemini's thought signature, so a match takes
-  `Part.ToolCall(id, tool, arguments, _)`. A Gemini call's `id` is Gemini's own where it gives one, no
-  longer always the tool's name.
-- A class implementing `LlmClient` itself, rather than through `LlmClient.Forwarding`, may implement
-  `stream`, which unless it does delivers each reply whole, through `send`. A wrapper that sees every
+- `MessagePart.ToolCall` has a fourth field, `signature`, Gemini's thought signature, so a match takes
+  `MessagePart.ToolCall(id, tool, arguments, _)`. A Gemini call's `id` is Gemini's own where it gives one,
+  no longer always the tool's name.
+- A class implementing `ModelClient` itself, rather than through `ModelClient.Forwarding`, may implement
+  `stream`, which unless it does delivers each response whole, through `send`. A wrapper that sees every
   request overrides it as it does `send`.
-- A `Reply` has a `cost`, an `Option[Usd]`, after `usage`, and `Delta.End` has one too, last.
-- `LlmClient.apply` needs a `Clock` of its effect, which prices each reply as it comes, as `IO` and
+- A `ModelResponse` has a `cost`, an `Option[Usd]`, after `usage`, and `Delta.End` has one too, last.
+- `ModelClient.apply` needs a `Clock` of its effect, which prices each response as it comes, as `IO` and
   `SyncIO` have.
-- `LlmError` has two new cases, `OverBudget` and `Unpriced`, which a match over every case must take.
+- `ModelError` has two new cases, `OverBudget` and `Unpriced`, which a match over every case must take.
 
 ### Upgrading from 0.3
 
@@ -641,7 +681,7 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
 
 ## ⚙️ Configuration
 
-`LlmConfig.fromEnv` (and so `LlmClient.fromEnv`) reads these environment variables:
+`ModelConfig.fromEnv` (and so `ModelClient.fromEnv`) reads these environment variables:
 
 | Variable            | Meaning                                     | Default                        |
 |---------------------|---------------------------------------------|--------------------------------|
@@ -663,21 +703,21 @@ mistake. A model Iris does not list is named after its provider and a colon, as
 also be written as Gemini's API lists it, as `gemini:models/gemini-...`.
 
 To read several configurations from one environment, as one per kind of request, pass
-`LlmConfig.from` a lookup of your own, which it reads every variable above through:
+`ModelConfig.from` a lookup of your own, which it reads every variable above through:
 
 ```scala
-val fast = LlmConfig.from(name => sys.env.get(s"${name}_FAST").orElse(sys.env.get(name)))
+val fast = ModelConfig.from(name => sys.env.get(s"${name}_FAST").orElse(sys.env.get(name)))
 ```
 
 A host whose replies run longer than most passes its own default for an unset `LLM_MAX_TOKENS`,
-as in `LlmConfig.fromEnv(defaultMaxTokens = 16_000)` or `LlmConfig.from(lookup, 16_000)`.
+as in `ModelConfig.fromEnv(defaultMaxTokens = 16_000)` or `ModelConfig.from(lookup, 16_000)`.
 
 ## 🌐 In the browser
 
-In JavaScript, `LlmClient.resource` sends requests through the
+In JavaScript, `ModelClient.resource` sends requests through the
 [Fetch API](https://developer.mozilla.org/docs/Web/API/Fetch_API), and everything else is as on the JVM.
-There is no environment to read, so `fromEnv` yields `None`: build an `LlmConfig` yourself, or read
-one with `LlmConfig.from` from wherever your page keeps its settings.
+There is no environment to read, so `fromEnv` yields `None`: build a `ModelConfig` yourself, or read
+one with `ModelConfig.from` from wherever your page keeps its settings.
 
 A request made from a page carries the page's origin, which Anthropic refuses unless told otherwise, so in
 JavaScript every request to Anthropic says that it may come from a browser

@@ -2,7 +2,7 @@
 package com.alecdorrington.example
 
 import com.alecdorrington.iris.{
-  Chat, Content, MediaType, Message, Part, Role, Schema,
+  Chat, Content, MediaType, Message, MessagePart, Role, Schema,
 }
 import io.circe.{Encoder, Json}
 import munit.FunSuite
@@ -18,7 +18,7 @@ final case class Scan(base64: String) derives Encoder.AsObject
 
 object Scan:
 
-  given Content[Scan] = scan => Part.Media(MediaType.Png, scan.base64)
+  given Content[Scan] = scan => MessagePart.Media(MediaType.Png, scan.base64)
 
 object Note:
 
@@ -56,18 +56,30 @@ class ContentSuite extends FunSuite:
 
   private val ada = Person("Ada", 36, None)
 
-  private val adaJson = Part.Text("""{"name":"Ada","age":36}""")
+  private val adaJson = MessagePart.Text("""{"name":"Ada","age":36}""")
 
-  private def user(content: Part*): Chat =
+  private def userMessage(content: MessagePart*): Chat =
     Chat(List(Message(Role.User, content.toList)))
 
   test("text is said as it is, never as json"):
-    assertEquals(Chat.of("Hi"), user(Part.Text("Hi")))
-    assertEquals(Part.of("Hi"), Part.Text("Hi"))
+    assertEquals(
+      Chat.userSays("Hi"),
+      userMessage(MessagePart.Text("Hi")),
+    )
+    assertEquals(
+      MessagePart.of("Hi"),
+      MessagePart.Text("Hi"),
+    )
 
   test("a value with a schema is said as its json, in a chat or a message"):
-    assertEquals(Chat.of(ada), user(adaJson))
-    assertEquals(Chat().user(ada), user(adaJson))
+    assertEquals(
+      Chat.userSays(ada),
+      userMessage(adaJson),
+    )
+    assertEquals(
+      Chat().userSays(ada),
+      userMessage(adaJson),
+    )
     assertEquals(
       Message(Role.User, ada),
       Message(Role.User, List(adaJson)),
@@ -75,29 +87,35 @@ class ContentSuite extends FunSuite:
 
   test("a chat of one message is a chat to which it was said"):
     assertEquals(
-      Chat.of(ada).withSystem("Review the person."),
-      Chat().withSystem("Review the person.").user(ada),
+      Chat.userSays(ada).withInstructions("Review the person."),
+      Chat().withInstructions("Review the person.").userSays(ada),
     )
 
   test("chats saying the same are equal"):
     assertEquals(
-      Chat.of(ada),
-      Chat.of(Person("Ada", 36, None)),
+      Chat.userSays(ada),
+      Chat.userSays(Person("Ada", 36, None)),
     )
 
   test("a value with an encoder alone is said as its json"):
     assertEquals(
-      Part.of(Note("Hi")),
-      Part.Text("""{"text":"Hi"}"""),
+      MessagePart.of(Note("Hi")),
+      MessagePart.Text("""{"text":"Hi"}"""),
     )
 
   test("a type with an encoder of its own is said as that writes it"):
     assertEquals(
-      Part.of(Point(1, 2)),
-      Part.Text("[1,2]"),
+      MessagePart.of(Point(1, 2)),
+      MessagePart.Text("[1,2]"),
     )
-    assertEquals(Part.of(Secret.of(3)), Part.Text("3"))
-    assertEquals(Part.of(Secret.unset), Part.Text("1"))
+    assertEquals(
+      MessagePart.of(Secret.of(3)),
+      MessagePart.Text("3"),
+    )
+    assertEquals(
+      MessagePart.of(Secret.unset),
+      MessagePart.Text("1"),
+    )
     val errors = compileErrors("Schema[Point]")
     assert(
       errors.contains("has no Schema"),
@@ -106,42 +124,57 @@ class ContentSuite extends FunSuite:
 
   test("a value is said as its schema describes it"):
     assertEquals(
-      Part.of(Shade.Light),
-      Part.Text("\"Light\""),
+      MessagePart.of(Shade.Light),
+      MessagePart.Text("\"Light\""),
     )
 
   test("a part is said as itself"):
-    val picture = Part.Media(MediaType.Png, "iVBORw0KGgo=")
-    assertEquals(Chat().user(picture), user(picture))
-    assertEquals(Part.of(picture), picture)
+    val picture = MessagePart.Media(MediaType.Png, "iVBORw0KGgo=")
+    assertEquals(
+      Chat().userSays(picture),
+      userMessage(picture),
+    )
+    assertEquals(MessagePart.of(picture), picture)
 
   test("a part is said as itself, whatever encoder of parts there is"):
-    given Encoder[Part]   = Encoder.instance(_ => io.circe.Json.Null)
-    val parts: List[Part] = List(Part.Text("x"), Part.CacheBreakpoint)
-    assertEquals(Part.of(parts.head), Part.Text("x"))
-    assertEquals(Chat().user(parts*), user(parts*))
+    given Encoder[MessagePart]   = Encoder.instance(_ => io.circe.Json.Null)
+    val parts: List[MessagePart] = List(
+      MessagePart.Text("x"),
+      MessagePart.CacheBreakpoint,
+    )
     assertEquals(
-      summon[Encoder[Part]](parts.head),
+      MessagePart.of(parts.head),
+      MessagePart.Text("x"),
+    )
+    assertEquals(
+      Chat().userSays(parts*),
+      userMessage(parts*),
+    )
+    assertEquals(
+      summon[Encoder[MessagePart]](parts.head),
       io.circe.Json.Null,
     )
 
   test("values of different kinds are said together, each as its own type"):
     assertEquals(
-      Chat().user("Look:", 1.5),
-      user(Part.Text("Look:"), Part.Text("1.5")),
+      Chat().userSays("Look:", 1.5),
+      userMessage(
+        MessagePart.Text("Look:"),
+        MessagePart.Text("1.5"),
+      ),
     )
     assertEquals(
-      Chat.of(
+      Chat.userSays(
         "Review this person.",
         ada,
-        Part.CacheBreakpoint,
+        MessagePart.CacheBreakpoint,
         "Be brief.",
       ),
-      user(
-        Part.Text("Review this person."),
+      userMessage(
+        MessagePart.Text("Review this person."),
         adaJson,
-        Part.CacheBreakpoint,
-        Part.Text("Be brief."),
+        MessagePart.CacheBreakpoint,
+        MessagePart.Text("Be brief."),
       ),
     )
     assertEquals(
@@ -149,14 +182,14 @@ class ContentSuite extends FunSuite:
       Message(
         Role.User,
         List(
-          Part.Text("Review this person."),
+          MessagePart.Text("Review this person."),
           adaJson,
         ),
       ),
     )
 
   test("a value with no content is refused where it is given"):
-    val errors = compileErrors("Chat().user(\"Look:\", new Mute)")
+    val errors = compileErrors("Chat().userSays(\"Look:\", new Mute)")
     assert(
       errors.contains("Mute cannot be said to the model"),
       errors,
@@ -164,45 +197,51 @@ class ContentSuite extends FunSuite:
 
   test("a content of a type's own outranks its encoder"):
     assertEquals(
-      Chat().user("What is this?", Scan("iVBORw0KGgo=")),
-      user(
-        Part.Text("What is this?"),
-        Part.Media(MediaType.Png, "iVBORw0KGgo="),
+      Chat().userSays("What is this?", Scan("iVBORw0KGgo=")),
+      userMessage(
+        MessagePart.Text("What is this?"),
+        MessagePart.Media(MediaType.Png, "iVBORw0KGgo="),
       ),
     )
 
   test("a list of values is said as parts made of each"):
     assertEquals(
-      Chat().user(List("First.", "Second.").map(Part.of)*),
-      user(
-        Part.Text("First."),
-        Part.Text("Second."),
+      Chat().userSays(List("First.", "Second.").map(MessagePart.of)*),
+      userMessage(
+        MessagePart.Text("First."),
+        MessagePart.Text("Second."),
       ),
     )
 
   test("a value of a union is said as json, unless text may be one"):
     assertEquals(
-      Part.of[Int | Boolean](true),
-      Part.Text("""{"Boolean":true}"""),
+      MessagePart.of[Int | Boolean](true),
+      MessagePart.Text("""{"Boolean":true}"""),
     )
-    val errors = compileErrors("Part.of[String | Int](1)")
+    val errors = compileErrors("MessagePart.of[String | Int](1)")
     assert(errors.contains("union"), errors)
 
   test("several values of one kind are said as parts of one message"):
     assertEquals(
-      Chat().user("First.", "Second."),
-      user(
-        Part.Text("First."),
-        Part.Text("Second."),
+      Chat().userSays("First.", "Second."),
+      userMessage(
+        MessagePart.Text("First."),
+        MessagePart.Text("Second."),
       ),
     )
-    val parts = List(Part.Text("x"), Part.CacheBreakpoint)
-    assertEquals(Chat().user(parts*), user(parts*))
+    val parts = List(
+      MessagePart.Text("x"),
+      MessagePart.CacheBreakpoint,
+    )
+    assertEquals(
+      Chat().userSays(parts*),
+      userMessage(parts*),
+    )
 
   test("an answer given is said back as the assistant's, to continue from"):
     assertEquals(
-      Chat().user("Invent a person.").assistant(ada).messages.last,
-      Message(Role.Assistant, List(adaJson)),
+      Chat().userSays("Invent a person.").modelSays(ada).messages.last,
+      Message(Role.Model, List(adaJson)),
     )
 
   test("a media type is named as its listed case, in any case"):
@@ -225,9 +264,9 @@ class ContentSuite extends FunSuite:
 
   test("media made of bytes is sent base64 encoded"):
     assertEquals(
-      Part.Media(
+      MessagePart.Media(
         MediaType.Png,
         Array[Byte](104, 101, 108, 108, 111),
       ),
-      Part.Media(MediaType.Png, "aGVsbG8="),
+      MessagePart.Media(MediaType.Png, "aGVsbG8="),
     )

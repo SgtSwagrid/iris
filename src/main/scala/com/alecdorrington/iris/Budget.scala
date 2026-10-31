@@ -18,11 +18,11 @@ import fs2.Stream
   * What is spent never resets, so a budget for each day, say, is a new budget
   * each day.
   *
-  * A budget needs prices: a reply with no [[Reply.cost]], as from a model Iris
-  * does not list whose configuration gives no [[LlmConfig.rates]], fails its
-  * request with [[LlmError.Unpriced]]. By then the provider has charged for it,
-  * and the reply is lost, as is every later one from that model, so give such a
-  * model rates before limiting it.
+  * A budget needs prices: a reply with no [[ModelResponse.cost]], as from a
+  * model Iris does not list whose configuration gives no [[ModelConfig.rates]],
+  * fails its request with [[ModelError.Unpriced]]. By then the provider has
+  * charged for it, and the reply is lost, as is every later one from that
+  * model, so give such a model rates before limiting it.
   *
   * {{{
   * Budget[IO](Usd(BigDecimal(5))).map(budget => budget.limits(client))
@@ -58,10 +58,10 @@ final class Budget[F[_] : MonadThrow] private (
 
   /**
     * Limits a client to this budget. Each request it makes but counting, which
-    * costs nothing, is refused with [[LlmError.OverBudget]] once the budget is
-    * spent, a stream before it starts, and charged what its reply cost, as
-    * [[LlmClient.metered]] meters it. Every attempt of an [[LlmClient.ask]] is
-    * a request of its own, and so is warming.
+    * costs nothing, is refused with [[ModelError.OverBudget]] once the budget
+    * is spent, a stream before it starts, and charged what its reply cost, as
+    * [[ModelClient.metered]] meters it. Every attempt of a [[ModelClient.ask]]
+    * is a request of its own, and so is warming.
     *
     * @param client
     *   The client to limit.
@@ -69,30 +69,32 @@ final class Budget[F[_] : MonadThrow] private (
     * @return
     *   A client sending through the given one, spending from this budget.
     */
-  def limits(client: LlmClient[F]): LlmClient[F] =
+  def limits(client: ModelClient[F]): ModelClient[F] =
     val budget = this
     // Charged by `metered`, which meters every request that spends.
-    new LlmClient.Forwarding(client.metered((_, cost) => budget.charge(cost))):
-      override protected def send(chat: Chat, options: ReplyOptions): F[Reply] =
-        budget.affordable >> super.send(chat, options)
+    new ModelClient.Forwarding(
+      client.metered((_, cost) => budget.charge(cost)),
+    ):
+      override protected def send(request: ModelRequest): F[ModelResponse] =
+        budget.affordable >> super.send(request)
 
-      override def warm(chat: Chat, options: ReplyOptions): F[Reply] =
-        budget.affordable >> super.warm(chat, options)
+      override def warmCache(request: ModelRequest): F[ModelResponse] =
+        budget.affordable >> super.warmCache(request)
 
-      override def stream(chat: Chat, options: ReplyOptions): Stream[F, Delta] =
-        Stream.eval(budget.affordable) >> super.stream(chat, options)
+      override def stream(request: ModelRequest): Stream[F, Delta] = Stream
+        .eval(budget.affordable) >> super.stream(request)
 
   /** Refuses a request once the budget is spent. */
   private def affordable: F[Unit] = spending
     .get
     .flatMap(spent =>
       MonadThrow[F].raiseWhen(spent.amount >= limit.amount)(
-        LlmError.OverBudget(limit, spent),
+        ModelError.OverBudget(limit, spent),
       ),
     )
 
   private def charge(cost: Option[Usd]): F[Unit] = cost.fold(
-    MonadThrow[F].raiseError(LlmError.Unpriced),
+    MonadThrow[F].raiseError(ModelError.Unpriced),
   )(cost => spending.update(_ + cost))
 
 object Budget:

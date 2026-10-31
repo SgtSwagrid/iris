@@ -25,9 +25,9 @@ class ToolSuite extends FunSuite:
     ),
   )
 
-  private val offering = ReplyOptions(tools = List(weather))
+  private val offering = ModelRequest.Options(tools = List(weather))
 
-  private val asked = Part.ToolCall(
+  private val asked = MessagePart.ToolCall(
     "call_1",
     "weather",
     Json.obj("city" -> Json.fromString("Zug")),
@@ -36,12 +36,12 @@ class ToolSuite extends FunSuite:
   /** A call whose arguments hold a null, which is a value there. */
   private val unplaced = asked.copy(arguments = Json.obj("city" -> Json.Null))
 
-  private val answered = Part.ToolResult("call_1", "weather", "Snowing.")
+  private val answered = MessagePart.ToolResult("call_1", "weather", "Snowing.")
 
   private val exchange = Chat()
-    .user("What is the weather?")
-    .assistant(unplaced)
-    .user(answered)
+    .userSays("What is the weather?")
+    .modelSays(unplaced)
+    .userSays(answered)
 
   test("each provider is offered a tool where it looks, its schema as it is"):
     List[(ProviderApi, ACursor => ACursor, String)](
@@ -60,8 +60,9 @@ class ToolSuite extends FunSuite:
         "parameters",
       ),
     ).foreach: (api, declared, schema) =>
-      val tool =
-        declared(json(api.body(config, Chat().user("Hi"), offering)).hcursor)
+      val tool = declared(
+        json(api.body(config, Chat().userSays("Hi"), offering)).hcursor,
+      )
       assertEquals(
         tool.get[String]("name").toOption,
         Some("weather"),
@@ -73,7 +74,7 @@ class ToolSuite extends FunSuite:
         api.provider,
       )
     assertEquals(
-      json(OpenAiApi.body(config, Chat().user("Hi"), offering))
+      json(OpenAiApi.body(config, Chat().userSays("Hi"), offering))
         .hcursor
         .downField("tools")
         .downN(0)
@@ -228,11 +229,11 @@ class ToolSuite extends FunSuite:
     val sent   = json(GeminiApi.body(
       config,
       Chat()
-        .user("What is the weather?")
-        .assistant(signed, named)
-        .user(
+        .userSays("What is the weather?")
+        .modelSays(signed, named)
+        .userSays(
           answered,
-          Part.ToolResult("weather", "weather", "Sunny."),
+          MessagePart.ToolResult("weather", "weather", "Sunny."),
         ),
       offering,
     )).hcursor.downField("contents")
@@ -269,7 +270,7 @@ class ToolSuite extends FunSuite:
   test(
     "gemini counts the contents it would send, its system message the user's",
   ):
-    val briefed  = exchange.withSystem("Be brief.")
+    val briefed  = exchange.withInstructions("Be brief.")
     val contents =
       (body: String) => json(body).hcursor.get[List[Json]]("contents")
     val system = Json.obj(
@@ -282,27 +283,24 @@ class ToolSuite extends FunSuite:
     )
 
   test("a model's reply can be appended and answered"):
-    val reply = Reply(
+    val reply = ModelResponse(
       "Let me look.",
       StopReason.ToolCall,
       toolCalls = List(asked),
     )
-    val next = Chat().user("Weather?").assistant(reply).user(answered)
+    val next = Chat().userSays("Weather?").modelSays(reply).userSays(answered)
     assertEquals(next.messages.size, 3)
-    assertEquals(next.messages(1).role, Role.Assistant)
-    assertEquals(next.messages(1).content.last, asked)
-    assertEquals(
-      next.messages(2).content,
-      List(answered),
-    )
+    assertEquals(next.messages(1).role, Role.Model)
+    assertEquals(next.messages(1).parts.last, asked)
+    assertEquals(next.messages(2).parts, List(answered))
 
   test("a model's reply saying nothing but its calls is appended as those"):
-    val reply = Reply(
+    val reply = ModelResponse(
       "",
       StopReason.ToolCall,
       toolCalls = List(asked),
     )
     assertEquals(
-      Chat().user("Weather?").assistant(reply).messages.last.content,
+      Chat().userSays("Weather?").modelSays(reply).messages.last.parts,
       List(asked),
     )

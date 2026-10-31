@@ -14,46 +14,46 @@ import sttp.model.{Header, Uri}
   */
 private[iris] trait ProviderApi:
 
-  def provider: LlmProvider
+  def provider: ModelProvider
 
   def endpoint
     (
-      config: LlmConfig,
-      options: ReplyOptions,
+      config: ModelConfig,
+      options: ModelRequest.Options,
       streamed: Boolean,
     )
-    : Either[LlmError, Uri]
+    : Either[ModelError, Uri]
 
   def body
     (
-      config: LlmConfig,
+      config: ModelConfig,
       chat: Chat,
-      options: ReplyOptions,
+      options: ModelRequest.Options,
       streamed: Boolean = false,
     )
     : String
 
-  def credentials(config: LlmConfig): Seq[Header]
+  def credentials(config: ModelConfig): Seq[Header]
 
   /** One whole reply, or why it is none. */
-  def replies: Decoder[Either[LlmError, Reply]]
+  def wholeResponse: Decoder[Either[ModelError, ModelResponse]]
 
   /** The reply a stream's events make up, read as they arrive. */
-  def reply[F[_] : RaiseThrowable](events: Stream[F, Json]): Stream[F, Delta]
+  def deltas[F[_] : RaiseThrowable](events: Stream[F, Json]): Stream[F, Delta]
 
   /** Why this provider would refuse the chat, where it would. */
-  def acceptable
+  def refuseUnsendable
     (
       @unused
-      config: LlmConfig,
+      config: ModelConfig,
       chat: Chat,
       @unused
-      options: ReplyOptions,
+      options: ModelRequest.Options,
     )
-    : Either[LlmError, Unit] = JsonHttp.answerable(provider, chat)
+    : Either[ModelError, Unit] = JsonHttp.refuseUnanswerable(provider, chat)
 
   /** The fewest tokens a reply may be allowed, which warming asks for. */
-  def leastReply: Int = 1
+  def leastMaxTokens: Int = 1
 
   /**
     * The rates of a model this provider serves at a moment since 1970, as its
@@ -61,12 +61,12 @@ private[iris] trait ProviderApi:
     * `None` for a model Iris does not list. A reply is priced at the rates of
     * the moment it arrives.
     */
-  def rates(model: LlmModel, at: FiniteDuration): Option[Rates]
+  def rates(model: Model, at: FiniteDuration): Option[Rates]
 
   /** What a reply cost at a moment: at the configuration's rates, else listed. */
   final def cost
     (
-      config: LlmConfig,
+      config: ModelConfig,
       usage: Usage,
       at: FiniteDuration,
     )
@@ -79,13 +79,13 @@ private[iris] trait ProviderApi:
   def counting
     (
       @unused
-      config: LlmConfig,
+      config: ModelConfig,
       @unused
       chat: Chat,
       @unused
-      options: ReplyOptions,
+      options: ModelRequest.Options,
     )
-    : Either[LlmError, Counting] = Left(LlmError.Unsupported(
+    : Either[ModelError, Counting] = Left(ModelError.Unsupported(
     provider.displayName,
     "counting tokens",
   ))
@@ -93,7 +93,7 @@ private[iris] trait ProviderApi:
   /** Posts JSON with this provider's credentials and the configured timeout. */
   final def post
     (
-      config: LlmConfig,
+      config: ModelConfig,
       endpoint: Uri,
       body: String,
     )
@@ -106,10 +106,10 @@ private[iris] trait ProviderApi:
 
 private[iris] object ProviderApi:
 
-  def of(provider: LlmProvider): ProviderApi = provider match
-    case LlmProvider.Anthropic => AnthropicApi
-    case LlmProvider.OpenAi    => OpenAiApi
-    case LlmProvider.Gemini    => GeminiApi
+  def of(provider: ModelProvider): ProviderApi = provider match
+    case ModelProvider.Anthropic => AnthropicApi
+    case ModelProvider.OpenAi    => OpenAiApi
+    case ModelProvider.Gemini    => GeminiApi
 
   /**
     * The moment a day begins in UTC, since 1970, from which new rates apply:

@@ -12,17 +12,17 @@ import sttp.model.{Header, Uri}
   */
 private[iris] object AnthropicApi extends ProviderApi:
 
-  override val provider: LlmProvider = LlmProvider.Anthropic
+  override val provider: ModelProvider = ModelProvider.Anthropic
 
   override def endpoint
     (
-      config: LlmConfig,
-      options: ReplyOptions,
+      config: ModelConfig,
+      options: ModelRequest.Options,
       streamed: Boolean,
     )
-    : Either[LlmError, Uri] = messagesEndpoint(config)
+    : Either[ModelError, Uri] = messagesEndpoint(config)
 
-  override def credentials(config: LlmConfig): Seq[Header] = Seq(
+  override def credentials(config: ModelConfig): Seq[Header] = Seq(
     Header("x-api-key", config.apiKey),
     Header("anthropic-version", "2023-06-01"),
   ) ++ Option.when(Platform.browser)(
@@ -34,15 +34,15 @@ private[iris] object AnthropicApi extends ProviderApi:
     ),
   )
 
-  override val replies: Decoder[Either[LlmError, Reply]] = Decoder[Response]
-    .map(_.toReply)
+  override val wholeResponse: Decoder[Either[ModelError, ModelResponse]] =
+    Decoder[Response].map(_.toReply)
 
   /**
     * The reply a stream's events make up. Its first event counts the request,
     * and the stop reason's the reply, so the counts of the first are kept until
     * then, as is each tool call until its block ends.
     */
-  override def reply[F[_] : RaiseThrowable]
+  override def deltas[F[_] : RaiseThrowable]
     (events: Stream[F, Json])
     : Stream[F, Delta] = events
     .mapAccumulate(Streamed())(_.read(_))
@@ -50,26 +50,25 @@ private[iris] object AnthropicApi extends ProviderApi:
     .rethrow
 
   /** Anthropic writes the cache without replying when allowed no tokens. */
-  override val leastReply: Int = 0
+  override val leastMaxTokens: Int = 0
 
   /** As https://platform.claude.com/docs/en/about-claude/pricing gives them. */
-  override def rates(model: LlmModel, at: FiniteDuration): Option[Rates] =
+  override def rates(model: Model, at: FiniteDuration): Option[Rates] =
     model match
-      case LlmModel.ClaudeFable5_1 | LlmModel.ClaudeMythos5_1 =>
+      case Model.ClaudeFable5_1 | Model.ClaudeMythos5_1 =>
         Some(priced(10, 0.25, 50))
-      case LlmModel.ClaudeFable5 | LlmModel.ClaudeMythos5 =>
-        Some(priced(10, 1, 50))
-      case LlmModel.ClaudeOpus5_5 => Some(priced(4, 0.20, 20))
-      case LlmModel.ClaudeOpus5 | LlmModel.ClaudeOpus4_8 | LlmModel
-          .ClaudeOpus4_7 | LlmModel.ClaudeOpus4_6 => Some(priced(5, 0.50, 25))
-      case LlmModel.ClaudeSonnet5_5 => Some(priced(2, 0.10, 10))
-      case LlmModel.ClaudeSonnet5   => Some(priced(2, 0.20, 10))
-      case LlmModel.ClaudeSonnet4_6 => Some(priced(3, 0.30, 15))
-      case LlmModel.ClaudeHaiku5_5 => Some(priced(0.10, 0.01, 0.50).copy(above =
+      case Model.ClaudeFable5 | Model.ClaudeMythos5 => Some(priced(10, 1, 50))
+      case Model.ClaudeOpus5_5                      => Some(priced(4, 0.20, 20))
+      case Model.ClaudeOpus5 | Model.ClaudeOpus4_8 | Model.ClaudeOpus4_7 | Model
+          .ClaudeOpus4_6 => Some(priced(5, 0.50, 25))
+      case Model.ClaudeSonnet5_5 => Some(priced(2, 0.10, 10))
+      case Model.ClaudeSonnet5   => Some(priced(2, 0.20, 10))
+      case Model.ClaudeSonnet4_6 => Some(priced(3, 0.30, 15))
+      case Model.ClaudeHaiku5_5  => Some(priced(0.10, 0.01, 0.50).copy(above =
           Some(Rates.Above(100_000, priced(0.50, 0.05, 2.50))),
         ))
-      case LlmModel.ClaudeHaiku4_5 => Some(priced(1, 0.10, 5))
-      case _                       => None
+      case Model.ClaudeHaiku4_5 => Some(priced(1, 0.10, 5))
+      case _                    => None
 
   /**
     * Rates by input, cache hits and output, writing the cache costing a quarter
@@ -87,13 +86,13 @@ private[iris] object AnthropicApi extends ProviderApi:
 
   override def counting
     (
-      config: LlmConfig,
+      config: ModelConfig,
       chat: Chat,
-      options: ReplyOptions,
+      options: ModelRequest.Options,
     )
-    : Either[LlmError, Counting] =
+    : Either[ModelError, Counting] =
     for
-      _        <- JsonHttp.answerable(provider, chat)
+      _        <- JsonHttp.refuseUnanswerable(provider, chat)
       endpoint <- messagesEndpoint(config, "count_tokens")
     yield Counting(
       endpoint,
@@ -103,26 +102,26 @@ private[iris] object AnthropicApi extends ProviderApi:
 
   /** The Messages API's endpoint, or one beneath it. */
   private def messagesEndpoint
-    (config: LlmConfig, path: String*)
-    : Either[LlmError, Uri] = JsonHttp.endpoint(
+    (config: ModelConfig, path: String*)
+    : Either[ModelError, Uri] = JsonHttp.endpoint(
     provider,
     config.origin,
     ("v1" +: "messages" +: path)*,
   )
 
   /** Refuses an empty chat, a refused prefill, or too many cache marks. */
-  override def acceptable
+  override def refuseUnsendable
     (
-      config: LlmConfig,
+      config: ModelConfig,
       chat: Chat,
-      options: ReplyOptions,
+      options: ModelRequest.Options,
     )
-    : Either[LlmError, Unit] =
+    : Either[ModelError, Unit] =
     for
-      _ <- JsonHttp.answerable(provider, chat)
-      _ <- continuable(chat, config.model)
-      _ <- markable(chat)
-      _ <- JsonHttp.viewable(provider, chat, media)
+      _ <- JsonHttp.refuseUnanswerable(provider, chat)
+      _ <- refusePrefill(chat, config.model)
+      _ <- refuseExcessBreakpoints(chat)
+      _ <- JsonHttp.refuseUnsupportedMedia(provider, chat, media)
     yield ()
 
   /**
@@ -130,26 +129,26 @@ private[iris] object AnthropicApi extends ProviderApi:
     * models reject a request carrying them, and an unlisted model is taken to
     * be as new.
     */
-  private val sampling: Set[LlmModel] = Set(
-    LlmModel.ClaudeOpus4_6,
-    LlmModel.ClaudeSonnet4_6,
-    LlmModel.ClaudeHaiku4_5,
+  private val sampling: Set[Model] = Set(
+    Model.ClaudeOpus4_6,
+    Model.ClaudeSonnet4_6,
+    Model.ClaudeHaiku4_5,
   )
 
   /**
-    * The models that still continue a chat ending with the assistant's message.
-    * The others, unlisted ones included, refuse it.
+    * The models that still continue a chat ending with the model's message. The
+    * others, unlisted ones included, refuse it.
     */
-  private val prefilling: Set[LlmModel] = Set(LlmModel.ClaudeHaiku4_5)
+  private val prefilling: Set[Model] = Set(Model.ClaudeHaiku4_5)
 
-  def continuable(chat: Chat, model: LlmModel): Either[LlmError, Unit] = Either
+  def refusePrefill(chat: Chat, model: Model): Either[ModelError, Unit] = Either
     .cond(
       prefilling.contains(model) ||
-      !chat.messages.lastOption.exists(_.role == Role.Assistant),
+      !chat.messages.lastOption.exists(_.role == Role.Model),
       (),
-      LlmError.Unsendable(
+      ModelError.Unsendable(
         provider.displayName,
-        s"${ model.id } will not continue an assistant message of its own",
+        s"${ model.id } will not continue a message of its own",
       ),
     )
 
@@ -164,12 +163,12 @@ private[iris] object AnthropicApi extends ProviderApi:
 
   val maxBreakpoints: Int = 4
 
-  def markable(chat: Chat): Either[LlmError, Unit] =
+  def refuseExcessBreakpoints(chat: Chat): Either[ModelError, Unit] =
     val count = marks(chat)
     Either.cond(
       count <= maxBreakpoints,
       (),
-      LlmError.Unsendable(
+      ModelError.Unsendable(
         provider.displayName,
         s"its cache breakpoints mark $count blocks, and at most $maxBreakpoints are kept",
       ),
@@ -178,11 +177,11 @@ private[iris] object AnthropicApi extends ProviderApi:
   /** The blocks a chat's breakpoints mark; breakpoints in a row mark one. */
   private def marks(chat: Chat): Int =
     val (cached, blocks) = placed(chat)
-    val onSystem         = if cached && chat.system.nonEmpty then 1 else 0
+    val onSystem         = if cached && chat.instructions.nonEmpty then 1 else 0
     onSystem + blocks.flatten.count(_._2)
 
   /** Serialises a chat to count, which takes no `max_tokens`. */
-  def countBody(config: LlmConfig, chat: Chat): String =
+  def countBody(config: ModelConfig, chat: Chat): String =
     val (system, messages) = conversation(chat)
     JsonHttp.body(
       "model"    -> config.model.id.asJson,
@@ -199,9 +198,9 @@ private[iris] object AnthropicApi extends ProviderApi:
 
   override def body
     (
-      config: LlmConfig,
+      config: ModelConfig,
       chat: Chat,
-      options: ReplyOptions,
+      options: ModelRequest.Options,
       streamed: Boolean,
     )
     : String =
@@ -226,7 +225,7 @@ private[iris] object AnthropicApi extends ProviderApi:
     Json.obj("effort" -> effort.toString.toLowerCase.asJson)
 
   /** A part, and whether a breakpoint marks it as the end of a prefix. */
-  private type Marked = (Part, Boolean)
+  private type Marked = (MessagePart, Boolean)
 
   /** Whether a breakpoint marks the system message, and the messages' blocks. */
   private type Placed = (Boolean, Vector[Vector[Marked]])
@@ -234,7 +233,7 @@ private[iris] object AnthropicApi extends ProviderApi:
   private def conversation(chat: Chat): (Json, Json) =
     val (cached, blocks) = placed(chat)
     (
-      chat.system.map(system(_, cached)).asJson,
+      chat.instructions.map(system(_, cached)).asJson,
       chat
         .messages
         .zip(blocks)
@@ -246,17 +245,18 @@ private[iris] object AnthropicApi extends ProviderApi:
     .messages
     .foldLeft((false, Vector.empty[Vector[Marked]])):
       case ((cached, blocks), message) => Message
-          .separated(message.content)
+          .separated(message.parts)
           .foldLeft((cached, blocks :+ Vector.empty[Marked]))(place)
 
   /**
     * Places one more part. A breakpoint marks the last block before it, in any
     * earlier message, or else the system message.
     */
-  private def place(placed: Placed, part: Part): Placed =
+  private def place(placed: Placed, part: MessagePart): Placed =
     val (cached, blocks) = placed
     part match
-      case Part.CacheBreakpoint => blocks.lastIndexWhere(_.nonEmpty) match
+      case MessagePart.CacheBreakpoint =>
+        blocks.lastIndexWhere(_.nonEmpty) match
           case -1 => (true, blocks)
           case at => (cached, blocks.updated(at, lastMarked(blocks(at))))
       case _ => (cached, blocks.init :+ (blocks.last :+ (part -> false)))
@@ -265,10 +265,16 @@ private[iris] object AnthropicApi extends ProviderApi:
     blocks.init :+ (blocks.last._1 -> true)
 
   private def system(text: String, cached: Boolean): Json =
-    if cached then Json.arr(marked(Part.Text(text) -> true)) else text.asJson
+    if cached then Json.arr(marked(MessagePart.Text(text) -> true))
+    else text.asJson
+
+  /** A role's name in Anthropic's API. */
+  private def named(role: Role): String = role match
+    case Role.User  => "user"
+    case Role.Model => "assistant"
 
   private def message(role: Role, blocks: Vector[Marked]): Json = Json.obj(
-    "role"    -> role.code.asJson,
+    "role"    -> named(role).asJson,
     "content" ->
       Option
         .unless(blocks.exists(_._2))(blocks.map(_._1))
@@ -284,12 +290,12 @@ private[iris] object AnthropicApi extends ProviderApi:
       ))
     else part(content)
 
-  private def part(part: Part): Json = part match
-    case Part.Text(text) => Json.obj(
+  private def part(part: MessagePart): Json = part match
+    case MessagePart.Text(text) => Json.obj(
         "type" -> "text".asJson,
         "text" -> text.asJson,
       )
-    case Part.Media(mediaType, data) => Json.obj(
+    case MessagePart.Media(mediaType, data) => Json.obj(
         "type" -> (if mediaType == MediaType.Pdf then "document" else "image")
           .asJson,
         "source" -> Json.obj(
@@ -298,19 +304,19 @@ private[iris] object AnthropicApi extends ProviderApi:
           "data"       -> data.asJson,
         ),
       )
-    case Part.ToolCall(id, tool, arguments, _) => Json.obj(
+    case MessagePart.ToolCall(id, tool, arguments, _) => Json.obj(
         "type"  -> "tool_use".asJson,
         "id"    -> id.asJson,
         "name"  -> tool.asJson,
         "input" -> arguments,
       )
-    case Part.ToolResult(callId, _, output) => Json.obj(
+    case MessagePart.ToolResult(callId, _, output) => Json.obj(
         "type"        -> "tool_result".asJson,
         "tool_use_id" -> callId.asJson,
         "content"     -> output.asJson,
       )
     // Breakpoints are marks on the block before them, removed by now.
-    case Part.CacheBreakpoint => Json.obj()
+    case MessagePart.CacheBreakpoint => Json.obj()
 
   private val stopReason: Option[String] => StopReason = StopReason.normalise(
     "end_turn",
@@ -334,7 +340,7 @@ private[iris] object AnthropicApi extends ProviderApi:
     ):
 
     /** This, after an event, and the deltas the event makes, or why not. */
-    def read(event: Json): (Streamed, List[Either[LlmError, Delta]]) =
+    def read(event: Json): (Streamed, List[Either[ModelError, Delta]]) =
       val cursor = event.hcursor
       val index  = cursor.get[Int]("index").toOption
       cursor.get[String]("type").toOption match
@@ -388,14 +394,14 @@ private[iris] object AnthropicApi extends ProviderApi:
       input: Option[Json],
     ):
 
-    def said: Option[String] = text.filter(_ => kind == "text")
+    def visibleText: Option[String] = text.filter(_ => kind == "text")
 
-    def toolCall: Option[Part.ToolCall] =
+    def toolCall: Option[MessagePart.ToolCall] =
       for
         _    <- Option.when(kind == "tool_use")(())
         id   <- id
         name <- name
-      yield Part.ToolCall(id, name, input.getOrElse(Json.obj()))
+      yield MessagePart.ToolCall(id, name, input.getOrElse(Json.obj()))
 
     /** The call a block begins, whose arguments are still to come. */
     def calling: Option[Calling] =
@@ -474,8 +480,8 @@ private[iris] object AnthropicApi extends ProviderApi:
     ):
 
     /** This response as a reply, which may be empty, as on a refusal. */
-    def toReply: Either[LlmError, Reply] = Right(Reply(
-      text = content.flatMap(_.said).mkString,
+    def toReply: Either[ModelError, ModelResponse] = Right(ModelResponse(
+      text = content.flatMap(_.visibleText).mkString,
       stopReason = AnthropicApi.stopReason(stopReason),
       usage = usage.fold(Usage())(_.toUsage),
       toolCalls = content.flatMap(_.toolCall),
