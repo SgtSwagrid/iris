@@ -381,7 +381,7 @@ class AskSuite extends FunSuite:
       Right(Answer(
         text = adaJson,
         stopReason = StopReason.Completed,
-        usage = Some(Usage(30, 7)),
+        usage = Usage(uncachedTokens = 30, visibleTokens = 7),
         value = Some(ada),
         attempts = 2,
       )),
@@ -400,20 +400,23 @@ class AskSuite extends FunSuite:
         .map(reply => (reply.value, reply.attempts, reply.usage))
         .attempt
         .unsafeRunSync(),
-      Right((None, 2, Some(Usage(30, 7)))),
+      Right((None, 2, Usage(uncachedTokens = 30, visibleTokens = 7))),
     )
-    // Usage is none where an attempt reports none, as no sum would be whole.
+    // An attempt reporting no usage adds none.
     val partly = client(sent =>
       if sent.size > 1 then said(adaJson, cost = Some((20, 5)))
       else said("Ada, 36."),
     )
     assertEquals(
       partly.ask[Person](prompt).map(_.usage).attempt.unsafeRunSync(),
-      Right(None),
+      Right(Usage(uncachedTokens = 20, visibleTokens = 5)),
     )
+    // Usage adds up count by count, and so do its totals.
+    val sum = Usage(1, 2, 3, 4, 5, 6, 7) + Usage(10, 20, 30, 40, 50, 60, 70)
+    assertEquals(sum, Usage(11, 22, 33, 44, 55, 66, 77))
     assertEquals(
-      Usage(10, 2, 4) + Usage(20, 5, 6),
-      Usage(30, 7, 10),
+      (sum.inputTokens, sum.cachedTokens, sum.outputTokens),
+      (11 + 22 + 33 + 44 + 55, 22 + 55, 66 + 77),
     )
 
   test("a wrapper around the client sees every attempt"):
@@ -469,8 +472,7 @@ class AskSuite extends FunSuite:
       .assistant(Answer(
         "",
         StopReason.ToolCall,
-        None,
-        List(calling),
+        toolCalls = List(calling),
       ))
       .user(Part.ToolResult("call_1", "weather", "Snowing."))
     val checked = LlmClient[SyncIO](
@@ -533,7 +535,7 @@ class AskSuite extends FunSuite:
         Right(Answer(
           adaJson,
           StopReason.Completed,
-          Some(Usage(5, 3)),
+          Usage(uncachedTokens = 5, visibleTokens = 3),
           value = Some(ada),
         )),
         model,

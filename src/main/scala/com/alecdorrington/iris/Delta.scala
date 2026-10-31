@@ -21,11 +21,6 @@ enum Delta:
     *   The reason the model stopped.
     *
     * @param usage
-    *   The token counts, where the provider reports them at the end. Anthropic
-    *   reports none here; use [[LlmClient.send]] for its usage.
+    *   The token counts of the whole reply.
     */
-  case End
-    (
-      stopReason: StopReason,
-      usage: Option[Usage],
-    )
+  case End(stopReason: StopReason, usage: Usage)

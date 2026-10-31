@@ -192,7 +192,11 @@ provider's own structured output, so it works alike everywhere, and a cached pre
 Each request accepts [`ReplyOptions`](src/main/scala/com/alecdorrington/iris/ReplyOptions.scala)
 (token limit, temperature, top-p, stop sequences, effort), and each
 [`Answer`](src/main/scala/com/alecdorrington/iris/Answer.scala) carries the reply text along with a
-normalised `StopReason` and token usage counts, which add up with `+`.
+normalised `StopReason` and its token `Usage`, which adds up with `+`. Its counts are alike for every
+provider, and none includes another, so that each can be priced alone: tokens read afresh, read from
+the cache and written to it, audio read afresh and from the cache, and the reply's visible and
+thinking tokens. A count the provider does not report, or never charges for apart, is `0`.
+`inputTokens`, `cachedTokens` and `outputTokens` total them.
 
 ```scala
 client.ask[String](chat, ReplyOptions(maxTokens = Some(1024), temperature = Some(0.2)))
@@ -302,7 +306,8 @@ guessing with a tokeniser of its own.
 When many requests begin alike, as when one document is asked several questions, put what
 they share first and end it with a `Part.CacheBreakpoint`, so that the provider can keep what it
 made of the prefix rather than read it afresh every time. `Usage.cachedTokens` says how much of a
-prompt was read from the cache.
+prompt was read from the cache, and `cacheWriteTokens` how much was written to it, where the provider
+charges for writing it (Anthropic, and OpenAI from GPT-5.6).
 
 ```scala
 val asking = (question: String) =>
@@ -367,6 +372,16 @@ def logged(client: LlmClient[IO]): LlmClient[IO] = new LlmClient.Forwarding(clie
 
 Both pass `warm` on to the client they wrap, as a wrapper must: the default `warm` sends through
 `send`, which would lose however the provider itself warms.
+
+### Upgrading from 0.4
+
+- `Answer.usage` and `Delta.End.usage` are a `Usage`, never `None`: a count the provider did not
+  report is `0`, and an ask's usage is that of every attempt, summed. Read `usage` where you matched
+  `Some(usage)`.
+- `Usage` is made of seven counts, named as you make one (`Usage(uncachedTokens = 10, visibleTokens = 2)`).
+  `inputTokens`, `cachedTokens` and `outputTokens` are now totals of them, meaning what they did.
+- `outputTokens` now counts Gemini's thinking, which it left out, and streams from Anthropic and
+  OpenAI now count their usage, so totals may be higher than before.
 
 ### Upgrading from 0.3
 

@@ -221,8 +221,7 @@ class ToolSuite extends FunSuite:
     val reply = Answer(
       "Let me look.",
       StopReason.ToolCall,
-      None,
-      List(asked),
+      toolCalls = List(asked),
     )
     val next = Chat().user("Weather?").assistant(reply).user(answered)
     assertEquals(next.messages.size, 3)

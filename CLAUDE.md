@@ -64,9 +64,23 @@ longer.
   client must forward `warm`, not inherit the default, which `LlmClient.Forwarding` (override only what changes) and
   `mapK` (one transformation for every request) both do. `cacheable` always ends with the user saying something:
   breakpoints left alone in the last message move back to what came before, and a prefix ending at the system message
-  or the assistant's turn is followed by a user message of `.`. `Usage.inputTokens` counts the whole prompt on every
-  provider (Anthropic's `input_tokens` leaves the cache out, so its reads and writes are added back) and
-  `Usage.cachedTokens` the part read from the cache.
+  or the assistant's turn is followed by a user message of `.`.
+- `Usage` is seven counts, none including another, so that each can be priced alone (rates per count are planned):
+  uncached, cache reads, cache writes, uncached and cached audio, visible and thinking. Every provider has every
+  count, `0` where it reports none or never charges apart (Anthropic, and OpenAI from GPT-5.6, charge for cache
+  writes, Gemini not; only Gemini reports audio, by `promptTokensDetails`/`cacheTokensDetails`, and prices it higher
+  on some models; where it gives no `cacheTokensDetails`, its cache is taken to hold audio in the prompt's share).
+  Each `ProviderApi` splits its own: Anthropic's `input_tokens` leaves the cache out and its `output_tokens` holds
+  `output_tokens_details.thinking_tokens`; OpenAI's prompt holds `cached_tokens` and `cache_write_tokens`, and its
+  completion `reasoning_tokens` (its Responses API splits writes by lifetime, 30 minutes or 12 hours, at different
+  rates, but Iris uses Chat Completions without `prompt_cache_options`, so one write count is enough); Gemini's
+  prompt holds its cache, and `thoughtsTokenCount` lies outside `candidatesTokenCount`.
+  Gemini leaves out every count of `0` (protobuf's JSON), so a count left out is `0`, never unknown, and a reply
+  with no usage at all has `Usage()`: `Answer.usage` and `Delta.End.usage` are never optional (the user chose zeros
+  over `None`). `inputTokens`, `cachedTokens` and `outputTokens` are totals of the counts, the whole prompt, the part
+  of it read from the cache, and the whole reply. Streams count too: Anthropic's start counts the request and its
+  stop the reply (taking what it leaves out from the start), and OpenAI's usage comes in a chunk of its own after
+  `finish_reason`, so its `Delta.End` comes when the stream does.
 - Providers run adjacent text blocks together (Anthropic was measured to: two blocks count exactly as their
   texts concatenated), so every `ProviderApi` serialises a message's parts through `Message.separated`, which opens
   with a blank line each text part following another with only breakpoints (or empty text) between them. A part's
@@ -101,7 +115,7 @@ longer.
   complete. A chat `Chat.unanswerable` refuses (no messages, a silent one, or none of the user's) is sent
   uninstructed, so `JsonHttp.answerable` refuses it with the provider's name before any request; a chat ending
   with the assistant's message gets the instructions in a user message after it, so the model answers afresh
-  (the user chose this over continuing a prefill). Usage is summed only when every attempt reports it. `Unreadable`'s message carries neither the replies nor `detail`, which is what
+  (the user chose this over continuing a prefill). Usage is every attempt's summed. `Unreadable`'s message carries neither the replies nor `detail`, which is what
   the model was told, circe's own failures, which quote the reply's values, so hosts may log it. JSON is read
   from the whole reply, then its last fence, and nowhere else (the user chose this over finding JSON amid prose),
   so a fence inside a JSON string is never taken.
@@ -159,8 +173,9 @@ longer.
   tool's schema or a tool call's arguments, a null is a value.
 - `LlmStreamer` is a capability apart from `LlmClient`, since streaming needs a backend which can stream.
   `SseClient` speaks the same `ProviderApi` as `JsonClient`, with the same request bodies (`streamed`). Each
-  `ProviderApi.reply` reads the whole stream of events, most one event at a time (`Sse.separately`). Gemini's
-  remembers across events whether a tool was asked for, as it may say so before it says it stopped.
+  `ProviderApi.reply` reads the whole stream of events, remembering across them what it must (`zipWithScan1`):
+  Gemini's whether a tool was asked for, as it may say so before it says it stopped, Anthropic's the counts it
+  started with, and OpenAI's how it stopped until its usage comes.
 - What differs between the platforms is in `Platform` alone, one per platform (`src/main/scalajvm`,
   `src/main/scalajs`): the backends `resource` makes (the JDK's HTTP client, or the Fetch API), and whether a
   request may come from a browser's page, for which `AnthropicApi` adds `anthropic-dangerous-direct-browser-access`.
@@ -215,7 +230,9 @@ it only through a release (below).
    sent in `ComparisonService`, `EvaluationService`, `TaskImportService` and `TranscriptionService`, reading
    `value`, its `MaxTokens` branches (`TranscriptionService`, `EvaluationService`) become `Unreadable` cases,
    and its test fakes override the protected `send`. Codeswitch's `Translator` asks `ask[List[String]]` and drops
-   its own array parsing and JSON-format prompt, and its `explain` takes `Unreadable`.
+   its own array parsing and JSON-format prompt, and its `explain` takes `Unreadable`. For 0.5.0, Themis's
+   `Allowances.cost` reads `reply.usage` where it folded over it, dropping its guess of a token per character for a
+   reply with none, and its tests (`AllowancesSuite`, `TaskEvaluationSuite`) make `Usage` by name, not `Some`.
 
 ## Instructions
 

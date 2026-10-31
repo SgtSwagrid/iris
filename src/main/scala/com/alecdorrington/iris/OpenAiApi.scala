@@ -34,8 +34,16 @@ private[iris] object OpenAiApi extends ProviderApi:
   override val answers: Decoder[Either[LlmError, Answer[Nothing]]] =
     Decoder[Response].map(_.toAnswer)
 
-  override def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta] = Sse
-    .separately(deltas)(events)
+  /**
+    * The reply a stream's events make up, which ends with the stream, as its
+    * usage comes in an event of its own after the one saying why it stopped.
+    */
+  override def reply[F[_]](events: Stream[F, Json]): Stream[F, Delta] = events
+    .noneTerminate
+    .zipWithScan1(Ending())((ending, event) => event.fold(ending)(ending.after))
+    .flatMap:
+      case (Some(event), _) => Stream.emits(said(event).toList)
+      case (None, ending)   => Stream.emits(ending.end.toList)
 
   /** Refuses an empty chat, and one carrying media other than pictures. */
   override def acceptable
@@ -168,20 +176,42 @@ private[iris] object OpenAiApi extends ProviderApi:
     toolCall = Some("tool_calls"),
   )
 
-  def deltas(event: Json): List[Delta] =
-    val choice = event.hcursor.downField("choices").downN(0)
-    val said   = choice.downField("delta").get[String]("content").toOption
-    val ended  = choice
-      .get[String]("finishReason")
-      .toOption
-      .orElse(choice.get[String]("finish_reason").toOption)
-    List.concat(
-      said.filter(_.nonEmpty).map(Delta.Text.apply),
-      ended.map(reason =>
-        Delta.End(
-          stopReason(Some(reason)),
-          event.hcursor.get[TokenCounts]("usage").toOption.flatMap(_.toUsage),
-        ),
+  private def said(event: Json): Option[Delta] = event
+    .hcursor
+    .downField("choices")
+    .downN(0)
+    .downField("delta")
+    .get[String]("content")
+    .toOption
+    .filter(_.nonEmpty)
+    .map(Delta.Text.apply)
+
+  /**
+    * What a stream has said so far of how it ended: why it stopped, and its
+    * token counts, which come after.
+    */
+  final case class Ending
+    (
+      reason: Option[String] = None,
+      counts: Option[TokenCounts] = None,
+    ):
+
+    def after(event: Json): Ending =
+      val choice = event.hcursor.downField("choices").downN(0)
+      Ending(
+        choice
+          .get[String]("finishReason")
+          .toOption
+          .orElse(choice.get[String]("finish_reason").toOption)
+          .orElse(reason),
+        event.hcursor.get[TokenCounts]("usage").toOption.orElse(counts),
+      )
+
+    /** The end of the reply, where it said why it stopped. */
+    def end: Option[Delta] = reason.map(reason =>
+      Delta.End(
+        stopReason(Some(reason)),
+        counts.fold(Usage())(_.toUsage),
       ),
     )
 
@@ -224,33 +254,68 @@ private[iris] object OpenAiApi extends ProviderApi:
     given Decoder[Choice] =
       Decoder.forProduct2("message", "finish_reason")(Choice.apply)
 
-  final case class PromptBreakdown(cachedTokens: Option[Int])
+  final case class PromptBreakdown
+    (
+      cachedTokens: Option[Int],
+      cacheWriteTokens: Option[Int],
+    )
 
   object PromptBreakdown:
 
     given Decoder[PromptBreakdown] =
-      Decoder.forProduct1("cached_tokens")(PromptBreakdown.apply)
+      Decoder.forProduct2("cached_tokens", "cache_write_tokens")(
+        PromptBreakdown.apply,
+      )
 
-  /** The token counts of a response, whose prompt tokens include cached ones. */
+  final case class CompletionBreakdown(reasoningTokens: Option[Int])
+
+  object CompletionBreakdown:
+
+    given Decoder[CompletionBreakdown] =
+      Decoder.forProduct1("reasoning_tokens")(CompletionBreakdown.apply)
+
+  /**
+    * The token counts of a response, whose prompt tokens include those read
+    * from and written to the cache, and completion tokens reasoning.
+    */
   final case class TokenCounts
     (
       promptTokens: Option[Int],
       completionTokens: Option[Int],
       promptBreakdown: Option[PromptBreakdown],
+      completionBreakdown: Option[CompletionBreakdown],
     ):
 
-    def toUsage: Option[Usage] = Usage.of(
-      promptTokens,
-      completionTokens,
-      promptBreakdown.flatMap(_.cachedTokens),
-    )
+    def toUsage: Usage =
+      val prompt = promptTokens.getOrElse(0)
+      val cached = promptBreakdown
+        .flatMap(_.cachedTokens)
+        .getOrElse(0)
+        .min(prompt)
+      val written = promptBreakdown
+        .flatMap(_.cacheWriteTokens)
+        .getOrElse(0)
+        .min(prompt - cached)
+      val completion = completionTokens.getOrElse(0)
+      val reasoning  = completionBreakdown
+        .flatMap(_.reasoningTokens)
+        .getOrElse(0)
+        .min(completion)
+      Usage(
+        uncachedTokens = prompt - cached - written,
+        cacheReadTokens = cached,
+        cacheWriteTokens = written,
+        visibleTokens = completion - reasoning,
+        thinkingTokens = reasoning,
+      )
 
   object TokenCounts:
 
-    given Decoder[TokenCounts] = Decoder.forProduct3(
+    given Decoder[TokenCounts] = Decoder.forProduct4(
       "prompt_tokens",
       "completion_tokens",
       "prompt_tokens_details",
+      "completion_tokens_details",
     )(TokenCounts.apply)
 
   final case class Response
@@ -270,7 +335,7 @@ private[iris] object OpenAiApi extends ProviderApi:
         Answer(
           text = choice.message.content.getOrElse(""),
           stopReason = stopReason(choice.finishReason),
-          usage = usage.flatMap(_.toUsage),
+          usage = usage.fold(Usage())(_.toUsage),
           toolCalls =
             choice.message.toolCalls.getOrElse(List.empty).map(_.toPart),
         )

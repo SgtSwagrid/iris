@@ -247,7 +247,7 @@ class CacheSuite extends FunSuite:
                     "cache_creation_input_tokens":900}}""",
         "max_tokens",
         0,
-        Usage(900, 0),
+        Usage(cacheWriteTokens = 900),
       ),
       (
         config.copy(model = LlmModel.Gpt5),
@@ -255,7 +255,7 @@ class CacheSuite extends FunSuite:
            "usage":{"prompt_tokens":900,"completion_tokens":1}}""",
         "max_completion_tokens",
         1,
-        Usage(900, 1),
+        Usage(uncachedTokens = 900, visibleTokens = 1),
       ),
     ).foreach: (configured, reply, limit, least, usage) =>
       val warming = expecting(configured, reply)(body =>
@@ -265,7 +265,7 @@ class CacheSuite extends FunSuite:
       // The reply is passed back, with what writing the cache cost.
       assertEquals(
         warming.warm(chat).attempt.unsafeRunSync().map(_.usage),
-        Right(Some(usage)),
+        Right(usage),
         configured.provider,
       )
 
