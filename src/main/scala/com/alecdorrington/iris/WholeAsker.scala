@@ -176,9 +176,8 @@ private[iris] object WholeAsker:
     reply.stopReason == StopReason.StopSequence)
 
   /** The answer a reply holds, or why it holds none. */
-  private def read[A]
-    (schema: Schema[A], reply: ModelResponse)
-    : Either[String, A] = parsed(reply.text).flatMap(decoded(schema, _))
+  def read[A](schema: Schema[A], reply: ModelResponse): Either[String, A] =
+    parsed(reply.text).flatMap(decoded(schema, _))
 
   /**
     * Why no reading of a reply could be trusted, nor asking again help, where

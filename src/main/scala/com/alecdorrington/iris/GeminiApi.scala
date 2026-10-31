@@ -231,11 +231,34 @@ private[iris] object GeminiApi extends ProviderApi:
 
   /** Serialises the tools on offer, which Gemini takes under one entry. */
   private def tools(options: ModelRequest.Options): Json = Option
-    .when(options.tools.nonEmpty)(List(Json.obj(
-      "functionDeclarations" ->
-        options.tools.map(JsonHttp.declared(_, "parameters")).asJson,
-    )))
+    .when(options.tools.nonEmpty)(List(
+      Json.obj("functionDeclarations" -> options.tools.map(declared).asJson),
+    ))
     .asJson
+
+  /**
+    * A tool's declaration, with no schema where it takes no arguments, as
+    * Gemini refuses an object of no properties.
+    */
+  private def declared(tool: Tool): Json = JsonHttp
+    .declared(tool, "parameters")
+    .mapObject(declaration =>
+      if empty(tool.parameters) then declaration.remove("parameters")
+      else declaration,
+    )
+
+  /**
+    * Whether a schema is of an object with no properties, taking no others, as
+    * a map's would.
+    */
+  private def empty(schema: Json): Boolean =
+    val cursor = schema.hcursor
+    cursor
+      .downField("properties")
+      .focus
+      .flatMap(_.asObject)
+      .exists(_.isEmpty) &&
+    cursor.downField("additionalProperties").focus.forall(_ == Json.False)
 
   private def part(content: MessagePart): Json = content match
     case MessagePart.Text(text)             => part(text)

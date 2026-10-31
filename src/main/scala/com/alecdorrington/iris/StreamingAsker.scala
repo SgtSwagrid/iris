@@ -14,7 +14,8 @@ import io.circe.Json
   * be read; afterwards, a reply that cannot be read to its end fails the
   * streams not yet ended, and the answer's reply. Where tools are run and the
   * answer is itself a stream, its elements are given through [[Emit]] instead,
-  * one call of it each, so that the model may call the tools between them.
+  * one call of it each, so that the model may call the tools between them, and
+  * the stream ends with the reply in which the model says it is done.
   */
 private[iris] object StreamingAsker:
 
@@ -35,7 +36,7 @@ private[iris] object StreamingAsker:
     val emitting = Emit.element(A).filter(_ => tools.tools.nonEmpty)
     val base     = tools.offered(options)
     val offered  = emitting.fold(base)(element =>
-      base.copy(tools = base.tools :+ Emit.tool(element)),
+      base.copy(tools = base.tools ++ Emit.tools(element)),
     )
     (WholeAsker.counted(attempts) *> Emit.unclaimed(emitting, options, offered))
       .liftTo[F] *>
@@ -97,8 +98,9 @@ private[iris] object StreamingAsker:
   /**
     * One reply of an answer given through [[Emit]], as it arrives: its text,
     * the calls in it, what the model is told of each, aligned with them, or
-    * `None` for a tool to run, and whether an emit in it was refused, after
-    * which every later one is too, so that elements arrive in order.
+    * `None` for a tool to run, whether an emit in it was refused, after which
+    * every later one is too, so that elements arrive in order, and whether it
+    * called [[Emit.done]].
     */
   private final case class Round
     (
@@ -106,6 +108,7 @@ private[iris] object StreamingAsker:
       calls: Vector[MessagePart.ToolCall] = Vector.empty,
       told: Vector[Option[String]] = Vector.empty,
       refused: Boolean = false,
+      done: Boolean = false,
     ):
 
     def called
@@ -118,11 +121,26 @@ private[iris] object StreamingAsker:
       told = this.told :+ told,
     )
 
+    /**
+      * This round with [[Emit.done]] called, of which the model is told only
+      * where the answer goes on.
+      */
+    def ending(call: MessagePart.ToolCall): Round = called(
+      call,
+      Some(if refused then Emit.skipped else Emit.unfinished),
+    ).copy(done = true)
+
     /** The calls of tools to run. */
     def others: List[MessagePart.ToolCall] = calls
       .zip(told)
       .collect { case (call, None) => call }
       .toList
+
+    /**
+      * Whether the answer ends with this reply: it called [[Emit.done]], and
+      * has no tool to run, nor element to give again.
+      */
+    def ends: Boolean = done && !refused && others.isEmpty
 
   /**
     * How far an answer given through [[Emit]] has gone: its elements read, the
@@ -340,6 +358,9 @@ private[iris] object StreamingAsker:
                   ),
                   None,
                 ).pure[F]
+        case ((round, progress), Delta.ToolCall(call))
+          if call.tool == Emit.done =>
+          ((round.ending(call), progress), None).pure[F]
         case ((round, progress), Delta.ToolCall(call)) =>
           ((round.called(call), progress), None).pure[F]
         case (state, end: Delta.End) => (state, Some(end)).pure[F]
@@ -369,8 +390,9 @@ private[iris] object StreamingAsker:
 
     /**
       * What follows a reply of an answer given through [[Emit]]: the answer's
-      * end, where it asks for nothing more, or else the tools it asks for run,
-      * and the model asked to go on, or why it cannot be.
+      * end, where it asks for nothing more, or says it is done, or else the
+      * tools it asks for run, and the model asked to go on, or why it cannot
+      * be.
       */
     private def afterwards
       (
@@ -390,6 +412,11 @@ private[iris] object StreamingAsker:
       )
       .fold(
         if round.calls.isEmpty then whole(chat, replies, progress, element)
+        else if round.ends then
+          finished(
+            written(replies.last, progress, element),
+            replies.toList,
+          )
         else
           round
             .calls
@@ -426,7 +453,7 @@ private[iris] object StreamingAsker:
       if progress.fed > 0 then finished(Nil, replies.toList)
       else
         WholeAsker.verdict(
-          Schema.listOf(element.asInstanceOf[Schema[Any]]),
+          listOf(element),
           chat,
           replies,
           attempts,
@@ -443,6 +470,24 @@ private[iris] object StreamingAsker:
               element,
             )
           case WholeAsker.Verdict.Failed(error) => error.raiseError
+
+    /**
+      * The elements a reply calling [[Emit.done]] wrote as JSON instead, where
+      * none came through emit, as a reply ignoring emit is read, or else none.
+      */
+    private def written
+      (
+        reply: ModelResponse,
+        progress: Progress,
+        element: Schema[?],
+      )
+      : List[Any] =
+      if progress.fed > 0 then Nil
+      else WholeAsker.read(listOf(element), reply).getOrElse(Nil)
+
+    /** The schema of a list of the elements. */
+    private def listOf(element: Schema[?]): Schema[List[Any]] =
+      Schema.listOf(element.asInstanceOf[Schema[Any]])
 
     /** Ends an [[Emit]] stream, after any last elements, and its reply. */
     private def finished
@@ -500,17 +545,31 @@ private[iris] object StreamingAsker:
 /**
   * The tool through which an answer that is itself a stream gives its elements,
   * one call of it each, where the ask runs tools, so that the model may call
-  * those between them.
+  * those between them, and the tool, [[done]], through which the model says it
+  * has given the last, so that the reply saying so ends the answer.
   */
 private[iris] object Emit:
 
   val name: String = "emit"
+
+  /** The name of the tool through which the model says it is done. */
+  val done: String = "done"
 
   /** The number of the stream its elements feed. */
   val stream: Int = 1
 
   /** What the model is told of an element read. */
   val taken: String = "ok"
+
+  /**
+    * What the model is told of a call of [[done]] in a reply after which the
+    * answer goes on, as it also called other tools or gave an element that
+    * could not be read.
+    */
+  val unfinished: String =
+    "Not taken, as this reply also called other tools or gave an element " +
+      s"that could not be read: call `$done` again once every element has " +
+      "been emitted."
 
   /** What the model is told of an element that could not be read. */
   def refused(why: String): String =
@@ -526,8 +585,9 @@ private[iris] object Emit:
     s"Give your answer only through the `$name` tool, one call per element, in " +
       "order, writing no other text. Emit each element as soon as you can, " +
       "calling any other tool only when the next element needs it. You may " +
-      "make several calls at once. When every element has been emitted, stop. " +
-      "If there are no elements, reply with `[]` alone."
+      "make several calls at once. Once every element has been emitted, call " +
+      s"`$done` in that same reply, then stop. If there are no elements, " +
+      "reply with `[]` alone."
 
   /** The schema of each element, where an answer of the schema is a stream. */
   def element(schema: Schema[?]): Option[Schema[?]] = schema.arrival match
@@ -536,8 +596,8 @@ private[iris] object Emit:
 
   /**
     * Refuses, beside it, a tool for the host to run, as an answer already given
-    * could not end at its call, and a tool of its name, which the model could
-    * not tell from it, among those `offered`.
+    * could not end at its call, and a tool of its name or [[done]]'s, which the
+    * model could not tell from them, among those `offered`.
     */
   def unclaimed
     (
@@ -552,34 +612,48 @@ private[iris] object Emit:
         s"A tool cannot be offered for the host to run where a streamed answer is given through `$name`, as the answer could not end at its call: give it to `ask` to run.",
       ))
     else
-      Either.cond(
-        offered.tools.count(_.name == name) == 1,
-        (),
-        IllegalArgumentException(
-          s"A tool named `$name` cannot be run where a streamed answer is given through one of that name.",
-        ),
-      )
-
-  /** The tool, taking an element of the schema under `element`. */
-  def tool(element: Schema[?]): Tool =
-    val json = element.json
-    Tool(
-      name,
-      "Gives the next element of your answer, in order.",
-      Json
-        .obj(
-          "type"       -> Json.fromString("object"),
-          "properties" ->
-            Json.obj("element" -> json.mapObject(_.remove("$defs"))),
-          "required" -> Json.arr(Json.fromString("element")),
+      List(name, done)
+        .find(reserved => offered.tools.count(_.name == reserved) != 1)
+        .map(reserved =>
+          IllegalArgumentException(
+            s"A tool named `$reserved` cannot be run where a streamed answer is given through one of that name.",
+          ),
         )
-        .deepMerge(
-          json
-            .hcursor
-            .downField("$defs")
-            .focus
-            .fold(Json.obj())(defs => Json.obj("$defs" -> defs)),
+        .toLeft(())
+
+  /**
+    * The tools: this, taking an element of the schema under `element`, then
+    * [[done]], taking nothing.
+    */
+  def tools(element: Schema[?]): List[Tool] =
+    val json = element.json
+    List(
+      Tool(
+        name,
+        "Gives the next element of your answer, in order.",
+        Json
+          .obj(
+            "type"       -> Json.fromString("object"),
+            "properties" ->
+              Json.obj("element" -> json.mapObject(_.remove("$defs"))),
+            "required" -> Json.arr(Json.fromString("element")),
+          )
+          .deepMerge(
+            json
+              .hcursor
+              .downField("$defs")
+              .focus
+              .fold(Json.obj())(defs => Json.obj("$defs" -> defs)),
+          ),
+      ),
+      Tool(
+        done,
+        "Says that every element of your answer has been given.",
+        Json.obj(
+          "type"       -> Json.fromString("object"),
+          "properties" -> Json.obj(),
         ),
+      ),
     )
 
   /** The element a call of it gives, or why it gives none. */
