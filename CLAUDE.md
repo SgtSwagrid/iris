@@ -119,15 +119,23 @@ longer.
   the model was told, circe's own failures, which quote the reply's values, so hosts may log it. JSON is read
   from the whole reply, then its last fence, and nowhere else (the user chose this over finding JSON amid prose),
   so a fence inside a JSON string is never taken.
-- What goes in is a `Content[A]` everywhere (`Chat.of`, `Chat.user`/`assistant`, `Message.apply`, `Part.of`):
-  `String` as text, a `Part` as itself, a value with a `Schema` as its JSON, else an `Encoder`'s JSON. `NotGiven`s
+- What goes in is a `Content[A]` everywhere: `String` as text, a `Part` as itself, a value with a `Schema` as its
+  JSON, else an `Encoder`'s JSON, and a type's own given `Content` ahead of all (being monomorphic). `NotGiven`s
   keep the givens apart, `Schema` winning (a derived one too), so a value is said as the schema the model is told
-  describes it. No type text may be (`NotGiven[String <:< A]`) is said as JSON: varargs of text and a number infer
-  `String | Double`, which has a schema, and must still be refused, pointing to `Part.of`.
-  A single-turn prompt is `Chat.of(content)`, never an overload of `Chat.apply`, which would capture
-  `Chat(messages)` (the case class's own `apply` needs the default `system`, so loses). `Chat.user` and
-  `assistant` take `A*` of one content type rather than an overload beside `Part*`: Scala 3 never ranks a varargs
-  alternative more specific, so a single part was ambiguous. Mixed kinds go through `Part.of`.
+  describes it. `Chat.of`, `Chat.user`/`assistant` and `Message.apply` take `into[Part]*` (Scala 3.9's
+  `scala.Conversion.into`), so values of any kinds mix in one call, each converted by `Part.fromContent`, an
+  `inline given` summoning its `Content` with `summonInline`: an `into` parameter needs no
+  `scala.language.implicitConversions` where it is called, which a plain `Conversion` would (a feature warning,
+  fatal in CI), and the inline summon reports `Content`'s own `@implicitNotFound` at the argument, where a
+  `using` clause would leave a bare type mismatch. A spliced list must already be of parts (`values.map(Part.of)*`).
+  `fromContent` lies in `Part`'s implicit scope, as it must for a caller's `into` call to find it, so it converts
+  wherever a `Part` is expected: `val p: Part = "text"` compiles with a feature warning (an error under `WERROR`)
+  where it was a type mismatch. Only `into` parameters take a value unwarned.
+  No type text may be (`NotGiven[String <:< A]`) is said as JSON: `List("a", 1.5).map(Part.of)` infers
+  `String | Double`, which has a schema, and must still be refused. A single-turn prompt is `Chat.of(content*)`,
+  never an overload of `Chat.apply`, which would capture `Chat(messages)` (the case class's own `apply` needs the
+  default `system`, so loses). `Message(role, List[Part])` is the case class's own, chosen over the varargs
+  `apply` as more specific.
 - `Schema` is one type class of schema, encoder and decoder, so the three cannot disagree; never derive one
   from a circe codec, which says nothing of its JSON (the user chose a compile error over an any-JSON schema).
   Each schema holds its `parts` and an `outline`, its own JSON given how to write each part, from which `rendered`

@@ -171,18 +171,25 @@ no comment written on a parameter itself, so describe a field with `@param`.
 `String` is asked for as every type is: the model is told the schema `{"type":"string"}` and replies with a
 JSON string, which is read back as any other answer.
 
-What goes in is alike everywhere: `Chat.of`, a chat's `user` and `assistant` messages and `Part.of` each
-take any [`Content`](src/main/scala/com/alecdorrington/iris/Content.scala), saying text as it is, a part as itself, and any other
-value as JSON, as its `Schema` writes it, or else, where it has none, as its circe `Encoder` does:
+What goes in is alike everywhere: `Chat.of`, a chat's `user` and `assistant` messages and `Message` each
+take any values with a [`Content`](src/main/scala/com/alecdorrington/iris/Content.scala), of any kinds together, as parts of one message in
+reading order. Text is said as it is, a part as itself, and any other value as JSON, as its `Schema` writes it,
+or else, where it has none, as its circe `Encoder` does:
 
 ```scala
 client.ask[Review](Chat.of(essay).withSystem("Review the essay you are given."))
-client.ask[Review](Chat().user(Part.of("Review this draft."), Part.of(draft))) // draft: Draft
+client.ask[Review](Chat.of("Review this draft.", draft, Part.CacheBreakpoint, "Be brief.")) // draft: Draft
 client.ask[Review](chat.assistant(review).user("Now make it kinder."))
 ```
 
-Several values of one kind make one message of several parts, as `chat.user(first, second)` does; values of
-different kinds are made parts first, with `Part.of`.
+A type of your own is said as a given `Content` of its own says it, ahead of any `Schema` or `Encoder`, as a
+picture may be:
+
+```scala
+given Content[Scan] = scan => Part.Media("image/png", scan.base64)
+```
+
+A list of parts is given as `chat.user(parts*)`, and a list of other values as `chat.user(values.map(Part.of)*)`.
 
 The schema is asked for in words, at the close of the user's last message, rather than through any
 provider's own structured output, so it works alike everywhere, and a cached prefix is sent as it was.
@@ -238,7 +245,7 @@ already keeps them apart, and they are sent as they are.
 ```scala
 import com.alecdorrington.iris.Part
 
-chat.user(Part.Text("What is in this picture?"), Part.Media("image/png", base64))
+chat.user("What is in this picture?", Part.Media("image/png", base64))
 ```
 
 Anthropic and Gemini take both pictures and documents. OpenAI's chat completions take
@@ -312,7 +319,7 @@ charges for writing it (Anthropic, and OpenAI from GPT-5.6).
 ```scala
 val asking = (question: String) =>
   Chat().withSystem("Answer from the document.")
-    .user(Part.Text(document), Part.CacheBreakpoint, Part.Text(question))
+    .user(document, Part.CacheBreakpoint, question)
 
 for
   _       <- client.warm(asking(""))
@@ -382,6 +389,9 @@ Both pass `warm` on to the client they wrap, as a wrapper must: the default `war
   `inputTokens`, `cachedTokens` and `outputTokens` are now totals of them, meaning what they did.
 - `outputTokens` now counts Gemini's thinking, which it left out, and streams from Anthropic and
   OpenAI now count their usage, so totals may be higher than before.
+- `Chat.of`, a chat's `user` and `assistant` messages and `Message` take values of any kinds together, so
+  `chat.user(Part.of("Review this."), Part.of(draft))` is now `chat.user("Review this.", draft)`. A spliced
+  list must be of parts: where you spliced other values, write `chat.user(values.map(Part.of)*)`.
 
 ### Upgrading from 0.3
 
