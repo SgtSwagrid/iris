@@ -249,7 +249,7 @@ node3 -> node2;
              <dl class="attributes attributes-small">
               <dt class="body-small">backend</dt>
               <dd class="body-medium">
-               <p>The backend to send and stream requests through, which times them out as it does itself: the JDK's client, for one, only until a reply begins, where <a href="ModelClient$.html#resource-b21">resource</a> gives each reply the configured timeout whole, and each part of a streamed one.</p>
+               <p>The backend to send and stream requests through, which times them out as it does itself: the JDK's client, for one, only until a reply begins, where <a href="ModelClient$.html#resource-b21">resource</a> gives each reply the configured timeout whole, and each part of a streamed one. It closes a streamed reply given up on as it does itself too: sttp's own leave its connection open while the reply is written, where <a href="ModelClient$.html#resource-b21">resource</a> closes it at once.</p>
               </dd>
               <dt class="body-small">config</dt>
               <dd class="body-medium">
@@ -323,11 +323,11 @@ node3 -> node2;
            <div class="originInfo"></div>
            <div class="memberDocumentation">
             <div class="documentableBrief doc">
-             <p>Creates a client with an HTTP backend of its own, which can stream, and gives each reply at most the configured timeout, from sending the request to reading the reply whole, and each part of a streamed reply as long.</p>
+             <p>Creates a client with an HTTP backend of its own, which can stream, and gives each reply at most the configured timeout, from sending the request to reading the reply whole, and each part of a streamed reply as long. A streamed reply that is cancelled, dropped or times out closes its connection at once, so the provider stops writing it.</p>
             </div>
             <div class="cover">
              <div class="doc">
-              <p>Creates a client with an HTTP backend of its own, which can stream, and gives each reply at most the configured timeout, from sending the request to reading the reply whole, and each part of a streamed reply as long.</p>
+              <p>Creates a client with an HTTP backend of its own, which can stream, and gives each reply at most the configured timeout, from sending the request to reading the reply whole, and each part of a streamed reply as long. A streamed reply that is cancelled, dropped or times out closes its connection at once, so the provider stops writing it.</p>
              </div>
              <h2 class="h200">Type parameters</h2>
              <dl class="attributes attributes-small">
