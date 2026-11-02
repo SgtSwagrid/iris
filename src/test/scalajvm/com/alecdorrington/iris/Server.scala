@@ -1,7 +1,7 @@
 package com.alecdorrington.iris
 
 import cats.effect.{IO, Resource}
-import java.io.{BufferedInputStream, IOException, InputStream}
+import java.io.{BufferedInputStream, InputStream, IOException}
 import java.net.{InetAddress, ServerSocket, Socket}
 import java.nio.charset.StandardCharsets.UTF_8
 import java.util.concurrent.atomic.AtomicReference

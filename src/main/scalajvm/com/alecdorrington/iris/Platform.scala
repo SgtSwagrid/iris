@@ -8,11 +8,7 @@ import java.nio.ByteBuffer
 import java.time.Duration
 import java.util.{List as JavaList, Optional}
 import java.util.concurrent.{
-  CancellationException,
-  CompletableFuture,
-  CompletionStage,
-  Executor,
-  Flow,
+  CancellationException, CompletableFuture, CompletionStage, Executor, Flow,
 }
 import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.{SSLContext, SSLParameters}
@@ -23,8 +19,8 @@ private[iris] object Platform:
 
   /**
     * Backends of a client's own over one JDK client, made as sttp makes its
-    * own: one sending requests whole, and for each streamed reply, one that
-    * can abort it, cancelling its body, which closes its connection.
+    * own: one sending requests whole, and for each streamed reply, one that can
+    * abort it, cancelling its body, which closes its connection.
     */
   def backends[F[_] : Async]: Resource[F, Backends[F]] =
     for
@@ -48,7 +44,10 @@ private[iris] object Platform:
 
   /** A backend for one streamed reply, over the client, which can abort it. */
   private def exchange[F[_] : Async]
-    (client: HttpClient, dispatcher: Dispatcher[F])
+    (
+      client: HttpClient,
+      dispatcher: Dispatcher[F],
+    )
     : Exchange[F] =
     val abortable = Abortable(client)
     Exchange(
@@ -59,9 +58,9 @@ private[iris] object Platform:
   /**
     * The client, sending as it does, but that [[abort]] ends the bodies of its
     * replies at once. sttp reads a body through fs2's reactive-streams
-    * subscriber, which waits for each part uninterruptibly, so a stream
-    * dropped while its reply is silent would wait for the next part to cancel
-    * it, and for good where none comes.
+    * subscriber, which waits for each part uninterruptibly, so a stream dropped
+    * while its reply is silent would wait for the next part to cancel it, and
+    * for good where none comes.
     */
   private final class Abortable(client: HttpClient) extends HttpClient:
 
@@ -79,13 +78,19 @@ private[iris] object Platform:
       body
 
     override def send[T]
-      (request: HttpRequest, handler: HttpResponse.BodyHandler[T])
+      (
+        request: HttpRequest,
+        handler: HttpResponse.BodyHandler[T],
+      )
       : HttpResponse[T] = client.send(request, watched(handler))
 
     override def sendAsync[T]
-      (request: HttpRequest, handler: HttpResponse.BodyHandler[T])
-      : CompletableFuture[HttpResponse[T]] = client
-      .sendAsync(request, watched(handler))
+      (
+        request: HttpRequest,
+        handler: HttpResponse.BodyHandler[T],
+      )
+      : CompletableFuture[HttpResponse[T]] =
+      client.sendAsync(request, watched(handler))
 
     override def sendAsync[T]
       (
@@ -93,16 +98,16 @@ private[iris] object Platform:
         handler: HttpResponse.BodyHandler[T],
         promises: HttpResponse.PushPromiseHandler[T],
       )
-      : CompletableFuture[HttpResponse[T]] = client
-      .sendAsync(request, watched(handler), promises)
+      : CompletableFuture[HttpResponse[T]] =
+      client.sendAsync(request, watched(handler), promises)
 
-    override def cookieHandler(): Optional[CookieHandler] = client
-      .cookieHandler()
+    override def cookieHandler(): Optional[CookieHandler] =
+      client.cookieHandler()
 
     override def connectTimeout(): Optional[Duration] = client.connectTimeout()
 
-    override def followRedirects(): HttpClient.Redirect = client
-      .followRedirects()
+    override def followRedirects(): HttpClient.Redirect =
+      client.followRedirects()
 
     override def proxy(): Optional[ProxySelector] = client.proxy()
 
@@ -110,8 +115,8 @@ private[iris] object Platform:
 
     override def sslParameters(): SSLParameters = client.sslParameters()
 
-    override def authenticator(): Optional[Authenticator] = client
-      .authenticator()
+    override def authenticator(): Optional[Authenticator] =
+      client.authenticator()
 
     override def version(): HttpClient.Version = client.version()
 
@@ -119,12 +124,13 @@ private[iris] object Platform:
 
   /**
     * A reply's body, which [[abort]] cancels, ending it with an error unless it
-    * has ended, so that a read waiting on it is freed. Every signal passes under
-    * its lock, so that none overlaps another or follows the body's end; the
-    * subscription is cancelled outside it, as the client may hold locks of its
-    * own while it signals.
+    * has ended, so that a read waiting on it is freed. Every signal passes
+    * under its lock, so that none overlaps another or follows the body's end;
+    * the subscription is cancelled outside it, as the client may hold locks of
+    * its own while it signals.
     */
-  private final class AbortableBody[T](body: HttpResponse.BodySubscriber[T])
+  private final class AbortableBody[T]
+    (body: HttpResponse.BodySubscriber[T])
     extends HttpResponse.BodySubscriber[T]:
 
     // Guarded by this.

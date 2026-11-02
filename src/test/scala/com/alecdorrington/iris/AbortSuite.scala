@@ -35,9 +35,8 @@ final case class Served
 class AbortSuite extends FunSuite:
 
   /** The first part of a reply, opening an array, after which nothing comes. */
-  private val begun =
-    "data: {\"type\":\"content_block_delta\"," +
-      "\"delta\":{\"type\":\"text_delta\",\"text\":\"[\\\"a\\\",\"}}\n\n"
+  private val begun = "data: {\"type\":\"content_block_delta\"," +
+    "\"delta\":{\"type\":\"text_delta\",\"text\":\"[\\\"a\\\",\"}}\n\n"
 
   private val request = ModelRequest(Chat.userSays("Count."))
 
@@ -46,7 +45,10 @@ class AbortSuite extends FunSuite:
     * not at all, and a client of Iris's own, configured with `timeout`.
     */
   private def serving
-    (reply: Option[String], timeout: FiniteDuration = 30.seconds)
+    (
+      reply: Option[String],
+      timeout: FiniteDuration = 30.seconds,
+    )
     (test: (Served, ModelClient[IO]) => IO[Unit])
     : Future[Unit] = Server(reply)
     .flatMap(served =>
@@ -64,17 +66,21 @@ class AbortSuite extends FunSuite:
   /** Waits for the client to close its connection, failing if it does not. */
   private def closed(served: Served): IO[Unit] = IO
     .fromFutureCancelable(IO((served.closed, IO.unit)))
-    .timeoutTo(5.seconds, IO(fail("The client left its connection open.")))
+    .timeoutTo(
+      5.seconds,
+      IO(fail("The client left its connection open.")),
+    )
 
-  test("a stream dropped early closes its connection, though its reply goes on"):
+  test(
+    "a stream dropped early closes its connection, though its reply goes on",
+  ):
     serving(Some(begun))((served, client) =>
       client
         .stream(request)
         .take(1)
         .compile
         .toList
-        .map(assertEquals(_, List(Delta.Text("[\"a\","))))
-        *> closed(served),
+        .map(assertEquals(_, List(Delta.Text("[\"a\",")))) *> closed(served),
     )
 
   test("a cancelled answer closes its connection, though its reply goes on"):
@@ -111,6 +117,5 @@ class AbortSuite extends FunSuite:
             Right(Delta.Text("[\"a\",")),
             Left(ModelError.TimedOut("Anthropic", 1.second)),
           ),
-        ))
-        *> closed(served),
+        )) *> closed(served),
     )

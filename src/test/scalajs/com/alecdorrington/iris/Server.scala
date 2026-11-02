@@ -22,7 +22,10 @@ object Server:
       Resource
         .make(IO.async_[js.Dynamic](listening =>
           val server = http.createServer(
-            (request: js.Dynamic, response: js.Dynamic) =>
+            (
+              request: js.Dynamic,
+              response: js.Dynamic,
+            ) =>
               response.on("close", () => closed.trySuccess(()))
               request.on(
                 "end",
@@ -32,7 +35,11 @@ object Server:
               )
               request.resume(),
           )
-          server.listen(0, "127.0.0.1", () => listening(Right(server))),
+          server.listen(
+            0,
+            "127.0.0.1",
+            () => listening(Right(server)),
+          ),
         ))(server =>
           IO:
             server.closeAllConnections()
@@ -49,6 +56,9 @@ object Server:
     )
 
   private def answer(response: js.Dynamic, text: String): Unit =
-    response.writeHead(200, js.Dictionary("content-type" -> "text/event-stream"))
+    response.writeHead(
+      200,
+      js.Dictionary("content-type" -> "text/event-stream"),
+    )
     response.write(text)
     ()

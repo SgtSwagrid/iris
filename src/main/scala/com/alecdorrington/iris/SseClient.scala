@@ -14,8 +14,8 @@ private[iris] type SseRequest[F[_]] = StreamRequest[
 ]
 
 /**
-  * A backend for one streamed reply, and an effect aborting the reply's
-  * request at once, closing its connection though a read waits on it.
+  * A backend for one streamed reply, and an effect aborting the reply's request
+  * at once, closing its connection though a read waits on it.
   *
   * @param backend
   *   The backend to send the reply's request through.
@@ -108,18 +108,19 @@ private[iris] final class SseClient[F[_] : Async]
     * a backend may otherwise wait for the reply before heeding it.
     */
   private def sent
-    (request: SseRequest[F], exchange: Exchange[F])
-    : Stream[F, Byte] = Stream
-    .eval(
-      Async[F].cancelable(
-        request
-          .send(exchange.backend)
-          .adaptError { case _: SttpClientException.TimeoutException =>
-            timedOut
-          },
-        exchange.abort,
-      ),
+    (
+      request: SseRequest[F],
+      exchange: Exchange[F],
     )
+    : Stream[F, Byte] = Stream
+    .eval(Async[F].cancelable(
+      request
+        .send(exchange.backend)
+        .adaptError { case _: SttpClientException.TimeoutException =>
+          timedOut
+        },
+      exchange.abort,
+    ))
     .flatMap: response =>
       response
         .body

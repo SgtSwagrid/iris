@@ -21,8 +21,8 @@ private[iris] object Platform:
 
   /**
     * A backend for one streamed reply, whose request takes a signal of Iris's
-    * own: sttp aborts its own only until the reply begins (on its timeout, or
-    * a cancel), and never once a body is dropped.
+    * own: sttp aborts its own only until the reply begins (on its timeout, or a
+    * cancel), and never once a body is dropped.
     */
   private def exchange[F[_] : Async]: Exchange[F] =
     val controller = new AbortController()
@@ -32,10 +32,11 @@ private[iris] object Platform:
     )
 
   /** The request, taking the controller's signal, which its own still aborts. */
-  private def signalled(controller: AbortController)(request: Request): Request =
-    request
-      .signal
-      .addEventListener("abort", (_: Event) => controller.abort())
+  private def signalled
+    (controller: AbortController)
+    (request: Request)
+    : Request =
+    request.signal.addEventListener("abort", (_: Event) => controller.abort())
     val init = new RequestInit {}
     init.signal = controller.signal
     new Request(request, init)

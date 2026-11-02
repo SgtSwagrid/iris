@@ -380,8 +380,8 @@ object ModelClient:
     *   The backend to send and stream requests through, which times them out as
     *   it does itself: the JDK's client, for one, only until a reply begins,
     *   where [[resource]] gives each reply the configured timeout whole, and
-    *   each part of a streamed one. It closes a streamed reply given up on as it
-    *   does itself too: sttp's own leave its connection open while the reply
+    *   each part of a streamed one. It closes a streamed reply given up on as
+    *   it does itself too: sttp's own leave its connection open while the reply
     *   is written, where [[resource]] closes it at once.
     *
     * @return
@@ -399,8 +399,8 @@ object ModelClient:
   )
 
   /**
-    * A client sending through one backend, and streaming each reply through
-    * one of its own.
+    * A client sending through one backend, and streaming each reply through one
+    * of its own.
     */
   private def streaming[F[_] : Async]
     (
@@ -437,7 +437,11 @@ object ModelClient:
     Platform
       .backends[F]
       .map(backends =>
-        streaming(config, Deadlined(backends.sending), backends.streaming),
+        streaming(
+          config,
+          Deadlined(backends.sending),
+          backends.streaming,
+        ),
       )
 
   /**
