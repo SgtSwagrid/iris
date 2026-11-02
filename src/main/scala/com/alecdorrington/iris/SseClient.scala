@@ -14,14 +14,49 @@ private[iris] type SseRequest[F[_]] = StreamRequest[
 ]
 
 /**
+  * A backend for one streamed reply, and an effect aborting the reply's
+  * request at once, closing its connection though a read waits on it.
+  *
+  * @param backend
+  *   The backend to send the reply's request through.
+  *
+  * @param abort
+  *   Aborts the request, doing nothing once its reply has ended.
+  */
+private[iris] final case class Exchange[F[_]]
+  (
+    backend: StreamBackend[F, Fs2Streams[F]],
+    abort: F[Unit],
+  )
+
+/**
+  * The backends of a client's own: one sending requests whole, and one of each
+  * streamed reply's own, which can abort it.
+  *
+  * @param sending
+  *   The backend sending requests whole.
+  *
+  * @param streaming
+  *   Makes a backend for one streamed reply.
+  */
+private[iris] final case class Backends[F[_]]
+  (
+    sending: Backend[F],
+    streaming: F[Exchange[F]],
+  )
+
+/**
   * The streaming of replies for a [[ModelClient]] whose backend can stream, for
-  * any provider, as its [[ProviderApi]] says.
+  * any provider, as its [[ProviderApi]] says. Each reply has an [[Exchange]] of
+  * its own, which is aborted once its stream ends, however it ends, so that a
+  * reply that is cancelled, dropped or stalled closes its connection, rather
+  * than go on being written, and charged for, with nobody reading it.
   */
 private[iris] final class SseClient[F[_] : Async]
   (
     api: ProviderApi,
     config: ModelConfig,
-    backend: StreamBackend[F, Fs2Streams[F]],
+    exchanges: F[Exchange[F]],
   ):
 
   def stream
@@ -31,7 +66,9 @@ private[iris] final class SseClient[F[_] : Async]
     )
     : Stream[F, Delta] = Stream
     .eval(Async[F].fromEither(request(chat, options)))
-    .flatMap(sent)
+    .flatMap(request =>
+      Stream.bracket(exchanges)(_.abort).flatMap(sent(request, _)),
+    )
     .through(Sse.events)
     .through(api.deltas[F])
     .evalMap(priced)
@@ -66,11 +103,22 @@ private[iris] final class SseClient[F[_] : Async]
       )
       .response(asStreamUnsafe(Fs2Streams[F]))
 
-  private def sent(request: SseRequest[F]): Stream[F, Byte] = Stream
+  /**
+    * The reply's body. A cancel before the reply begins aborts the request, as
+    * a backend may otherwise wait for the reply before heeding it.
+    */
+  private def sent
+    (request: SseRequest[F], exchange: Exchange[F])
+    : Stream[F, Byte] = Stream
     .eval(
-      request
-        .send(backend)
-        .adaptError { case _: SttpClientException.TimeoutException => timedOut },
+      Async[F].cancelable(
+        request
+          .send(exchange.backend)
+          .adaptError { case _: SttpClientException.TimeoutException =>
+            timedOut
+          },
+        exchange.abort,
+      ),
     )
     .flatMap: response =>
       response
@@ -88,8 +136,9 @@ private[iris] final class SseClient[F[_] : Async]
     * longer than the configured timeout to arrive, as the JDK's client waits
     * only until a reply begins. A fiber of its own reads the body, and is given
     * up on rather than waited for, as a read waiting for the next part cannot
-    * be interrupted: that fiber, and the one cancelling it, may then wait for
-    * as long as the backend lives.
+    * be interrupted: aborting the exchange, as the stream's end then does,
+    * frees it on the backends [[Platform]] makes, but on another, that fiber,
+    * and the one cancelling it, may wait for as long as the backend lives.
     */
   private def bounded(body: Stream[F, Byte]): Stream[F, Byte] = Stream
     .eval(Queue.synchronous[
