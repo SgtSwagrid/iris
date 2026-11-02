@@ -72,7 +72,8 @@ longer.
   and which `Async.cancelable` aborts where the request is cancelled before its reply begins. `Platform.backends`
   makes them: in JavaScript, a `FetchFs2Backend` for each reply whose `customizeRequest` gives the request a signal of
   Iris's own, which sttp's own still aborts; on the JVM, one JDK client for every backend (built as sttp builds its
-  own), each reply's through an `Abortable` wrapper, whose `AbortableBody` cancels the body's subscription, closing
+  own, and shut down on release with `shutdownNow`, which sttp's own never did: `close` would wait for requests given
+  up on, which may never end; only from Java 21, so it is called only there), each reply's through an `Abortable` wrapper, whose `AbortableBody` cancels the body's subscription, closing
   its connection, and ends the body with an error, freeing the read. A host's backend (`ModelClient(config,
   backend)`) aborts nothing of Iris's (`Exchange.abort` is `unit`). `AbortSuite` checks each way of giving up against
   a local server on each platform (the JDK's sockets, Node's `http`), which notes when the client closes its

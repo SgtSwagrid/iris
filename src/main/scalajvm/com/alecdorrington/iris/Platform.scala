@@ -19,21 +19,22 @@ private[iris] object Platform:
 
   /**
     * Backends of a client's own over one JDK client, made as sttp makes its
-    * own: one sending requests whole, and for each streamed reply, one that can
-    * abort it, cancelling its body, which closes its connection.
+    * own, and shut down with them: one sending requests whole, and for each
+    * streamed reply, one that can abort it, cancelling its body, which closes
+    * its connection.
     */
   def backends[F[_] : Async]: Resource[F, Backends[F]] =
     for
       dispatcher <- Dispatcher.parallel[F]
       executor   <- Resource.eval(Async[F].executor)
-      client     <- Resource.eval(Async[F].delay(
+      client     <- Resource.make(Async[F].delay(
         HttpClient
           .newBuilder()
           .followRedirects(HttpClient.Redirect.NEVER)
           .connectTimeout(Duration.ofSeconds(30))
           .executor(executor)
           .build(),
-      ))
+      ))(client => Async[F].delay(shutDown(client)))
     yield Backends(
       HttpClientFs2Backend.usingClient[F](client, dispatcher),
       Async[F].delay(exchange(client, dispatcher)),
@@ -41,6 +42,15 @@ private[iris] object Platform:
 
   /** Whether requests may come from a browser's page, which sends its origin. */
   val browser: Boolean = false
+
+  /**
+    * Shuts the client down at once, interrupting its requests still in flight,
+    * which closes their connections, as sttp's own backends never do. Closing
+    * it would wait for them, and a request given up on may never end. The JDK's
+    * clients shut down only from Java 21.
+    */
+  private def shutDown(client: HttpClient): Unit =
+    if Runtime.version.feature >= 21 then client.shutdownNow()
 
   /** A backend for one streamed reply, over the client, which can abort it. */
   private def exchange[F[_] : Async]
