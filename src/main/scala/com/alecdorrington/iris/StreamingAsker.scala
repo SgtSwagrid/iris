@@ -22,7 +22,8 @@ private[iris] object StreamingAsker:
   /**
     * Asks the model through a client's `stream` until its answer can be given,
     * reading the reply to its end in a fiber of its own, which stops early only
-    * where the ask, or the answer, is cancelled.
+    * where the ask, or the answer, is cancelled. Each request after tools have
+    * been run is [[WholeAsker.cached]].
     */
   def ask[F[_] : Async, A : Schema as A]
     (
@@ -38,6 +39,10 @@ private[iris] object StreamingAsker:
     val offered  = emitting.fold(base)(element =>
       base.copy(tools = base.tools ++ Emit.tools(element)),
     )
+    val start = WholeAsker.opening(
+      chat,
+      emitting.fold(WholeAsker.schemaPrompt(A))(_ => Emit.prompt),
+    )
     (WholeAsker.counted(attempts) *> Emit.unclaimed(emitting, options, offered))
       .liftTo[F] *>
       (
@@ -48,7 +53,7 @@ private[iris] object StreamingAsker:
           Either[Throwable, List[ModelResponse]],
         ],
       ).mapN(Asking(
-          stream(_, offered),
+          sent => stream(WholeAsker.cached(start, sent), offered),
           A,
           attempts,
           tools,
@@ -61,10 +66,7 @@ private[iris] object StreamingAsker:
           // Started and watched at once, so that no cancel falls between.
           Async[F].uncancelable(poll =>
             asking
-              .read(WholeAsker.opening(
-                chat,
-                emitting.fold(WholeAsker.schemaPrompt(A))(_ => Emit.prompt),
-              ))
+              .read(start)
               .start
               .flatMap(reading =>
                 poll(asking.value.get.rethrow)

@@ -156,10 +156,13 @@ object MessagePart:
     * the model.
     *
     * Anthropic caches only at breakpoints, and refuses a chat whose breakpoints
-    * mark more than four blocks with [[ModelError.Unsendable]]; OpenAI and
-    * Gemini cache long prefixes by themselves. A prefix too short for the
-    * provider is not cached. Requests sent at once cannot read one another's
-    * writes, so call [[ModelClient.warmCache]] before a batch.
+    * mark more than four blocks with [[ModelError.Unsendable]], but for any
+    * closing the chat, which mark its last block only where the others leave
+    * room; OpenAI and Gemini cache long prefixes by themselves. A prefix too
+    * short for the provider is not cached. Requests sent at once cannot read
+    * one another's writes, so call [[ModelClient.warmCache]] before a batch. An
+    * ask running tools closes each request after a round of them with one of
+    * its own, so that the rounds before it are read from the cache.
     */
   case object CacheBreakpoint extends MessagePart
 

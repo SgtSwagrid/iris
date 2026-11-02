@@ -113,6 +113,17 @@ longer.
   `done`. Gemini refuses a tool whose object schema has no properties, so `GeminiApi` declares one taking
   nothing (`properties` empty, and `additionalProperties` absent or `false`), as `done`, with no `parameters`;
   a map's schema, or one with no `properties` at all, is sent as it is.
+  Each request after a round (and any correction after one) closes with a breakpoint of Iris's own
+  (`WholeAsker.cached`, added as it is sent, so the chat an ask goes on with holds none and the mark moves on), so
+  it reads the earlier rounds from the cache and writes only its own, where N rounds once cost O(N²) uncached input.
+  Only the newest end is marked, as Anthropic finds the previous write itself, up to 20 blocks back, a run of
+  tool calls or of results counting as one. It goes after the results, as the schema prompt lies before every round
+  in the opening message: a round's breakpoint caches it, harmlessly, as it is the same throughout an ask.
+  Anthropic bills a write for all past the highest cache hit, so the first request after the opening writes all
+  past the host's last breakpoint (the whole prompt where there is none), and the last request's write is never
+  read. So with no host breakpoint a one-round ask pays 25% more on its second request's whole input, and the trade
+  pays only where another request follows more than about 28% of the time (0.25 / 0.9); a host breakpoint after the
+  fixed prefix keeps the writes to the rounds (README says so).
 - A `MessagePart.ToolCall` goes back to its provider as the reply gave it. Gemini may give a call no `id`, so the tool's
   name stands in, and is never sent as one (`GeminiApi.issued`), on the call or its `functionResponse`. Gemini puts a
   `thoughtSignature` on the part beside a `functionCall` (the first of calls made together), which its thinking
@@ -121,7 +132,10 @@ longer.
   one back only with a call.
 - A `MessagePart.CacheBreakpoint` ends a prefix worth caching and says nothing to the model. Anthropic is told of one by
   `cache_control` on the block before it (in its message, else the previous message's last, else the system message),
-  marking at most four blocks per chat, counted as sent (breakpoints in a row mark one); OpenAI and Gemini cache
+  marking at most four blocks per chat, counted as sent (breakpoints in a row mark one), else refused, but for
+  breakpoints closing a chat (its last parts, which only an ask's rounds and `warmCache` write), marking its last
+  block only where the others leave room (`AnthropicApi.placed`). So an ask's own never crowd out the host's nor get
+  a chat refused: where the host's mark four, rounds go unmarked, the host's choice winning. OpenAI and Gemini cache
   prefixes unasked and are sent nothing, so their APIs drop them (`Message.withoutBreakpoints`). `ModelClient.warmCache` sends
   `Chat.cachePrefix` with the least reply the provider allows (`ProviderApi.leastMaxTokens`: Anthropic `max_tokens: 0`,
   others 1); a wrapper around a
@@ -183,7 +197,8 @@ longer.
   uniform. The provider's own response is a `ModelResponse`, which `send` and `warmCache` give. `ask` is built on `send` alone,
   provider-agnostic, and passes `WholeAsker.ask` the client's `send` as a function, as `send` is protected: the schema is asked for in words closing the
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
-  native structured output. It stays after any breakpoint, so is never cached, by the user's choice on the
+  native structured output. It stays after every breakpoint of the host's, so is never cached with the host's
+  prefix (only within an ask, by a round's, above), by the user's choice on the
   evidence of a live measurement (2026-10-28, Claude Haiku, Sonnet and Opus 5.5, 144 asks over pieces of 100 to
   2,800 tokens). Moved before the varying content, at the last breakpoint, it was followed as reliably (every
   ask read at the first attempt either way) and saved about 600 input tokens a request, some 3–5% of a long

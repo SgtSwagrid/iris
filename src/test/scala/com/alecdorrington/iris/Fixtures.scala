@@ -36,12 +36,14 @@ object Fixtures:
         chat: Chat,
         options: ModelRequest.Options = ModelRequest.Options(),
         attempts: Int = WholeAsker.attempts,
+        tools: List[RunnableTool[F]] = Nil,
       )
       : F[(Option[A], List[ModelResponse])] = WholeAsker
       .ask[F, A](
-        Sending(client).sent(_, options),
+        Sending(client).sent(_, Toolbox(tools).offered(options)),
         chat,
         attempts,
+        Toolbox(tools),
       )
       .flatMap(answer => answer.responses.map(answer.value -> _))
 

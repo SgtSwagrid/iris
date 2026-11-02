@@ -163,8 +163,12 @@ private[iris] object AnthropicApi extends ProviderApi:
 
   val maxBreakpoints: Int = 4
 
+  /**
+    * Refuses a chat whose breakpoints mark more blocks than Anthropic keeps,
+    * but for those closing it, which mark a block only where there is room.
+    */
   def refuseExcessBreakpoints(chat: Chat): Either[ModelError, Unit] =
-    val count = marks(chat)
+    val count = marks(chat, laid(unclosed(chat)))
     Either.cond(
       count <= maxBreakpoints,
       (),
@@ -174,9 +178,9 @@ private[iris] object AnthropicApi extends ProviderApi:
       ),
     )
 
-  /** The blocks a chat's breakpoints mark; breakpoints in a row mark one. */
-  private def marks(chat: Chat): Int =
-    val (cached, blocks) = placed(chat)
+  /** The blocks a chat's parts, as placed, mark; those in a row mark one. */
+  private def marks(chat: Chat, placed: Placed): Int =
+    val (cached, blocks) = placed
     val onSystem         = if cached && chat.instructions.nonEmpty then 1 else 0
     onSystem + blocks.flatten.count(_._2)
 
@@ -241,12 +245,41 @@ private[iris] object AnthropicApi extends ProviderApi:
         .asJson,
     )
 
-  private def placed(chat: Chat): Placed = chat
+  /**
+    * Places a chat's parts. Breakpoints closing it, as an ask puts after each
+    * round of tools, mark its last block only where the others leave room, so
+    * that they never crowd out the host's own.
+    */
+  private def placed(chat: Chat): Placed =
+    val open = laid(unclosed(chat))
+    if closing(chat) && marks(chat, open) < maxBreakpoints then
+      place(open, MessagePart.CacheBreakpoint)
+    else open
+
+  private def laid(chat: Chat): Placed = chat
     .messages
     .foldLeft((false, Vector.empty[Vector[Marked]])):
       case ((cached, blocks), message) => Message
           .separated(message.parts)
           .foldLeft((cached, blocks :+ Vector.empty[Marked]))(place)
+
+  /** Whether breakpoints end the chat's last message. */
+  private def closing(chat: Chat): Boolean = chat
+    .messages
+    .lastOption
+    .exists(_.parts.lastOption.contains(MessagePart.CacheBreakpoint))
+
+  /** The chat without the breakpoints ending it. */
+  private def unclosed(chat: Chat): Chat = chat.copy(messages =
+    chat
+      .messages
+      .lastOption
+      .fold(Nil)(last =>
+        chat.messages.init :+ last.copy(parts =
+          last.parts.reverse.dropWhile(_ == MessagePart.CacheBreakpoint).reverse,
+        ),
+      ),
+  )
 
   /**
     * Places one more part. A breakpoint marks the last block before it, in any

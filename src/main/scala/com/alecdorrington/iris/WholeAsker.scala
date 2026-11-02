@@ -20,9 +20,9 @@ private[iris] object WholeAsker:
     * Asks the model through a client's `send` until its reply can be read or
     * asks for a tool, telling it what was wrong with each that could not, so
     * long as asking again could help, and running the tools in the box, where
-    * it asks for those alone, before asking it to go on. A chat no provider
-    * would answer is sent uninstructed, so that the provider refuses it before
-    * any request.
+    * it asks for those alone, before asking it to go on, each request after
+    * them [[cached]]. A chat no provider would answer is sent uninstructed, so
+    * that the provider refuses it before any request.
     */
   def ask[F[_] : MonadThrow, A : Schema as A]
     (
@@ -32,6 +32,7 @@ private[iris] object WholeAsker:
       tools: Toolbox[F] = Toolbox[F](Nil),
     )
     : F[ValidatedResponse[F, A]] =
+    val start = opening(chat, schemaPrompt(A))
     // Sends the chat, after the replies so far, `tried` of them read.
     def attempt
       (
@@ -39,7 +40,7 @@ private[iris] object WholeAsker:
         replies: Vector[ModelResponse],
         tried: Int,
       )
-      : F[ValidatedResponse[F, A]] = send(chat).flatMap(reply =>
+      : F[ValidatedResponse[F, A]] = send(cached(start, chat)).flatMap(reply =>
       verdict(
         A,
         chat,
@@ -67,12 +68,7 @@ private[iris] object WholeAsker:
     )
     counted(attempts).fold(
       _.raiseError,
-      _ =>
-        attempt(
-          opening(chat, schemaPrompt(A)),
-          Vector.empty,
-          0,
-        ),
+      _ => attempt(start, Vector.empty, 0),
     )
 
   /** The chat after a reply asking for tools, and what they gave. */
@@ -83,6 +79,25 @@ private[iris] object WholeAsker:
       results: List[MessagePart.ToolResult],
     )
     : Chat = chat.modelSays(reply).userSays(results*)
+
+  /**
+    * The chat to send, its end closed by a breakpoint once tools have been run
+    * since the `opening`, so that each request after a round reads the rounds
+    * before it from the cache, and writes only its own. The first after the
+    * opening writes all past the host's last breakpoint, the whole prompt where
+    * there is none. Only the newest end is marked: Anthropic, which caches only
+    * where told, finds the last write by itself, looking up to twenty blocks
+    * back (a run of tool calls, or of their results, counting as one), and
+    * marks at most four blocks, the host's first. The chat an ask goes on with
+    * is never marked, so that the mark moves on with each request.
+    */
+  def cached(opening: Chat, chat: Chat): Chat =
+    if chat.messages.drop(opening.messages.size).exists(_.toolResults.nonEmpty)
+    then chat.copy(messages = chat.messages.init :+ closed(chat.messages.last))
+    else chat
+
+  private def closed(message: Message): Message =
+    message.copy(parts = message.parts :+ MessagePart.CacheBreakpoint)
 
   /** What the model is told of the form its reply must take. */
   def schemaPrompt(schema: Schema[?]): String =

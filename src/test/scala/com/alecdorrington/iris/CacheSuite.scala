@@ -104,7 +104,7 @@ class CacheSuite extends FunSuite:
           MessagePart.Text("x"),
           MessagePart.CacheBreakpoint,
         ))
-        .flatten*,
+        .flatten :+ MessagePart.Text("x")*,
     )
     assert(AnthropicApi.refuseExcessBreakpoints(many).isLeft)
     val breakpoints =
@@ -121,6 +121,39 @@ class CacheSuite extends FunSuite:
         marks,
       ),
     )
+
+  test("anthropic marks the block breakpoints closing a chat follow if it can"):
+    // The host's breakpoints, then two in a row closing the chat, as an ask
+    // closes each request after a round of tools.
+    def closed(own: Int): Chat = Chat().userSays(
+      (1 to own)
+        .toList
+        .flatMap(n =>
+          List(
+            MessagePart.Text(n.toString),
+            MessagePart.CacheBreakpoint,
+          ),
+        ) ++ List(
+          MessagePart.Text("Last."),
+          MessagePart.CacheBreakpoint,
+          MessagePart.CacheBreakpoint,
+        )*,
+    )
+    def blocks(own: Int, last: Boolean): Json = Json.arr(
+      (1 to own).toList.map(n => marked(if n == 1 then "1" else s"\n\n$n")) :+
+        (if last then marked("\n\nLast.") else text("\n\nLast."))*,
+    )
+    val most = AnthropicApi.maxBreakpoints
+    assertEquals(
+      sent(closed(most - 1)),
+      (None, List(blocks(most - 1, true))),
+    )
+    assertEquals(
+      sent(closed(most)),
+      (None, List(blocks(most, false))),
+    )
+    assert(AnthropicApi.refuseExcessBreakpoints(closed(most)).isRight)
+    assert(AnthropicApi.refuseExcessBreakpoints(closed(most + 1)).isLeft)
 
   test("openai and gemini are sent no breakpoints"):
     val openAi = json(OpenAiApi.body(config, chat, options))
