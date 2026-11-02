@@ -1,0 +1,497 @@
+<!DOCTYPE html><html data-pathToRoot="../../../" data-rawLocation="com/alecdorrington/iris/ModelClient$$Forwarding" data-dynamicSideMenu="false"><head><meta charset="utf-8"></meta><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1"></meta><title>Forwarding</title><link rel="shortcut icon" type="image/x-icon" href="../../../favicon.ico"></link><script type="text/javascript" src="../../../scripts/theme.js"></script><script type="text/javascript" src="../../../scripts/searchData.js" defer="true"></script><script type="text/javascript" src="../../../scripts/scastieConfiguration.js" defer="true"></script><link rel="stylesheet" href="../../../styles/theme/bundle.css"></link><link rel="stylesheet" href="../../../styles/theme/components/bundle.css"></link><link rel="stylesheet" href="../../../styles/theme/components/button/bundle.css"></link><link rel="stylesheet" href="../../../styles/theme/layout/bundle.css"></link><link rel="stylesheet" href="../../../styles/dotty-icons.css"></link><link rel="stylesheet" href="../../../styles/filter-bar.css"></link><link rel="stylesheet" href="../../../styles/searchbar.css"></link><link rel="stylesheet" href="../../../styles/social-links.css"></link><link rel="stylesheet" href="../../../styles/versions-dropdown.css"></link><link rel="stylesheet" href="../../../styles/content-contributors.css"></link><script type="text/javascript" src="../../../hljs/highlight.pack.js" defer="true"></script><script type="text/javascript" src="../../../scripts/hljs-scala3.js" defer="true"></script><script type="text/javascript" src="../../../scripts/ux.js" defer="true"></script><script type="text/javascript" src="../../../scripts/common/component.js" defer="true"></script><script type="text/javascript" src="../../../scripts/common/utils.js" defer="true"></script><script type="text/javascript" src="../../../scripts/components/FilterBar.js" defer="true"></script><script type="text/javascript" src="../../../scripts/components/DocumentableList.js" defer="true"></script><script type="text/javascript" src="../../../scripts/components/Input.js" defer="true"></script><script type="text/javascript" src="../../../scripts/components/FilterGroup.js" defer="true"></script><script type="text/javascript" src="../../../scripts/components/Filter.js" defer="true"></script><script type="text/javascript" src="../../../scripts/scaladoc-scalajs.js" defer="true"></script><script type="text/javascript" src="../../../scripts/contributors.js" defer="true"></script><script type="text/javascript" src="https://d3js.org/d3.v6.min.js" defer="true"></script><script type="text/javascript" src="https://cdn.jsdelivr.net/npm/graphlib-dot@0.6.2/dist/graphlib-dot.min.js" defer="true"></script><script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/dagre-d3/0.6.1/dagre-d3.min.js" defer="true"></script><script type="text/javascript" src="https://scastie.scala-lang.org/embedded.js" defer="true"></script><script type="text/javascript" src="../../../scripts/data.js" defer="true"></script><script>var pathToRoot = "../../../";</script></head><body><div id=""><div id="header" class="body-small"><div class="header-container-left"><a href="../../../" class="logo-container"><span class="project-name h300">Iris</span></a><span onclick="dropdownHandler(event)" class="text-button with-arrow" id="dropdown-trigger"><a></a></span><div id="version-dropdown" class="dropdown-menu"></div></div><div class="header-container-right"><button id="search-toggle" class="icon-button"></button><span id="theme-toggle" class="icon-button"></span><span id="mobile-menu-toggle" class="icon-button hamburger"></span></div></div><div id="mobile-menu"><div class="mobile-menu-header body-small"><span class="mobile-menu-logo"><span class="project-name h300">Iris</span></span><button id="mobile-menu-close" class="icon-button close"></button></div><div class="mobile-menu-container body-medium"><input id="mobile-scaladoc-searchbar-input" class="scaladoc-searchbar-input" type="search" placeholder="Find anything"></input><span id="mobile-theme-toggle" class="mobile-menu-item mode"></span></div></div><span id="mobile-sidebar-toggle" class="floating-button"></span><div id="leftColumn" class="body-small"><div class="switcher-container"><a id="api-nav-button" class="switcher h100 selected" href="../../../index.html">API</a></div><nav id="api-nav" class="side-menu"><div class="ni n0 expanded"><span class="nh h100 expanded cs"><button class="ar icon-button expanded"></button><a href="../iris.html"><span class="micon pa"></span><span>com.alecdorrington.iris</span></a></span><div class="ni n1 "><span class="nh "><a href="Budget.html"><span class="micon cl"></span><span>Budget</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Budget$.html"><span class="micon ob"></span><span>Budget</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Chat$.html"><span class="micon ob"></span><span>Chat</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Chat.html"><span class="micon cl"></span><span>Chat</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Content$.html"><span class="micon ob"></span><span>Content</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Content.html"><span class="micon tr"></span><span>Content</span></a></span></div><div class="ni n1"><span class="nh "><button class="ar icon-button "></button><a href="Delta.html"><span class="micon en"></span><span>Delta</span></a></span><div class="ni n2 "><span class="nh "><a href="Delta$$Text.html"><span class="micon cl"></span><span>Text</span></a></span></div><div class="ni n2 "><span class="nh "><a href="Delta$$ToolCall.html"><span class="micon cl"></span><span>ToolCall</span></a></span></div><div class="ni n2 "><span class="nh "><a href="Delta$$End.html"><span class="micon cl"></span><span>End</span></a></span></div></div><div class="ni n1 "><span class="nh "><a href="DerivedSchemas.html"><span class="micon tr"></span><span>DerivedSchemas</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Effort.html"><span class="micon en"></span><span>Effort</span></a></span></div><div class="ni n1"><span class="nh "><button class="ar icon-button "></button><a href="MediaType$.html"><span class="micon ob"></span><span>MediaType</span></a></span><div class="ni n2 "><span class="nh "><a href="MediaType$$Listed.html"><span class="micon en"></span><span>Listed</span></a></span></div><div class="ni n2 "><span class="nh "><a href="MediaType$$Other.html"><span class="micon cl"></span><span>Other</span></a></span></div></div><div class="ni n1 "><span class="nh "><a href="MediaType.html"><span class="micon tr"></span><span>MediaType</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Message$.html"><span class="micon ob"></span><span>Message</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Message.html"><span class="micon cl"></span><span>Message</span></a></span></div><div class="ni n1"><span class="nh "><button class="ar icon-button "></button><a href="MessagePart$.html"><span class="micon ob"></span><span>MessagePart</span></a></span><div class="ni n2 "><span class="nh "><a href="MessagePart$$CacheBreakpoint$.html"><span class="micon ob"></span><span>CacheBreakpoint</span></a></span></div><div class="ni n2 "><span class="nh "><a href="MessagePart$$Media.html"><span class="micon cl"></span><span>Media</span></a></span></div><div class="ni n2 "><span class="nh "><a href="MessagePart$$Media$.html"><span class="micon ob"></span><span>Media</span></a></span></div><div class="ni n2 "><span class="nh "><a href="MessagePart$$Text.html"><span class="micon cl"></span><span>Text</span></a></span></div><div class="ni n2 "><span class="nh "><a href="MessagePart$$ToolCall.html"><span class="micon cl"></span><span>ToolCall</span></a></span></div><div class="ni n2 "><span class="nh "><a href="MessagePart$$ToolResult.html"><span class="micon cl"></span><span>ToolResult</span></a></span></div></div><div class="ni n1 "><span class="nh "><a href="MessagePart.html"><span class="micon tr"></span><span>MessagePart</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Model.html"><span class="micon tr"></span><span>Model</span></a></span></div><div class="ni n1"><span class="nh "><button class="ar icon-button "></button><a href="Model$.html"><span class="micon ob"></span><span>Model</span></a></span><div class="ni n2 "><span class="nh "><a href="Model$$Listed.html"><span class="micon en"></span><span>Listed</span></a></span></div><div class="ni n2 "><span class="nh "><a href="Model$$Other.html"><span class="micon cl"></span><span>Other</span></a></span></div></div><div class="ni n1 "><span class="nh "><a href="ModelClient.html"><span class="micon tr"></span><span>ModelClient</span></a></span></div><div class="ni n1 expanded"><span class="nh h100 expanded cs"><button class="ar icon-button expanded"></button><a href="ModelClient$.html"><span class="micon ob"></span><span>ModelClient</span></a></span><div class="ni n2 expanded"><span class="nh h100 selected"><a href="#"><span class="micon cl"></span><span>Forwarding</span></a></span></div></div><div class="ni n1 "><span class="nh "><a href="ModelConfig$.html"><span class="micon ob"></span><span>ModelConfig</span></a></span></div><div class="ni n1 "><span class="nh "><a href="ModelConfig.html"><span class="micon cl"></span><span>ModelConfig</span></a></span></div><div class="ni n1"><span class="nh "><button class="ar icon-button "></button><a href="ModelError.html"><span class="micon en"></span><span>ModelError</span></a></span><div class="ni n2 "><span class="nh "><a href="ModelError$$Unsuccessful.html"><span class="micon cl"></span><span>Unsuccessful</span></a></span></div><div class="ni n2 "><span class="nh "><a href="ModelError$$Malformed.html"><span class="micon cl"></span><span>Malformed</span></a></span></div><div class="ni n2 "><span class="nh "><a href="ModelError$$Misconfigured.html"><span class="micon cl"></span><span>Misconfigured</span></a></span></div><div class="ni n2 "><span class="nh "><a href="ModelError$$Unsendable.html"><span class="micon cl"></span><span>Unsendable</span></a></span></div><div class="ni n2 "><span class="nh "><a href="ModelError$$Unsupported.html"><span class="micon cl"></span><span>Unsupported</span></a></span></div><div class="ni n2 "><span class="nh "><a href="ModelError$$TimedOut.html"><span class="micon cl"></span><span>TimedOut</span></a></span></div><div class="ni n2 "><span class="nh "><a href="ModelError$$OverBudget.html"><span class="micon cl"></span><span>OverBudget</span></a></span></div><div class="ni n2 "><span class="nh "><a href="ModelError$$UnreadableResponse.html"><span class="micon cl"></span><span>UnreadableResponse</span></a></span></div></div><div class="ni n1 "><span class="nh "><a href="ModelProvider$.html"><span class="micon ob"></span><span>ModelProvider</span></a></span></div><div class="ni n1 "><span class="nh "><a href="ModelProvider.html"><span class="micon en"></span><span>ModelProvider</span></a></span></div><div class="ni n1 "><span class="nh "><a href="ModelRequest.html"><span class="micon cl"></span><span>ModelRequest</span></a></span></div><div class="ni n1"><span class="nh "><button class="ar icon-button "></button><a href="ModelRequest$.html"><span class="micon ob"></span><span>ModelRequest</span></a></span><div class="ni n2 "><span class="nh "><a href="ModelRequest$$Options.html"><span class="micon cl"></span><span>Options</span></a></span></div></div><div class="ni n1 "><span class="nh "><a href="ModelResponse.html"><span class="micon cl"></span><span>ModelResponse</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Rates.html"><span class="micon cl"></span><span>Rates</span></a></span></div><div class="ni n1"><span class="nh "><button class="ar icon-button "></button><a href="Rates$.html"><span class="micon ob"></span><span>Rates</span></a></span><div class="ni n2 "><span class="nh "><a href="Rates$$Above.html"><span class="micon cl"></span><span>Above</span></a></span></div></div><div class="ni n1 "><span class="nh "><a href="Role.html"><span class="micon en"></span><span>Role</span></a></span></div><div class="ni n1 "><span class="nh "><a href="RunnableTool$.html"><span class="micon ob"></span><span>RunnableTool</span></a></span></div><div class="ni n1 "><span class="nh "><a href="RunnableTool.html"><span class="micon cl"></span><span>RunnableTool</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Schema$.html"><span class="micon ob"></span><span>Schema</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Schema.html"><span class="micon cl"></span><span>Schema</span></a></span></div><div class="ni n1"><span class="nh "><button class="ar icon-button "></button><a href="StopReason.html"><span class="micon en"></span><span>StopReason</span></a></span><div class="ni n2 "><span class="nh "><a href="StopReason$$Other.html"><span class="micon cl"></span><span>Other</span></a></span></div></div><div class="ni n1 "><span class="nh "><a href="StopReason$.html"><span class="micon ob"></span><span>StopReason</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Tool.html"><span class="micon cl"></span><span>Tool</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Usage.html"><span class="micon cl"></span><span>Usage</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Usd.html"><span class="micon cl"></span><span>Usd</span></a></span></div><div class="ni n1 "><span class="nh "><a href="Usd$.html"><span class="micon ob"></span><span>Usd</span></a></span></div><div class="ni n1 "><span class="nh "><a href="ValidatedResponse.html"><span class="micon cl"></span><span>ValidatedResponse</span></a></span></div></div></nav></div><div id="footer" class="body-small"><div class="left-container">Generated with</div><div class="right-container"><div class="text"></div></div><div class="text-mobile"></div></div><div id="scaladoc-searchBar"></div><div id="main"><div class="breadcrumbs container"><a href="../../../index.html">Iris</a>/<a href="../iris.html">com.alecdorrington.iris</a>/<a href="ModelClient$.html">ModelClient</a>/<a href="ModelClient$$Forwarding.html">Forwarding</a></div><div id="content" class="body-medium"><div><div class="cover-header">
+ <span class="icon"><span class="micon cl"></span></span>
+ <h1 class="h600 single">Forwarding</h1>
+</div>
+<div class="fqname body-large">
+ <span>com.alecdorrington.iris.ModelClient.Forwarding</span>
+</div>
+<div class="main-signature mono-small-block">
+ <div class="signature">
+  <span class="signature-short"><span class="modifiers"><span t="k">abstract </span></span><span class="kind"><span t="k">class </span></span><a href="ModelClient$$Forwarding.html" t="n" class="documentableName ">Forwarding</a>[<span t="k"></span><span data-unresolved-link="" t="t">F</span>[<span t="t">_</span>]](<span t="k"></span><span t="k">val </span><span data-unresolved-link="" t="n">underlying</span>: <a href="ModelClient.html" t="t">ModelClient</a>[<span data-unresolved-link="" t="t">F</span>])<span t="k"> extends </span><a href="ModelClient.html" t="t">ModelClient</a>[<span t="t">F</span>]</span><span class="signature-long"></span>
+ </div>
+</div>
+<div class="cover">
+ <div class="doc">
+  <p>A client passing every request on to another, for a wrapper to override only what it changes. It passes <a href="ModelClient.html#warmCache-eb8">ModelClient.warmCache</a> on too, which the default would send through <span data-unresolved-link="">ModelClient.send</span> instead. A wrapper seeing every request overrides all four: <code>send</code> and <a href="ModelClient.html#stream-fffff98e">ModelClient.stream</a>, which every attempt of an <code>ask</code> goes through, one or the other by the type asked for, and <a href="ModelClient.html#countTokens-eb8">ModelClient.countTokens</a> and <a href="ModelClient.html#warmCache-eb8">ModelClient.warmCache</a>, which go their own ways, each passing it on through <code>super</code>.</p>
+ </div>
+ <section id="attributes">
+  <h2 class="h500">Type parameters</h2>
+  <dl class="attributes">
+   <dt class="body-small">F</dt>
+   <dd class="body-medium">
+    <p>The effect type.</p>
+   </dd>
+  </dl>
+  <h2 class="h500">Value parameters</h2>
+  <dl class="attributes">
+   <dt class="body-small">underlying</dt>
+   <dd class="body-medium">
+    <p>The client requests are passed on to.</p>
+   </dd>
+  </dl>
+  <h2 class="h500">Attributes</h2>
+  <dl class="attributes">
+   <dt class="body-small">Graph</dt>
+   <dd class="body-medium">
+    <div id="inheritance-diagram" class="diagram-class showGraph">
+     <button type="button" class="label-only-button" onclick="zoomOut()">Reset zoom</button><button type="button" class="label-only-button" onclick="hideGraph()">Hide graph</button><button type="button" class="label-only-button" onclick="showGraph()">Show graph</button>
+     <svg id="graph"></svg>
+     <script type="text/dot" id="dot"> digraph g {
+ node0 [id=node0, label="<span style=\"color: #FFFFFF;\">class <a href=\"ModelClient$$Forwarding.html\" t=\"n\">Forwarding</a>[<span t=\"t\">F</span>]</span>", class="class vertex"];
+node1 [id=node1, label="<span style=\"color: #FFFFFF;\">class <span data-unresolved-link=\"\" t=\"n\">Object</span></span>", class="class vertex"];
+node2 [id=node2, label="<span style=\"color: #FFFFFF;\">class <span data-unresolved-link=\"\" t=\"n\">Any</span></span>", class="class vertex"];
+node3 [id=node3, label="<span style=\"color: #FFFFFF;\">trait <span data-unresolved-link=\"\" t=\"n\">Matchable</span></span>", class="trait vertex"];
+node4 [id=node4, label="<span style=\"color: #FFFFFF;\">trait <a href=\"ModelClient.html\" t=\"n\">ModelClient</a>[<span t=\"t\">F</span>]</span>", class="trait vertex"];
+
+
+ node0 -> node1;
+node1 -> node2;
+node1 -> node3;
+node3 -> node2;
+node0 -> node4;
+node4 -> node1;
+
+}
+</script>
+    </div>
+   </dd>
+   <dt class="body-small">Supertypes</dt>
+   <dd class="body-medium">
+    <div class="mono-small-block supertypes">
+     <div>
+      trait <a href="ModelClient.html" t="n">ModelClient</a>[<span t="t">F</span>]
+     </div>
+     <div>
+      class <span data-unresolved-link="" t="n">Object</span>
+     </div>
+     <div>
+      trait <span data-unresolved-link="" t="n">Matchable</span>
+     </div>
+     <div>
+      class <span data-unresolved-link="" t="n">Any</span>
+     </div>
+     <span></span>
+    </div>
+   </dd>
+  </dl>
+ </section>
+</div>
+<section id="members-list">
+ <h2 class="h500">Members list</h2>
+ <div class="documentableFilter">
+  <div class="filtersContainer"></div>
+  <input class="filterableInput" placeholder="Filter by any phrase" data-test-id="filterBarInput" type="search"><button class="clearButton label-only-button" data-test-id="filterBarClearButton">Clear all</button>
+ </div>
+ <div class="membersList expand">
+  <div class="tabs">
+   <div class="contents">
+    <section id="Value-members">
+     <div data-togglable="Value members" class="tab expand">
+      <div class="member-group-header">
+       <h3 data-togglable="Value members" class="h400">Value members</h3>
+      </div>
+      <section id="Concrete-methods">
+       <div class="documentableList expand">
+        <div class="documentableList-expander">
+         <button class="icon-button show-content expand"></button>
+         <h4 class="groupHeader h200">Concrete methods</h4>
+        </div>
+        <div class="documentableElement" id="countTokens-eb8" data-f-keywords="override">
+         <div class="documentableElement-expander">
+          <button class="icon-button ar show-content"></button>
+          <div class="header monospace mono-medium">
+           <div class="signature">
+            <span class="modifiers"><span t="k">override </span></span><span class="kind"><span t="k">def </span></span><a href="ModelClient$$Forwarding.html#countTokens-eb8" t="n" class="documentableName ">countTokens</a>(<span t="k"></span><span t="k"></span><span data-unresolved-link="" t="n">request</span>: <a href="ModelRequest.html" t="t">ModelRequest</a>): <span t="t">F</span>[<span data-unresolved-link="" t="t">Int</span>]
+           </div>
+          </div>
+         </div>
+         <div class="docs">
+          <span class="modifiers"></span>
+          <div>
+           <div class="originInfo"></div>
+           <div class="memberDocumentation">
+            <div class="documentableBrief doc">
+             <p>Counts the input tokens a request would cost, as the provider counts them. Fails with <a href="ModelError$$Unsupported.html">ModelError.Unsupported</a> where the provider cannot count (OpenAI).</p>
+            </div>
+            <div class="cover">
+             <div class="doc">
+              <p>Counts the input tokens a request would cost, as the provider counts them. Fails with <a href="ModelError$$Unsupported.html">ModelError.Unsupported</a> where the provider cannot count (OpenAI).</p>
+             </div>
+             <h2 class="h200">Value parameters</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">request</dt>
+              <dd class="body-medium">
+               <p>The chat to count, and the options it would be sent with, which no count depends on.</p>
+              </dd>
+             </dl>
+             <h2 class="h200">Attributes</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">Returns</dt>
+              <dd class="body-medium">
+               <p>An effect producing the number of input tokens.</p>
+              </dd>
+              <dt class="body-small">Definition Classes</dt>
+              <dd class="body-medium">
+               <div>
+                <a href="ModelClient.html">ModelClient</a>
+               </div>
+              </dd>
+             </dl>
+            </div>
+           </div>
+          </div>
+         </div>
+        </div>
+        <div class="documentableElement" id="send-eb8" data-f-visibility="protected" data-f-keywords="override">
+         <div class="documentableElement-expander">
+          <button class="icon-button ar show-content"></button>
+          <div class="header monospace mono-medium">
+           <div class="signature">
+            <span class="modifiers"><span t="k">override protected </span></span><span class="kind"><span t="k">def </span></span><a href="ModelClient$$Forwarding.html#send-eb8" t="n" class="documentableName ">send</a>(<span t="k"></span><span t="k"></span><span data-unresolved-link="" t="n">request</span>: <a href="ModelRequest.html" t="t">ModelRequest</a>): <span t="t">F</span>[<a href="ModelResponse.html" t="t">ModelResponse</a>]
+           </div>
+          </div>
+         </div>
+         <div class="docs">
+          <span class="modifiers"></span>
+          <div>
+           <div class="originInfo"></div>
+           <div class="memberDocumentation">
+            <div class="documentableBrief doc">
+             <p>Sends a request to the model for its next response, whole: the request every ask for a type holding no stream is made through, which a client implements and a wrapper overrides, passing it on with <code>super.send</code>. Callers ask through <a href="ModelClient.html#ask-5fc">ask</a>.</p>
+            </div>
+            <div class="cover">
+             <div class="doc">
+              <p>Sends a request to the model for its next response, whole: the request every ask for a type holding no stream is made through, which a client implements and a wrapper overrides, passing it on with <code>super.send</code>. Callers ask through <a href="ModelClient.html#ask-5fc">ask</a>.</p>
+             </div>
+             <h2 class="h200">Value parameters</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">request</dt>
+              <dd class="body-medium">
+               <p>The chat, and the options to send it with.</p>
+              </dd>
+             </dl>
+             <h2 class="h200">Attributes</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">Returns</dt>
+              <dd class="body-medium">
+               <p>An effect producing the model's response.</p>
+              </dd>
+              <dt class="body-small">Definition Classes</dt>
+              <dd class="body-medium">
+               <div>
+                <a href="ModelClient.html">ModelClient</a>
+               </div>
+              </dd>
+             </dl>
+            </div>
+           </div>
+          </div>
+         </div>
+        </div>
+        <div class="documentableElement" id="stream-fffff98e" data-f-keywords="override">
+         <div class="documentableElement-expander">
+          <button class="icon-button ar show-content"></button>
+          <div class="header monospace mono-medium">
+           <div class="signature">
+            <span class="modifiers"><span t="k">override </span></span><span class="kind"><span t="k">def </span></span><a href="ModelClient$$Forwarding.html#stream-fffff98e" t="n" class="documentableName ">stream</a>(<span t="k"></span><span t="k"></span><span data-unresolved-link="" t="n">request</span>: <a href="ModelRequest.html" t="t">ModelRequest</a>): <span data-unresolved-link="" t="t">Stream</span>[<span t="t">F</span>, <a href="Delta.html" t="t">Delta</a>]
+           </div>
+          </div>
+         </div>
+         <div class="docs">
+          <span class="modifiers"></span>
+          <div>
+           <div class="originInfo"></div>
+           <div class="memberDocumentation">
+            <div class="documentableBrief doc">
+             <p>Sends a request to the model, streaming its response as it arrives: the request every ask for a type holding a stream is made through. Unless a client says otherwise, it is sent through <span data-unresolved-link="">send</span>, and its response arrives at once, whole, as a client's over a backend that cannot stream does.</p>
+            </div>
+            <div class="cover">
+             <div class="doc">
+              <p>Sends a request to the model, streaming its response as it arrives: the request every ask for a type holding a stream is made through. Unless a client says otherwise, it is sent through <span data-unresolved-link="">send</span>, and its response arrives at once, whole, as a client's over a backend that cannot stream does.</p>
+             </div>
+             <h2 class="h200">Value parameters</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">request</dt>
+              <dd class="body-medium">
+               <p>The chat, and the options to send it with.</p>
+              </dd>
+             </dl>
+             <h2 class="h200">Attributes</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">Returns</dt>
+              <dd class="body-medium">
+               <p>A stream of the response's text and tool calls, ending with a <a href="Delta$$End.html">Delta.End</a>. Nothing is sent until the stream runs, and failures are raised in it as <a href="ModelError.html">ModelError</a>s.</p>
+              </dd>
+              <dt class="body-small">Definition Classes</dt>
+              <dd class="body-medium">
+               <div>
+                <a href="ModelClient.html">ModelClient</a>
+               </div>
+              </dd>
+             </dl>
+            </div>
+           </div>
+          </div>
+         </div>
+        </div>
+        <div class="documentableElement" id="warmCache-eb8" data-f-keywords="override">
+         <div class="documentableElement-expander">
+          <button class="icon-button ar show-content"></button>
+          <div class="header monospace mono-medium">
+           <div class="signature">
+            <span class="modifiers"><span t="k">override </span></span><span class="kind"><span t="k">def </span></span><a href="ModelClient$$Forwarding.html#warmCache-eb8" t="n" class="documentableName ">warmCache</a>(<span t="k"></span><span t="k"></span><span data-unresolved-link="" t="n">request</span>: <a href="ModelRequest.html" t="t">ModelRequest</a>): <span t="t">F</span>[<a href="ModelResponse.html" t="t">ModelResponse</a>]
+           </div>
+          </div>
+         </div>
+         <div class="docs">
+          <span class="modifiers"></span>
+          <div>
+           <div class="originInfo"></div>
+           <div class="memberDocumentation">
+            <div class="documentableBrief doc">
+             <p>Writes the <a href="Chat.html#cachePrefix-0">Chat.cachePrefix</a> of a request's chat into the provider's cache, with as short a response as the provider allows. Requests sharing the prefix and sent at once afterwards then all read it, where unwarmed each would write its own. Fails with <a href="ModelError$$Unsendable.html">ModelError.Unsendable</a> when the chat has no <a href="MessagePart$$CacheBreakpoint$.html">MessagePart.CacheBreakpoint</a>.</p>
+            </div>
+            <div class="cover">
+             <div class="doc">
+              <p>Writes the <a href="Chat.html#cachePrefix-0">Chat.cachePrefix</a> of a request's chat into the provider's cache, with as short a response as the provider allows. Requests sharing the prefix and sent at once afterwards then all read it, where unwarmed each would write its own. Fails with <a href="ModelError$$Unsendable.html">ModelError.Unsendable</a> when the chat has no <a href="MessagePart$$CacheBreakpoint$.html">MessagePart.CacheBreakpoint</a>.</p>
+             </div>
+             <h2 class="h200">Value parameters</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">request</dt>
+              <dd class="body-medium">
+               <p>The chat whose prefix to cache, and the options the requests will be sent with, through a client of the same model, as a cache is kept per model.</p>
+              </dd>
+             </dl>
+             <h2 class="h200">Attributes</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">Returns</dt>
+              <dd class="body-medium">
+               <p>An effect producing the provider's empty response, whose usage says how much of the prefix was cached.</p>
+              </dd>
+              <dt class="body-small">Definition Classes</dt>
+              <dd class="body-medium">
+               <div>
+                <a href="ModelClient.html">ModelClient</a>
+               </div>
+              </dd>
+             </dl>
+            </div>
+           </div>
+          </div>
+         </div>
+        </div>
+       </div>
+      </section>
+      <section id="Inherited-methods">
+       <div class="documentableList expand">
+        <div class="documentableList-expander">
+         <button class="icon-button show-content expand"></button>
+         <h4 class="groupHeader h200">Inherited methods</h4>
+        </div>
+        <div class="documentableElement" id="ask-5fc" data-f-keywords="final" data-f-inherited="ModelClient">
+         <div class="documentableElement-expander">
+          <button class="icon-button ar show-content"></button>
+          <div class="header monospace mono-medium">
+           <div class="signature">
+            <span class="modifiers"><span t="k">final </span></span><span class="kind"><span t="k">def </span></span><a href="ModelClient$$Forwarding.html#ask-5fc" t="n" class="documentableName ">ask</a>[<span t="k"></span><span data-unresolved-link="" t="t">A</span>](<span t="k"></span><span t="k"></span><span data-unresolved-link="" t="n">chat</span>: <a href="Chat.html" t="t">Chat</a>, <span t="k"></span><span data-unresolved-link="" t="n">options</span>: <a href="ModelRequest$$Options.html" t="t">Options</a> = ..., <span t="k"></span><span data-unresolved-link="" t="n">attempts</span>: <span data-unresolved-link="" t="t">Int</span> = ..., <span t="k"></span><span data-unresolved-link="" t="n">tools</span>: <span data-unresolved-link="" t="t">List</span>[<a href="RunnableTool.html" t="t">RunnableTool</a>[<span t="t">F</span>]] = ...)(<span t="k">using </span><span t="k"></span><span data-unresolved-link="" t="n">evidence$1</span>: <a href="Schema.html" t="t">Schema</a>[<span data-unresolved-link="" t="t">A</span>], <span t="k"></span><span data-unresolved-link="" t="t">Async</span>[<span t="t">F</span>]): <span t="t">F</span>[<a href="ValidatedResponse.html" t="t">ValidatedResponse</a>[<span t="t">F</span>, <span data-unresolved-link="" t="t">A</span>]]
+           </div>
+          </div>
+         </div>
+         <div class="docs">
+          <span class="modifiers"></span>
+          <div>
+           <div class="originInfo"></div>
+           <div class="memberDocumentation">
+            <div class="documentableBrief doc">
+             <p>Asks the model for its next response to a chat, with a value of a type read from it and validated against the type's schema: the one way a caller has a response, as <a href="ModelClient.html#countTokens-eb8">countTokens</a> and <a href="ModelClient.html#warmCache-eb8">warmCache</a> have none to read, alike for every type.</p>
+            </div>
+            <div class="cover">
+             <div class="doc">
+              <p>Asks the model for its next response to a chat, with a value of a type read from it and validated against the type's schema: the one way a caller has a response, as <a href="ModelClient.html#countTokens-eb8">countTokens</a> and <a href="ModelClient.html#warmCache-eb8">warmCache</a> have none to read, alike for every type.</p>
+              <p>Every type is asked for alike, <code>String</code> as much as a case class of one's own: the model is told the type's JSON Schema, closing the chat's last user message, and its reply read as JSON conforming to it. A reply that cannot be read is followed by why, and the model asked again, until one can be or the attempts run out, but not where asking again could not help: a reply cut off at the token limit, which is never read, stopped for a reason of the provider's, such as a refusal, or saying nothing. A reply asking for a tool is given with no value. A chat in which the user says nothing fails with <a href="ModelError$$Unsendable.html">ModelError.Unsendable</a> before any request.</p>
+              <div class="snippet mono-small-block">
+               <pre><code class="language-"><span line-number="1" class=""><span class="tooltip-container"></span>case class Person(name: String, age: Int)
+</span><span line-number="2" class=""><span class="tooltip-container"></span>
+</span><span line-number="3" class=""><span class="tooltip-container"></span>client.ask[Person](Chat.userSays("Invent a person.")).map(_.value)
+</span></code></pre>
+               <div class="buttons"></div>
+              </div>
+              <p>The answer is given as soon as everything in its value but its streams is read. Each <code>fs2.Stream</code> within the type, other than within a list or map, which are read whole, then delivers each of its elements as soon as the model has written it whole, while the reply goes on being read to its end in a fiber of its own; <span data-unresolved-link="">ValidatedResponse.responses</span> gives every response once the last ends. Only streams are ever partial: every other value is read whole first. A type holding no stream is asked with one request, through <span data-unresolved-link="">send</span>, and given once its reply ends; any other, through <a href="ModelClient.html#stream-fffff98e">stream</a>, each attempt going through the one or the other, so a wrapper overriding both sees each.</p>
+              <div class="snippet mono-small-block">
+               <pre><code class="language-"><span line-number="1" class=""><span class="tooltip-container"></span>case class Page(title: String, words: Stream[IO, Word])
+</span><span line-number="2" class=""><span class="tooltip-container"></span>
+</span><span line-number="3" class=""><span class="tooltip-container"></span>client.ask[Page](chat).flatMap(answer =&gt;
+</span><span line-number="4" class=""><span class="tooltip-container"></span> answer.value.traverse_(_.words.evalMap(show).compile.drain),
+</span><span line-number="5" class=""><span class="tooltip-container"></span>)
+</span></code></pre>
+               <div class="buttons"></div>
+              </div>
+              <p>The model is told the same JSON Schema whether its reply streams or not, a stream being an array, so its reply is no different; only its reading is. The model writes a value's fields in order, so a value holding a stream is given once each field it has begun is read or begun as a stream, each it has passed over is one that may be left out, and each it has yet to begin is a stream it must write, given to begin when it does: so a value's streams are delivered as they are written wherever every field after them is a stream, and any other is whole by the time the field after it begins. A field it writes after its value was given, or a stream it never begins, fails the reply. Every stream may be read as often as wanted, each time from its first element. A streamed reply's JSON is read from its start, or from within a code fence it opens with, and reading ends with it: what follows, which a reply read whole would be refused for, is not read; one that does not begin with its JSON is read only once whole. Once an answer is given, it is never asked for again: whatever fails afterwards fails each of its streams not yet ended, after the elements they have delivered, and <span data-unresolved-link="">ValidatedResponse.responses</span>, with <a href="ModelError$$UnreadableResponse.html">ModelError.UnreadableResponse</a> where the reply cannot be read to its end, as one cut off at the token limit, stopped, or asking for a tool, as a whole reply would, and as the request fails where that fails partway, as one timing out. A streamed reply is read to its end even where nothing reads its streams, unless <span data-unresolved-link="">ValidatedResponse.cancel</span> stops it, and its failure reaches only its streams and <span data-unresolved-link="">ValidatedResponse.responses</span>. A value is given early only while one of its streams is seen open, so how a reply's parts arrive may decide whether it is.</p>
+             </div>
+             <h2 class="h200">Type parameters</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">A</dt>
+              <dd class="body-medium">
+               <p>The type of the answer, whose streams are of this client's effect.</p>
+              </dd>
+             </dl>
+             <h2 class="h200">Value parameters</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">attempts</dt>
+              <dd class="body-medium">
+               <p>The most replies to ask for before an answer is given, three unless given, which must be at least one, as the effect otherwise fails with an <code>IllegalArgumentException</code>; a reply asking for tools that are run does not count. Given through <code>emit</code>, the most times in a row an element may be emitted unreadable.</p>
+              </dd>
+              <dt class="body-small">chat</dt>
+              <dd class="body-medium">
+               <p>The conversation so far, including any system message.</p>
+              </dd>
+              <dt class="body-small">options</dt>
+              <dd class="body-medium">
+               <p>The per-request options, alike for every attempt; unset fields fall back to the configuration or the provider's defaults.</p>
+              </dd>
+              <dt class="body-small">tools</dt>
+              <dd class="body-medium">
+               <p>The tools to offer the model and run wherever it asks for them, beside any <span data-unresolved-link="">ModelRequest.Options.tools</span> offered for the host to run: a reply asking for these alone is followed by their outputs, and the model asked to go on, as often as it asks. Given tools, an answer that is itself a <code>fs2.Stream</code> is given element by element through a tool of its own, <code>emit</code>, so that the model may run the others between elements, and ends with the reply in which the model calls another, <code>done</code>. No tool may then be offered for the host to run, nor one named <code>emit</code> or <code>done</code>, as the effect otherwise fails with an <code>IllegalArgumentException</code>. A tool whose <code>run</code> fails fails the ask, or the stream and <span data-unresolved-link="">ValidatedResponse.responses</span> where its answer was given, the model not told. Tools are run for as long as the model asks for them, each round a request whose cost is the host's to bound, as for any request's: unbounded, a model that never stops asking for them is asked again without end. Each request after a round closes with a <a href="MessagePart$$CacheBreakpoint$.html">MessagePart.CacheBreakpoint</a> of its own, so that it reads the rounds before it from the cache, writing only its own; Anthropic marks it only where the chat's own breakpoints leave room. The first such request writes all after the chat's last breakpoint, the whole prompt where it has none, so end a fixed prefix with one to keep the writes to rounds.</p>
+              </dd>
+             </dl>
+             <h2 class="h200">Attributes</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">Returns</dt>
+              <dd class="body-medium">
+               <p>An effect producing the answer, as soon as it can be given. It fails with <a href="ModelError$$UnreadableResponse.html">ModelError.UnreadableResponse</a> where the last reply could not be read either.</p>
+              </dd>
+              <dt class="body-small">Inherited from:</dt>
+              <dd class="body-medium">
+               <a href="ModelClient.html#ask-5fc">ModelClient</a>
+              </dd>
+             </dl>
+            </div>
+           </div>
+          </div>
+         </div>
+        </div>
+        <div class="documentableElement" id="mapK-fffff4e7" data-f-keywords="final" data-f-inherited="ModelClient">
+         <div class="documentableElement-expander">
+          <button class="icon-button ar show-content"></button>
+          <div class="header monospace mono-medium">
+           <div class="signature">
+            <span class="modifiers"><span t="k">final </span></span><span class="kind"><span t="k">def </span></span><a href="ModelClient$$Forwarding.html#mapK-fffff4e7" t="n" class="documentableName ">mapK</a>[<span t="k"></span><span data-unresolved-link="" t="t">G</span>[<span t="t">_</span>]](<span t="k"></span><span t="k"></span><span data-unresolved-link="" t="n">transform</span>: <span data-unresolved-link="" t="t">FunctionK</span>[<span t="t">F</span>, <span data-unresolved-link="" t="t">G</span>]): <a href="ModelClient.html" t="t">ModelClient</a>[<span data-unresolved-link="" t="t">G</span>]
+           </div>
+          </div>
+         </div>
+         <div class="docs">
+          <span class="modifiers"></span>
+          <div>
+           <div class="originInfo"></div>
+           <div class="memberDocumentation">
+            <div class="documentableBrief doc">
+             <p>Runs every request of this client, <a href="ModelClient.html#warmCache-eb8">warmCache</a> included, through a transformation, and each step of a <a href="ModelClient.html#stream-fffff98e">stream</a> alike: one that holds a stream as a whole, such as a limit on requests in flight, belongs in an override of <code>stream</code> in <a href="ModelClient$$Forwarding.html">ModelClient.Forwarding</a> instead.</p>
+            </div>
+            <div class="cover">
+             <div class="doc">
+              <p>Runs every request of this client, <a href="ModelClient.html#warmCache-eb8">warmCache</a> included, through a transformation, and each step of a <a href="ModelClient.html#stream-fffff98e">stream</a> alike: one that holds a stream as a whole, such as a limit on requests in flight, belongs in an override of <code>stream</code> in <a href="ModelClient$$Forwarding.html">ModelClient.Forwarding</a> instead.</p>
+             </div>
+             <h2 class="h200">Type parameters</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">G</dt>
+              <dd class="body-medium">
+               <p>The effect the transformed client runs in.</p>
+              </dd>
+             </dl>
+             <h2 class="h200">Value parameters</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">transform</dt>
+              <dd class="body-medium">
+               <p>The transformation applied to each request.</p>
+              </dd>
+             </dl>
+             <h2 class="h200">Attributes</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">Returns</dt>
+              <dd class="body-medium">
+               <p>A client sending through this one.</p>
+              </dd>
+              <dt class="body-small">Inherited from:</dt>
+              <dd class="body-medium">
+               <a href="ModelClient.html#mapK-fffff4e7">ModelClient</a>
+              </dd>
+             </dl>
+            </div>
+           </div>
+          </div>
+         </div>
+        </div>
+        <div class="documentableElement" id="metered-fffff625" data-f-keywords="final" data-f-inherited="ModelClient">
+         <div class="documentableElement-expander">
+          <button class="icon-button ar show-content"></button>
+          <div class="header monospace mono-medium">
+           <div class="signature">
+            <span class="modifiers"><span t="k">final </span></span><span class="kind"><span t="k">def </span></span><a href="ModelClient$$Forwarding.html#metered-fffff625" t="n" class="documentableName ">metered</a>(<span t="k"></span><span t="k"></span><span data-unresolved-link="" t="n">meter</span>: (<a href="Usage.html" t="t">Usage</a>, <span data-unresolved-link="" t="t">Option</span>[<a href="Usd.html" t="t">Usd</a>]) <span t="k">=&gt;</span> <span t="t">F</span>[<span data-unresolved-link="" t="t">Unit</span>])(<span t="k">using </span><span t="k"></span><span data-unresolved-link="" t="t">Monad</span>[<span t="t">F</span>]): <a href="ModelClient.html" t="t">ModelClient</a>[<span t="t">F</span>]
+           </div>
+          </div>
+         </div>
+         <div class="docs">
+          <span class="modifiers"></span>
+          <div>
+           <div class="originInfo"></div>
+           <div class="memberDocumentation">
+            <div class="documentableBrief doc">
+             <p>Runs a function on what each request this client makes spent, as its reply comes: once for every attempt of an <a href="ModelClient.html#ask-5fc">ask</a>, on that attempt's reply before it is read, so an ask that fails after three attempts is metered three times, once for <a href="ModelClient.html#warmCache-eb8">warmCache</a>, and once for each <a href="ModelClient.html#stream-fffff98e">stream</a>, at its <a href="Delta$$End.html">Delta.End</a>. <a href="ModelClient.html#countTokens-eb8">countTokens</a> costs nothing, so is never metered, nor is a request that fails with no reply, nor a stream stopped before its end, which reports no usage. The meter runs before the reply is handed on, so a meter that fails fails the request, and the meters of requests sent at once may run at once.</p>
+            </div>
+            <div class="cover">
+             <div class="doc">
+              <p>Runs a function on what each request this client makes spent, as its reply comes: once for every attempt of an <a href="ModelClient.html#ask-5fc">ask</a>, on that attempt's reply before it is read, so an ask that fails after three attempts is metered three times, once for <a href="ModelClient.html#warmCache-eb8">warmCache</a>, and once for each <a href="ModelClient.html#stream-fffff98e">stream</a>, at its <a href="Delta$$End.html">Delta.End</a>. <a href="ModelClient.html#countTokens-eb8">countTokens</a> costs nothing, so is never metered, nor is a request that fails with no reply, nor a stream stopped before its end, which reports no usage. The meter runs before the reply is handed on, so a meter that fails fails the request, and the meters of requests sent at once may run at once.</p>
+              <div class="snippet mono-small-block">
+               <pre><code class="language-"><span line-number="1" class=""><span class="tooltip-container"></span>client.metered((_, cost) =&gt; cost.traverse_(spent =&gt; total.update(_ + spent)))
+</span></code></pre>
+               <div class="buttons"></div>
+              </div>
+             </div>
+             <h2 class="h200">Value parameters</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">meter</dt>
+              <dd class="body-medium">
+               <p>The function, given the request's token counts and what it cost, or <code>None</code> where Iris knows no rates for the model.</p>
+              </dd>
+             </dl>
+             <h2 class="h200">Attributes</h2>
+             <dl class="attributes attributes-small">
+              <dt class="body-small">Returns</dt>
+              <dd class="body-medium">
+               <p>A client sending through this one.</p>
+              </dd>
+              <dt class="body-small">Inherited from:</dt>
+              <dd class="body-medium">
+               <a href="ModelClient.html#metered-fffff625">ModelClient</a>
+              </dd>
+             </dl>
+            </div>
+           </div>
+          </div>
+         </div>
+        </div>
+       </div>
+      </section>
+      <section id="Concrete-fields">
+       <div class="documentableList expand">
+        <div class="documentableList-expander">
+         <button class="icon-button show-content expand"></button>
+         <h4 class="groupHeader h200">Concrete fields</h4>
+        </div>
+        <div class="documentableElement" id="underlying-0" data-f-visibility="protected">
+         <div class="documentableElement-expander">
+          <div class="header monospace mono-medium">
+           <div class="signature">
+            <span class="modifiers"><span t="k">protected </span></span><span class="kind"><span t="k">val </span></span><a href="ModelClient$$Forwarding.html#underlying-0" t="n" class="documentableName ">underlying</a>: <a href="ModelClient.html" t="t">ModelClient</a>[<span t="t">F</span>]
+           </div>
+          </div>
+         </div>
+        </div>
+       </div>
+      </section>
+     </div>
+    </section>
+   </div>
+  </div>
+ </div>
+</section></div><div id="toc" class="body-small"><div id="toc-container"><span class="toc-title h200">In this article</span><nav class="toc-nav"><ul class="toc-list"><li><a href="#attributes">Type parameters</a></li><li><a href="#members-list">Members list</a><ul><li><a href="#Value-members">Value members</a><ul><li><a href="#Concrete-methods">Concrete methods</a></li><li><a href="#Inherited-methods">Inherited methods</a></li><li><a href="#Concrete-fields">Concrete fields</a></li></ul></li></ul></li></ul></nav></div></div></div><div id="footer" class="body-small mobile-footer"><div class="left-container">Generated with</div><div class="right-container"><div class="text"></div></div><div class="text-mobile"></div></div></div></div></body></html>
