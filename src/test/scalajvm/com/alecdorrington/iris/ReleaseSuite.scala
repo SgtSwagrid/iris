@@ -16,16 +16,18 @@ class ReleaseSuite extends FunSuite:
         Platform
           .backends[IO]
           .use(backends =>
+            // Cut off by the release, its failure is expected, so not reported.
             basicRequest
               .get(Uri.unsafeParse(served.address))
               .send(backends.sending)
+              .attempt
               .start *> IO.fromFutureCancelable(IO((served.received, IO.unit))),
-          ) *> IO
-          .fromFutureCancelable(IO((served.closed, IO.unit)))
-          .timeoutTo(
-            5.seconds,
-            IO(fail("The client left its connection open.")),
-          ),
+          ) *>
+          IO.fromFutureCancelable(IO((served.closed, IO.unit)))
+            .timeoutTo(
+              5.seconds,
+              IO(fail("The client left its connection open.")),
+            ),
       )
       .timeout(20.seconds)
       .unsafeToFuture()
