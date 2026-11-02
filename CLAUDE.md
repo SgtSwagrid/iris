@@ -58,8 +58,26 @@ longer.
   So `Deadlined` uses `timeoutAndForget`, never `timeout` or `timeoutTo`, and `bounded` reads the stream on a fiber
   of its own, timing out each take from it and cancelling that fiber without waiting for it (as `timeoutOnPull`
   would wait). What is given up on may never end, as a socket the server closed can leave the read blocked, so each
-  stall may hold a blocking thread (a reply) or two fibers (a stream) for as long as the backend lives, and a reply
-  arriving after its request was given up on is read and dropped; both are the price of never hanging the caller.
+  stall may hold a blocking thread (a reply) or two fibers (a stream, unless its exchange is aborted, below) for as
+  long as the backend lives, and a reply arriving after its request was given up on is read and dropped; both are
+  the price of never hanging the caller.
+- A streamed reply given up on (`ValidatedResponse.cancel`, a stream dropped early, a timeout or a failure) must close
+  its connection at once, or the provider goes on writing, and charging for, a reply nobody reads, as Code Switch saw
+  of a cancelled one. sttp's backends do not: `FetchFs2Backend` cancels a body's reader only once it is read to its
+  end or fails, never when dropped, and aborts its own `AbortController` only until the reply begins; and both it
+  (`fromFuture` of `reader.read()`) and the JDK's (fs2's reactive-streams subscriber, in `async_`) wait for each part
+  uninterruptibly, so a cancel waits for the next part, and for good where the reply is silent. So `SseClient`
+  streams each reply through an `Exchange` of its own, a backend and an `abort`, which `Stream.bracket` aborts once
+  the stream ends, however it ends (after the body's end it does nothing, so a connection read to its end is reused),
+  and which `Async.cancelable` aborts where the request is cancelled before its reply begins. `Platform.backends`
+  makes them: in JavaScript, a `FetchFs2Backend` for each reply whose `customizeRequest` gives the request a signal of
+  Iris's own, which sttp's own still aborts; on the JVM, one JDK client for every backend (built as sttp builds its
+  own, and shut down on release with `shutdownNow`, which sttp's own never did: `close` would wait for requests given
+  up on, which may never end; only from Java 21, so it is called only there), each reply's through an `Abortable` wrapper, whose `AbortableBody` cancels the body's subscription, closing
+  its connection, and ends the body with an error, freeing the read. A host's backend (`ModelClient(config,
+  backend)`) aborts nothing of Iris's (`Exchange.abort` is `unit`). `AbortSuite` checks each way of giving up against
+  a local server on each platform (the JDK's sockets, Node's `http`), which notes when the client closes its
+  connection, while it writes nothing.
   `ModelClient.apply` takes the host's backend as it is, and stays on `MonadThrow`, as the shared tests run in
   `SyncIO`.
 - Models are `Model` cases, never strings: each names the provider serving it (`ModelConfig.provider` is its model's)
@@ -314,7 +332,8 @@ longer.
   and end in a `SignallingRef` (never a `Channel`, which serves one reader), so a stream reads alike however often,
   as `Stream.emits` from a whole reply does.
 - What differs between the platforms is in `Platform` alone, one per platform (`src/main/scalajvm`,
-  `src/main/scalajs`): the backends `resource` makes (the JDK's HTTP client, or the Fetch API), and whether a
+  `src/main/scalajs`): the backends `resource` makes (the JDK's HTTP client, or the Fetch API, and how each aborts a
+  stream, above), and whether a
   request may come from a browser's page, for which `AnthropicApi` adds `anthropic-dangerous-direct-browser-access`.
   Everything else is shared, so use nothing the JS side lacks: no `java.util.Locale` (lower case by character, as
   `ModelProvider.parse` does), nor `java.time`. The tests run on both, so they run their effects in `SyncIO`,

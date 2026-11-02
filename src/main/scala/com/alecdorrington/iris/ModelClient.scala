@@ -380,7 +380,9 @@ object ModelClient:
     *   The backend to send and stream requests through, which times them out as
     *   it does itself: the JDK's client, for one, only until a reply begins,
     *   where [[resource]] gives each reply the configured timeout whole, and
-    *   each part of a streamed one.
+    *   each part of a streamed one. It closes a streamed reply given up on as
+    *   it does itself too: sttp's own leave its connection open while the reply
+    *   is written, where [[resource]] closes it at once.
     *
     * @return
     *   A client for the configured provider.
@@ -390,14 +392,21 @@ object ModelClient:
       config: ModelConfig,
       backend: StreamBackend[F, Fs2Streams[F]],
     )
-    : ModelClient[F] = streaming(config, backend, backend)
+    : ModelClient[F] = streaming(
+    config,
+    backend,
+    Async[F].pure(Exchange(backend, Async[F].unit)),
+  )
 
-  /** A client sending through one backend, and streaming through another. */
+  /**
+    * A client sending through one backend, and streaming each reply through one
+    * of its own.
+    */
   private def streaming[F[_] : Async]
     (
       config: ModelConfig,
       sending: Backend[F],
-      streaming: StreamBackend[F, Fs2Streams[F]],
+      exchanges: F[Exchange[F]],
     )
     : ModelClient[F] =
     val api = ProviderApi.of(config.provider)
@@ -405,13 +414,15 @@ object ModelClient:
       api,
       config,
       sending,
-      Some(SseClient(api, config, streaming)),
+      Some(SseClient(api, config, exchanges)),
     )
 
   /**
     * Creates a client with an HTTP backend of its own, which can stream, and
     * gives each reply at most the configured timeout, from sending the request
-    * to reading the reply whole, and each part of a streamed reply as long.
+    * to reading the reply whole, and each part of a streamed reply as long. A
+    * streamed reply that is cancelled, dropped or times out closes its
+    * connection at once, so the provider stops writing it.
     *
     * @tparam F
     *   The effect type.
@@ -424,8 +435,14 @@ object ModelClient:
     */
   def resource[F[_] : Async](config: ModelConfig): Resource[F, ModelClient[F]] =
     Platform
-      .backend[F]
-      .map(backend => streaming(config, Deadlined(backend), backend))
+      .backends[F]
+      .map(backends =>
+        streaming(
+          config,
+          Deadlined(backends.sending),
+          backends.streaming,
+        ),
+      )
 
   /**
     * Creates a client configured from the environment by

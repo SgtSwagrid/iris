@@ -367,6 +367,11 @@ Nothing is sent until the stream is run, and a failure reaches it as a `ModelErr
 would anywhere else. A tool call arrives whole, once its arguments have, and `Delta.End` carries the
 reply's token counts.
 
+A stream that is cancelled, dropped before its end (as by `take`), or times out closes its connection at once
+on a client made by `resource` or `fromEnv`, so the provider stops writing, and charging for, the rest. Over a
+backend of your own, it closes as that backend does: sttp's own leave the connection open while the reply is
+written.
+
 An answer is streamed too, wherever its type says so: any [fs2 `Stream`](https://fs2.io) within it,
 other than within a list or map, which are read whole. `ask` then gives the answer as soon as
 everything in it but its streams is read, and each stream delivers each of its elements as soon as the
@@ -389,8 +394,8 @@ client.ask[Page](Chat.userSays(s"Translate: $text")).flatMap { answer =>
 The model is told the same JSON Schema either way, a stream being an array, so its reply is plain
 JSON; only its reading differs. The reply goes on being read in a fiber of its own once the answer is
 given, to its end, even where nothing reads its streams, so its tokens are spent and its connection
-held to its end, unless `answer.cancel` stops it: its streams not yet ended, and its `responses`, then fail
-with an `IllegalStateException`. A failure of the reply reaches only its streams and `responses`, unseen
+held to its end, unless `answer.cancel` stops it, closing its connection as a dropped stream does: its streams
+not yet ended, and its `responses`, then fail with an `IllegalStateException`. A failure of the reply reaches only its streams and `responses`, unseen
 where neither is read.
 A stream may be read as often as you like, each time from its first element, keeping every element as
 long as it is held, and streams may be nested, as a stream of pages each with a stream of words.
