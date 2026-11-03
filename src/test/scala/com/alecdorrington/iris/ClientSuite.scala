@@ -73,7 +73,8 @@ class ClientSuite extends FunSuite:
       ),
     )
 
-  test("an unsuccessful response is an error carrying its status and delay"):
+  test("a refusal for now carries the wait asked for, given at once here"):
+    // A client whose effect cannot wait sends nothing again.
     List(
       Seq(Header("Retry-After", "30")) -> Some(30.seconds),
       Seq.empty                        -> None,
@@ -84,14 +85,23 @@ class ClientSuite extends FunSuite:
           StatusCode.TooManyRequests,
           headers,
         )),
-        Left(ModelError.Unsuccessful(
-          "Anthropic",
-          StatusCode.TooManyRequests,
-          delay,
-          "slow down",
-        )),
+        Left(ModelError.RateLimited("Anthropic", delay, "slow down")),
         headers,
       )
+    assertEquals(
+      result(client("busy", StatusCode(529))),
+      Left(ModelError.Overloaded("Anthropic", None, "busy")),
+    )
+
+  test("any other unsuccessful response is an error carrying its status"):
+    assertEquals(
+      result(client("no such key", StatusCode.Unauthorized)),
+      Left(ModelError.Unsuccessful(
+        "Anthropic",
+        StatusCode.Unauthorized,
+        "no such key",
+      )),
+    )
 
   test("a response which is not json at all is malformed"):
     assert(

@@ -37,6 +37,52 @@ private[iris] object OpenAiApi extends ProviderApi:
     Decoder[Response].map(_.toReply)
 
   /**
+    * As `retry-after-ms` says, as OpenAI's own SDKs read it first, else
+    * `retry-after`, else as late as the reset of each limit spent (its
+    * `x-ratelimit-remaining-*` header `0`), which its `x-ratelimit-reset-*`
+    * header gives as a Go duration (`6m0s`), as
+    * https://developers.openai.com/api/docs/guides/rate-limits says.
+    */
+  override def retryAfter
+    (
+      headers: Seq[Header],
+      detail: String,
+      now: FiniteDuration,
+    )
+    : Option[FiniteDuration] = Refusal
+    .header(headers, "retry-after-ms")
+    .flatMap(Refusal.milliseconds)
+    .orElse(super.retryAfter(headers, detail, now))
+    .orElse(Refusal.spent(headers, resetOf, Refusal.go))
+
+  /** The header saying when the limit of a remaining header resets. */
+  private def resetOf(remaining: String): Option[String] = Option.when(
+    remaining.startsWith(remainingPrefix),
+  )("x-ratelimit-reset-" + remaining.stripPrefix(remainingPrefix))
+
+  private val remainingPrefix = "x-ratelimit-remaining-"
+
+  /**
+    * A `429` that waiting does not lift, as credit, a spend limit or a usage
+    * limit is spent, as
+    * https://developers.openai.com/api/docs/guides/error-codes lists them, by
+    * the error's code or its type.
+    */
+  override def lasting(detail: String): Boolean =
+    val error = parse(detail).toOption.map(_.hcursor.downField("error"))
+    List("type", "code")
+      .flatMap(field => error.flatMap(_.get[String](field).toOption))
+      .exists(exhausted.contains)
+
+  private val exhausted = Set(
+    "insufficient_quota",
+    "credit_balance_exhausted",
+    "organization_spend_limit_exceeded",
+    "project_spend_limit_exceeded",
+    "organization_usage_limit_exceeded",
+  )
+
+  /**
     * As https://developers.openai.com/api/docs/pricing gives them. GPT-5.6
     * Sol's are promotional, until November 21, 2026 at least, and OpenAI has
     * not said what they are after.

@@ -12,17 +12,15 @@ import sttp.model.StatusCode
 enum ModelError(message: String) extends Exception(message):
 
   /**
-    * An unsuccessful HTTP status from the provider.
+    * An unsuccessful HTTP status from the provider other than a refusal for
+    * now, and so never sent again: a refused key, a request the provider cannot
+    * take, a spent quota or credit, or a failure of its own.
     *
     * @param provider
     *   The name of the provider, for display.
     *
     * @param status
     *   The HTTP status.
-    *
-    * @param retryAfter
-    *   The time the provider asked to wait before retrying, where it said, as
-    *   on a rate limit.
     *
     * @param detail
     *   The response body.
@@ -31,9 +29,60 @@ enum ModelError(message: String) extends Exception(message):
     (
       provider: String,
       status: StatusCode,
-      retryAfter: Option[FiniteDuration],
       detail: String,
     ) extends ModelError(s"$provider request failed ($status): $detail")
+
+  /**
+    * A request the provider refused for now, as over the rate limits of the
+    * key's account (HTTP `429`), and went on refusing for as long as the
+    * client's [[Retries]] allowed, or asked to be waited for longer; a client
+    * that cannot wait gives it at once.
+    *
+    * @param provider
+    *   The name of the provider, for display.
+    *
+    * @param retryAfter
+    *   How long the provider asked to wait before sending it again, where it
+    *   said, from when it refused it last.
+    *
+    * @param detail
+    *   The response body, or the streamed event that refused it.
+    */
+  case RateLimited
+    (
+      provider: String,
+      retryAfter: Option[FiniteDuration],
+      detail: String,
+    )
+    extends ModelError(
+      s"$provider is limiting requests${ Refusal.asked(retryAfter) }: $detail",
+    )
+
+  /**
+    * A request the provider refused for now, as too busy to answer it (HTTP
+    * `503`, or Anthropic's `529`), and went on refusing for as long as the
+    * client's [[Retries]] allowed, or asked to be waited for longer; a client
+    * that cannot wait gives it at once.
+    *
+    * @param provider
+    *   The name of the provider, for display.
+    *
+    * @param retryAfter
+    *   How long the provider asked to wait before sending it again, where it
+    *   said, from when it refused it last.
+    *
+    * @param detail
+    *   The response body, or the streamed event that refused it.
+    */
+  case Overloaded
+    (
+      provider: String,
+      retryAfter: Option[FiniteDuration],
+      detail: String,
+    )
+    extends ModelError(
+      s"$provider is overloaded${ Refusal.asked(retryAfter) }: $detail",
+    )
 
   /**
     * A response body that could not be decoded.

@@ -87,6 +87,12 @@ object ModelProvider:
   * @param rates
   *   The rates replies cost, in place of those Iris lists for the model, as for
   *   a model it does not list, a proxy charging its own, or a discount.
+  *
+  * @param retries
+  *   How a client waits out the provider's refusals of a request for now, as
+  *   over its rate limits, sending it again: every client but one over a
+  *   backend that cannot stream, whose effect cannot wait. [[Retries.none]]
+  *   gives each refusal at once.
   */
 final case class ModelConfig
   (
@@ -96,6 +102,7 @@ final case class ModelConfig
     baseUrl: Option[String] = None,
     timeout: FiniteDuration = ModelConfig.defaultTimeout,
     rates: Option[Rates] = None,
+    retries: Retries = Retries(),
   ):
 
   /** The provider whose API to use: the one serving [[model]]. */
@@ -109,7 +116,7 @@ final case class ModelConfig
   def origin: String = baseUrl.getOrElse(provider.origin)
 
   override def toString: String = s"ModelConfig(${ model
-      .name }, <redacted>, $maxTokens, $baseUrl, $timeout, $rates)"
+      .name }, <redacted>, $maxTokens, $baseUrl, $timeout, $rates, $retries)"
 
 object ModelConfig:
 

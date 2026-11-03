@@ -76,5 +76,9 @@ private[iris] final class JsonClient[F[_] : MonadThrow : Clock]
       )
     }
     .flatMap(response =>
-      MonadThrow[F].fromEither(JsonHttp.parse[A](api.provider, response)),
+      Clock[F]
+        .realTime
+        .flatMap(now =>
+          MonadThrow[F].fromEither(JsonHttp.parse[A](api, response, now)),
+        ),
     )

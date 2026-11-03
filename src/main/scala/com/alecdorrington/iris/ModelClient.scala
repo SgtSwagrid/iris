@@ -5,6 +5,7 @@ import cats.effect.{Async, Clock, Resource}
 import cats.syntax.flatMap.*
 import cats.syntax.traverse.*
 import fs2.Stream
+import scala.util.Random
 import sttp.capabilities.fs2.Fs2Streams
 import sttp.client4.{Backend, StreamBackend}
 
@@ -101,8 +102,9 @@ trait ModelClient[F[_]]:
     *   The most replies to ask for before an answer is given, three unless
     *   given, which must be at least one, as the effect otherwise fails with an
     *   `IllegalArgumentException`; a reply asking for tools that are run does
-    *   not count. Given through `emit`, the most times in a row an element may
-    *   be emitted unreadable.
+    *   not count, nor does a request the provider refused for now and the
+    *   client sent again, as [[ModelConfig.retries]] says. Given through
+    *   `emit`, the most times in a row an element may be emitted unreadable.
     *
     * @param tools
     *   The tools to offer the model and run wherever it asks for them, beside
@@ -342,7 +344,10 @@ object ModelClient:
 
   /**
     * Creates a client over an existing backend, which cannot stream: a reply
-    * that would stream arrives whole instead, once it ends.
+    * that would stream arrives whole instead, once it ends. It sends each
+    * request once, whatever [[ModelConfig.retries]] says, as its effect cannot
+    * wait, so a refusal for now, as over a rate limit, fails the request at
+    * once.
     *
     * @tparam F
     *   The effect type, whose clock prices each reply as it comes.
@@ -368,7 +373,9 @@ object ModelClient:
   )
 
   /**
-    * Creates a client over an existing backend which can stream.
+    * Creates a client over an existing backend which can stream, waiting out
+    * the provider's refusals of a request for now, as over its rate limits, as
+    * [[ModelConfig.retries]] says.
     *
     * @tparam F
     *   The effect type.
@@ -400,7 +407,7 @@ object ModelClient:
 
   /**
     * A client sending through one backend, and streaming each reply through one
-    * of its own.
+    * of its own, sending each request again as the configuration's retries say.
     */
   private def streaming[F[_] : Async]
     (
@@ -410,11 +417,15 @@ object ModelClient:
     )
     : ModelClient[F] =
     val api = ProviderApi.of(config.provider)
-    JsonClient(
-      api,
-      config,
-      sending,
-      Some(SseClient(api, config, exchanges)),
+    Retrying(
+      JsonClient(
+        api,
+        config,
+        sending,
+        Some(SseClient(api, config, exchanges)),
+      ),
+      config.retries,
+      Async[F].delay(Random.nextDouble()),
     )
 
   /**
@@ -422,7 +433,9 @@ object ModelClient:
     * gives each reply at most the configured timeout, from sending the request
     * to reading the reply whole, and each part of a streamed reply as long. A
     * streamed reply that is cancelled, dropped or times out closes its
-    * connection at once, so the provider stops writing it.
+    * connection at once, so the provider stops writing it. A request the
+    * provider refuses for now, as over its rate limits, is sent again as
+    * [[ModelConfig.retries]] says.
     *
     * @tparam F
     *   The effect type.
