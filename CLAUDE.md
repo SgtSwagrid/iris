@@ -81,7 +81,11 @@ longer.
   the stream ends, however it ends (after the body's end it does nothing, so a connection read to its end is reused),
   and which `Async.cancelable` aborts where the request is cancelled before its reply begins. `Platform.backends`
   makes them: in JavaScript, a `FetchFs2Backend` for each reply whose `customizeRequest` gives the request a signal of
-  Iris's own, which sttp's own still aborts; on the JVM, one JDK client for every backend (built as sttp builds its
+  Iris's own, which sttp's own still aborts, and which keeps every request it makes for as long as it lives, as Node's
+  `fetch` (undici) has a request follow its signal only through a weak reference to the request's own controller, so
+  a request nobody held, collected while its reply was read, could no longer be aborted (`AbortSuite` failed now and
+  then on a busy machine, main too; `CollectionSuite` collects mid-reply, as Node runs JS tests with `--expose-gc`,
+  `Test / jsEnv` in `build.sbt`); on the JVM, one JDK client for every backend (built as sttp builds its
   own, and shut down on release with `shutdownNow`, which sttp's own never did: `close` would wait for requests given
   up on, which may never end; only from Java 21, so it is called only there), each reply's through an `Abortable` wrapper, whose `AbortableBody` cancels the body's subscription, closing
   its connection, and ends the body with an error, freeing the read. A host's backend (`ModelClient(config,

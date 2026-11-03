@@ -2,6 +2,7 @@ import sbt._
 import sbt.Keys._
 import sbtunidoc.BaseUnidocPlugin.autoImport.*
 import sbtunidoc.ScalaUnidocPlugin
+import org.scalajs.jsenv.nodejs.NodeJSEnv
 
 val scala3 = "3.9.0"
 
@@ -38,7 +39,15 @@ lazy val iris = projectMatrix
     Dependencies.munit,
   )
   .jvmPlatform(scalaVersions = Seq(scala3))
-  .jsPlatform(scalaVersions = Seq(scala3))
+  .jsPlatform(
+    scalaVersions = Seq(scala3),
+    // So that a test may collect garbage, as `CollectionSuite` does.
+    settings = Seq(
+      Test / jsEnv := Def.uncached(
+        new NodeJSEnv(NodeJSEnv.Config().withArgs(List("--expose-gc"))),
+      ),
+    ),
+  )
 
 lazy val irisRoot = project
   .in(file("."))
