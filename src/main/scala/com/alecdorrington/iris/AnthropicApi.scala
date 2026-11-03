@@ -107,7 +107,7 @@ private[iris] object AnthropicApi extends ProviderApi:
     ),
     event.noSpaces,
     None,
-    false,
+    None,
   )
 
   /**

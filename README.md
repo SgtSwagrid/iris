@@ -554,8 +554,9 @@ Each provider keeps a cache per model, and caches nothing shorter than its own m
 
 A provider's refusal fails the effect with a [`ModelError`](src/main/scala/com/alecdorrington/iris/ModelError.scala):
 `RateLimited` (`429`) or `Overloaded` (`503`, or Anthropic's `529`) for a request it refused for now and
-went on refusing (below), carrying the wait it asked for, if any, `Unsuccessful` for any other
-unsuccessful response, carrying its status and body, `Malformed` for a
+went on refusing (below), carrying the wait it asked for, if any, `Transient` for one it failed for
+now (`408`, `409`, `500`, `502`, `504`) and went on failing, carrying its status too, `Unsuccessful` for
+any other unsuccessful response, carrying its status and body, `Malformed` for a
 response that could not be understood, and `TimedOut` for a request no answer came to within the
 configured timeout (`ModelConfig.timeout`), such as one whose reply took too long to write or stalled
 partway. A client made by `resource` or `fromEnv` gives each reply that long whole, from sending the
@@ -577,7 +578,11 @@ of the limit spent (`anthropic-ratelimit-*-reset`, `x-ratelimit-reset-*`), or Ge
 not all come back at once. Where the provider asks for no wait, the client waits a second, then
 twice as long after each refusal, less up to half at random. It gives up after four attempts, or
 before a wait that would take more than a minute in all, failing with `RateLimited` or
-`Overloaded`, which carries the wait the provider last asked for, if any, for your users:
+`Overloaded`, which carries the wait the provider last asked for, if any, for your users. A
+request the provider failed for now, as the providers' own SDKs retry it (a timeout, `408`, a
+conflict, `409`, or a failure of its own, `500`, `502` or `504`), is sent again alike, and given as
+`Transient`. The provider's `x-should-retry` header, which its SDKs heed, outweighs both: `true`
+sends again a request it failed in any way, and `false` none.
 
 ```scala
 case ModelError.RateLimited(provider, wait, _) =>
@@ -592,10 +597,10 @@ wait, and how long to wait in all; `Retries.none` gives each refusal at once:
 config.copy(retries = Retries(attempts = 6, backoff = 2.seconds, patience = 5.minutes))
 ```
 
-Nothing is sent again that waiting cannot change: a refused key, a request the provider cannot
-take, a failure of its own, a reply cut off at the token limit, or a refusal saying the account's
-quota, credit or monthly spend is used up (Anthropic's `enforced_spend_limit_reached`, OpenAI's
-`insufficient_quota` and the like). Waiting is cancelled with its request. A stream is sent again
+Nothing else is sent again, as waiting cannot change it: a refused key, a request the provider
+cannot take, a reply cut off at the token limit, or a refusal saying the account's quota, credit,
+monthly spend or day's requests are used up (Anthropic's `enforced_spend_limit_reached`, OpenAI's
+`insufficient_quota` and the like, or a Gemini quota of a day, as its free tier's). Waiting is cancelled with its request. A stream is sent again
 only while none of its reply has come, so a stream refused once its reply has begun, as Anthropic
 may refuse one with an `overloaded_error` event, fails with `Overloaded` after what it streamed.
 Each attempt of an `ask` is waited out alike, and a request sent again counts as one attempt.
@@ -644,7 +649,8 @@ through `send`, which would lose however the provider itself warms.
   refusals for now, as [Rate limits](#rate-limits) says. Give its configuration `retries = Retries.none`
   to have each refusal at once, as before.
 - A refusal for now is `ModelError.RateLimited` (`429`) or `ModelError.Overloaded` (`503`, `529`),
-  which carry the wait asked for, where it was `Unsuccessful`. `Unsuccessful` no longer has a
+  and a failure for now `ModelError.Transient` (`408`, `409`, `500`, `502`, `504`), which carry the wait
+  asked for, where each was `Unsuccessful`. `Unsuccessful` no longer has a
   `retryAfter`, so a match on its fields takes three: `Unsuccessful(provider, status, detail)`.
 - A streamed reply that Anthropic refuses partway, with an `error` event, fails with that error,
   where it was read as a reply that ended without saying so.

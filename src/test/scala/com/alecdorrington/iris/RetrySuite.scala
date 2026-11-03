@@ -44,6 +44,17 @@ class RetrySuite extends FunSuite:
     : Response[StubBody] =
     ResponseStub.adjust(body, StatusCode(status), headers)
 
+  /**
+    * Gemini's refusal of a quota spent, as its body gives it, naming the quota
+    * and how long to wait.
+    */
+  private def gemini429(quota: String): String =
+    s"""{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[
+      {"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[
+        {"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests",
+         "quotaId":"$quota","quotaValue":"50"}]},
+      {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"34s"}]}}"""
+
   /** A reply streamed as server-sent events. */
   private def streamed(events: String): Response[StubBody] = ResponseStub
     .adjust(Stream.emits(events.getBytes("UTF-8")).covary[IO])
@@ -236,14 +247,13 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
       ),
       1.second,
     ),
+    // A minute's quota spent is waited out, as Gemini asks.
     (
       "gemini's retry delay",
       ModelProvider.Gemini,
       refused(
         429,
-        body = """{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[
-          {"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[]},
-          {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"34s"}]}}""",
+        body = gemini429("GenerateRequestsPerMinutePerProjectPerModel-FreeTier"),
       ),
       34.seconds,
     ),
@@ -391,7 +401,23 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
     ("a refused key", ModelProvider.Anthropic, refused(401)),
     ("a forbidden key", ModelProvider.OpenAi, refused(403)),
     ("a malformed request", ModelProvider.Gemini, refused(400)),
-    ("a failure of the provider's", ModelProvider.Anthropic, refused(500)),
+    ("a request too large", ModelProvider.Anthropic, refused(413)),
+    (
+      "gemini's day's quota spent",
+      ModelProvider.Gemini,
+      refused(
+        429,
+        body = gemini429("GenerateRequestsPerDayPerProjectPerModel-FreeTier"),
+      ),
+    ),
+    (
+      "a failure the provider says not to retry",
+      ModelProvider.OpenAi,
+      refused(
+        500,
+        Seq(Header("x-should-retry", "false")),
+      ),
+    ),
     (
       "anthropic's spend cap",
       ModelProvider.Anthropic,
@@ -429,6 +455,110 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
       ),
     ),
   )
+
+  /** Failures for now that the providers' SDKs retry, and each's error. */
+  private val transient = List(
+    (408, ModelProvider.Anthropic, None),
+    (409, ModelProvider.Anthropic, None),
+    (500, ModelProvider.OpenAi, None),
+    (502, ModelProvider.Gemini, None),
+    (504, ModelProvider.Anthropic, Some(Header("retry-after", "3"))),
+  )
+
+  transient.foreach: (status, provider, header) =>
+    test(s"a failure for now is sent again, as the SDKs send it: $status"):
+      answering(
+        anthropic.copy(model = provider.defaultModel),
+        refused(status, header.toList),
+        ok(replies(provider)),
+      )()((client, times) =>
+        for
+          result <- sent(client)
+          times  <- times
+        yield
+          assertEquals(result, Right("Hi"))
+          assertEquals(
+            times,
+            List(
+              Duration.Zero,
+              header.fold(1.second)(_ => 3.seconds),
+            ),
+          ),
+      )
+
+  test("a failure for now that goes on is given once the attempts end"):
+    answering(config, refused(502))()((client, times) =>
+      for
+        result <- sent(client)
+        times  <- times
+      yield
+        assertEquals(
+          result,
+          Left(ModelError.Transient(
+            "Anthropic",
+            StatusCode.BadGateway,
+            None,
+            "slow down",
+          )),
+        )
+        assertEquals(times, List(0, 1, 3, 7).map(_.seconds)),
+    )
+
+  test("any failure the provider says to retry is sent again"):
+    answering(
+      anthropic,
+      refused(
+        400,
+        Seq(Header("x-should-retry", "true")),
+        "try again",
+      ),
+      ok(replies(ModelProvider.Anthropic)),
+    )()((client, times) =>
+      for
+        result <- sent(client)
+        times  <- times
+      yield
+        assertEquals(result, Right("Hi"))
+        assertEquals(times, List(0, 1).map(_.seconds)),
+    )
+
+  test("the provider's word to retry outweighs what its body says"):
+    // A day's quota spent, though the provider says to retry it.
+    answering(
+      anthropic.copy(model = ModelProvider.Gemini.defaultModel),
+      refused(
+        429,
+        Seq(Header("x-should-retry", "true")),
+        gemini429("GenerateRequestsPerDayPerProjectPerModel-FreeTier"),
+      ),
+      ok(replies(ModelProvider.Gemini)),
+    )()((client, times) =>
+      for
+        result <- sent(client)
+        times  <- times
+      yield
+        assertEquals(result, Right("Hi"))
+        assertEquals(times, List(0, 34).map(_.seconds)),
+    )
+
+  test("a failure streamed before the reply begins is streamed again"):
+    val failed =
+      """{"type":"error","error":{"type":"api_error","message":"Internal"}}"""
+    answering(
+      anthropic,
+      streamed(s"data: $failed\n\n"),
+      streamed(hi),
+    )()((client, times) =>
+      for
+        deltas <- streamedText(client)
+        times  <- times
+      yield
+        assertEquals(
+          deltas.headOption,
+          Some(Right(Delta.Text("Hi"))),
+        )
+        assertEquals(times, List(0, 1).map(_.seconds)),
+    )
 
   lasting.foreach: (row, provider, refusal) =>
     test(s"a refusal that waiting cannot lift is given at once: $row"):

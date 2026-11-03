@@ -93,6 +93,17 @@ class ClientSuite extends FunSuite:
       Left(ModelError.Overloaded("Anthropic", None, "busy")),
     )
 
+  test("a failure for now carries its status, given at once here"):
+    assertEquals(
+      result(client("down", StatusCode.InternalServerError)),
+      Left(ModelError.Transient(
+        "Anthropic",
+        StatusCode.InternalServerError,
+        None,
+        "down",
+      )),
+    )
+
   test("any other unsuccessful response is an error carrying its status"):
     assertEquals(
       result(client("no such key", StatusCode.Unauthorized)),

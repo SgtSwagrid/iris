@@ -1,7 +1,7 @@
 package com.alecdorrington.iris
 
 import fs2.{RaiseThrowable, Stream}
-import io.circe.{Decoder, Json}
+import io.circe.{ACursor, Decoder, Json}
 import io.circe.parser.parse
 import io.circe.syntax.*
 import scala.concurrent.duration.FiniteDuration
@@ -47,20 +47,35 @@ private[iris] object GeminiApi extends ProviderApi:
     : Option[FiniteDuration] = super
     .retryAfter(headers, detail, now)
     .orElse(
-      parse(detail)
-        .toOption
-        .flatMap(
-          _.hcursor.downField("error").get[List[Json]]("details").toOption,
-        )
-        .toList
-        .flatten
-        .map(_.hcursor)
+      details(detail)
         .find(_.get[String]("@type").toOption.contains(retryInfo))
         .flatMap(_.get[String]("retryDelay").toOption)
         .flatMap(Refusal.protobuf),
     )
 
   private val retryInfo = "type.googleapis.com/google.rpc.RetryInfo"
+
+  /**
+    * A day's quota used up, as of the free tier's requests a day, which waiting
+    * does not lift until the day ends: a `429` whose `google.rpc.QuotaFailure`
+    * detail names a quota of a day (`quotaId`, as
+    * `GenerateRequestsPerDayPerProjectPerModel-FreeTier`).
+    */
+  override def lasting(detail: String): Boolean = details(detail)
+    .filter(_.get[String]("@type").toOption.contains(quotaFailure))
+    .flatMap(_.downField("violations").values.toList.flatten)
+    .flatMap(_.hcursor.get[String]("quotaId").toOption)
+    .exists(_.contains("PerDay"))
+
+  private val quotaFailure = "type.googleapis.com/google.rpc.QuotaFailure"
+
+  /** The details of an error's body, each a cursor. */
+  private def details(detail: String): List[ACursor] = parse(detail)
+    .toOption
+    .flatMap(_.hcursor.downField("error").get[List[Json]]("details").toOption)
+    .toList
+    .flatten
+    .map(_.hcursor)
 
   /**
     * As https://ai.google.dev/gemini-api/docs/pricing gives them. Google names

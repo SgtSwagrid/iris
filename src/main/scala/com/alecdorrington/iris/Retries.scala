@@ -8,16 +8,18 @@ import scala.concurrent.duration.*
 /**
   * How a client waits out a provider's refusals of a request for now, as over
   * its rate limits ([[ModelError.RateLimited]]) or overloaded
-  * ([[ModelError.Overloaded]]), sending the request again until it is answered
+  * ([[ModelError.Overloaded]]), and its failures for now
+  * ([[ModelError.Transient]]), sending the request again until it is answered
   * or the retries run out, when the last refusal is given. It waits as long as
   * the provider asks, where it says, and up to [[backoff]] more at random, so
   * that requests refused together do not all come back at once; else
   * [[backoff]] after the first refusal, twice as long after each next, less up
   * to half at random. Any other failure is given at once, as waiting would not
   * change it: a refused key, a request the provider cannot take, a spent quota
-  * or credit, or a reply cut off at the token limit. A stream is sent again
-  * only while none of its reply has come, as its reader would otherwise have
-  * read part of a reply twice; a stream refused after its reply began fails.
+  * or credit, a day's quota used up, or a reply cut off at the token limit. A
+  * stream is sent again only while none of its reply has come, as its reader
+  * would otherwise have read part of a reply twice; a stream refused after its
+  * reply began fails.
   *
   * @param attempts
   *   The most times to send one request, the first among them, so that `1`
@@ -76,9 +78,10 @@ object Retries:
     */
   private def asked(error: Throwable): Option[Option[FiniteDuration]] =
     error match
-      case ModelError.RateLimited(_, retryAfter, _) => Some(retryAfter)
-      case ModelError.Overloaded(_, retryAfter, _)  => Some(retryAfter)
-      case _                                        => None
+      case ModelError.RateLimited(_, retryAfter, _)  => Some(retryAfter)
+      case ModelError.Overloaded(_, retryAfter, _)   => Some(retryAfter)
+      case ModelError.Transient(_, _, retryAfter, _) => Some(retryAfter)
+      case _                                         => None
 
 /**
   * A client sending each request again as [[Retries]] say, for as long as the
