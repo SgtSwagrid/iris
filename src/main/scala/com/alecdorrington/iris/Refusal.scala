@@ -4,7 +4,7 @@ import scala.concurrent.duration.*
 import sttp.model.{Header, StatusCode}
 
 /**
-  * What an unsuccessful status means, telling the refusals of a request that
+  * What an unsuccessful status means, telling the failures of a request that
   * waiting may lift from those it cannot, and how long a provider asks to wait,
   * read as it writes it: whole seconds, milliseconds, an RFC 3339 time, Go's
   * durations (`6m0s`) or protobuf's (`1.5s`).
@@ -16,10 +16,16 @@ private[iris] object Refusal:
     retryAfter.fold("")(after => s" (asked to wait $after)")
 
   /**
-    * The error an unsuccessful status is: [[ModelError.RateLimited]] for `429`,
-    * [[ModelError.Overloaded]] for `503` or Anthropic's `529`, with the wait
-    * the provider asked for, unless it says waiting would not help, by its body
-    * or `noRetry`, else [[ModelError.Unsuccessful]].
+    * The error an unsuccessful status is, with the wait the provider asked for:
+    * [[ModelError.RateLimited]] for `429`, [[ModelError.Overloaded]] for `503`
+    * or Anthropic's `529`, and [[ModelError.Transient]] for any other the
+    * providers' SDKs retry ([[transient]]); but [[ModelError.Unsuccessful]] for
+    * any whose body says waiting cannot lift it, and for any other status. The
+    * provider's `x-should-retry` header outweighs both, as its SDKs heed it:
+    * `true` makes any status one to send again, `false` none.
+    *
+    * @param shouldRetry
+    *   What the provider's `x-should-retry` header says, if it says.
     */
   def of
     (
@@ -27,16 +33,36 @@ private[iris] object Refusal:
       status: StatusCode,
       detail: String,
       retryAfter: => Option[FiniteDuration],
-      noRetry: Boolean,
+      shouldRetry: Option[Boolean],
     )
     : ModelError =
     val provider = api.provider.displayName
+    val retried  = shouldRetry.getOrElse(
+      !api.lasting(detail) && (limiting(status) || transient(status)),
+    )
     status.code match
-      case _ if noRetry || api.lasting(detail) =>
-        ModelError.Unsuccessful(provider, status, detail)
-      case 429       => ModelError.RateLimited(provider, retryAfter, detail)
-      case 503 | 529 => ModelError.Overloaded(provider, retryAfter, detail)
-      case _         => ModelError.Unsuccessful(provider, status, detail)
+      case _ if !retried => ModelError.Unsuccessful(provider, status, detail)
+      case 429           => ModelError.RateLimited(provider, retryAfter, detail)
+      case 503 | 529     => ModelError.Overloaded(provider, retryAfter, detail)
+      case _ => ModelError.Transient(provider, status, retryAfter, detail)
+
+  /** Whether a status refuses a request for now: `429`, `503` or `529`. */
+  private def limiting(status: StatusCode): Boolean = Set(429, 503, 529)
+    .contains(status.code)
+
+  /**
+    * Whether a status fails a request for now, as the providers' SDKs retry it:
+    * a timeout (`408`), a conflict (`409`), or a failure of the provider's own
+    * (`500`, `502`, `504`).
+    */
+  private def transient(status: StatusCode): Boolean =
+    Set(408, 409, 500, 502, 504).contains(status.code)
+
+  /** What an `x-should-retry` header says: `true` or `false`, if either. */
+  def shouldRetry(value: String): Option[Boolean] = value.trim match
+    case "true"  => Some(true)
+    case "false" => Some(false)
+    case _       => None
 
   /** The value of the header of a name, whatever case it was sent in. */
   def header(headers: Seq[Header], name: String): Option[String] = headers

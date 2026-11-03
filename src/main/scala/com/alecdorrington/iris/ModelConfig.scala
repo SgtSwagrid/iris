@@ -89,10 +89,10 @@ object ModelProvider:
   *   a model it does not list, a proxy charging its own, or a discount.
   *
   * @param retries
-  *   How a client waits out the provider's refusals of a request for now, as
-  *   over its rate limits, sending it again: every client but one over a
-  *   backend that cannot stream, whose effect cannot wait. [[Retries.none]]
-  *   gives each refusal at once.
+  *   How a client waits out the provider's refusals and failures of a request
+  *   for now, as over its rate limits, sending it again: every client but one
+  *   over a backend that cannot stream, whose effect cannot wait.
+  *   [[Retries.none]] gives each refusal at once.
   */
 final case class ModelConfig
   (

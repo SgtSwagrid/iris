@@ -81,9 +81,8 @@ private[iris] object JsonHttp:
 
   /**
     * The error an unsuccessful response is, as [[Refusal.of]] says, with the
-    * wait its provider asks for, read at a moment since 1970, unless its
-    * `x-should-retry` header says waiting would not help, as the providers' own
-    * SDKs heed it.
+    * wait its provider asks for, read at a moment since 1970, and as its
+    * `x-should-retry` header says, if it says.
     */
   def unsuccessful
     (
@@ -97,7 +96,7 @@ private[iris] object JsonHttp:
     response.code,
     detail,
     api.retryAfter(response.headers, detail, now),
-    response.header("x-should-retry").map(_.trim).contains("false"),
+    response.header("x-should-retry").flatMap(Refusal.shouldRetry),
   )
 
   /**

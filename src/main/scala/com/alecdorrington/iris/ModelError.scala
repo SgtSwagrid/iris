@@ -12,9 +12,10 @@ import sttp.model.StatusCode
 enum ModelError(message: String) extends Exception(message):
 
   /**
-    * An unsuccessful HTTP status from the provider other than a refusal for
-    * now, and so never sent again: a refused key, a request the provider cannot
-    * take, a spent quota or credit, or a failure of its own.
+    * An unsuccessful HTTP status from the provider that sending the request
+    * again would not change, and so never sent again: a refused key, a request
+    * the provider cannot take, a spent quota or credit, or any the provider
+    * marks not to retry (`x-should-retry: false`).
     *
     * @param provider
     *   The name of the provider, for display.
@@ -83,6 +84,38 @@ enum ModelError(message: String) extends Exception(message):
     extends ModelError(
       s"$provider is overloaded${ Refusal.asked(retryAfter) }: $detail",
     )
+
+  /**
+    * A request the provider failed for now, which may succeed if sent again: a
+    * failure of its own (HTTP `500`, `502` or `504`), a request it timed out
+    * (`408`) or found in conflict (`409`), or any other it marks worth retrying
+    * (`x-should-retry: true`), as the providers' own SDKs retry them. It went
+    * on failing for as long as the client's [[Retries]] allowed, or asked to be
+    * waited for longer; a client that cannot wait gives it at once.
+    *
+    * @param provider
+    *   The name of the provider, for display.
+    *
+    * @param status
+    *   The HTTP status.
+    *
+    * @param retryAfter
+    *   How long the provider asked to wait before sending it again, where it
+    *   said, from when it failed it last.
+    *
+    * @param detail
+    *   The response body, or the streamed event that failed it.
+    */
+  case Transient
+    (
+      provider: String,
+      status: StatusCode,
+      retryAfter: Option[FiniteDuration],
+      detail: String,
+    )
+    extends ModelError(s"$provider failed for now ($status)${ Refusal.asked(
+        retryAfter,
+      ) }: $detail")
 
   /**
     * A response body that could not be decoded.

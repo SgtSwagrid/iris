@@ -48,17 +48,20 @@ longer.
   each `Chat`. Keep it that way.
 - Every `ProviderApi` must normalise what it returns: the reply text, a `StopReason` (unknown labels kept as `Other`) and
   token usage in `ModelResponse`. An unsuccessful response is a refusal for now, `ModelError.RateLimited` (`429`)
-  or `Overloaded` (`503`, Anthropic's `529`), each with the wait the provider asked for, or else
-  `ModelError.Unsuccessful` (status and body), as `Refusal.of` says; an unreadable one is `ModelError.Malformed`;
+  or `Overloaded` (`503`, Anthropic's `529`), or a failure for now, `Transient` (`408`, `409`, `500`, `502`,
+  `504`, as the providers' SDKs retry them, a review's request), each with the wait the provider asked for, or
+  else `ModelError.Unsuccessful` (status and body), as `Refusal.of` says; an unreadable one is `ModelError.Malformed`;
   a request no answer comes to within `ModelConfig.timeout` is `ModelError.TimedOut`, such as one whose reply
   takes too long to write; other transport failures are sttp's own. Each `ProviderApi` reads its own wait
   (`retryAfter`: `retry-after` in whole seconds for all; OpenAI's `retry-after-ms` first; else the reset of a
   limit whose remaining header is `0`, Anthropic's an RFC 3339 time, read by hand through `ProviderApi.utc`
   as JavaScript has no `java.time`, OpenAI's a Go duration; Gemini's `RetryInfo.retryDelay` in the body), and
-  says which `429`s waiting cannot lift (`lasting`: Anthropic's `enforced_spend_limit_reached`, OpenAI's
-  `insufficient_quota` and spent credit or limits by type or code), which stay `Unsuccessful`, as does any
-  refusal with `x-should-retry: false` (undocumented, but the providers' SDKs heed it). Anthropic's streamed
-  `error` event is read as a refusal of its type's status (`overloaded_error` as `529`); OpenAI's and Gemini's
+  says which refusals waiting cannot lift (`lasting`: Anthropic's `enforced_spend_limit_reached`, OpenAI's
+  `insufficient_quota` and spent credit or limits by type or code, Gemini's `QuotaFailure` of a `quotaId`
+  holding `PerDay`, as its free tier's), which stay `Unsuccessful`. The `x-should-retry` header (undocumented,
+  but the providers' SDKs heed it) outweighs status and body alike: `true` makes any status one to send again
+  (`Transient`, or `RateLimited` or `Overloaded` by its status), `false` none. Anthropic's streamed
+  `error` event is read as a refusal of its type's status (`overloaded_error` as `529`, `api_error` as `500`); OpenAI's and Gemini's
   streams are not read for errors yet. Waits are clamped (`Refusal.nanos`) so that adding them never
   overflows.
 - The JDK's client counts a request's read timeout only until its reply begins, so `resource` wraps the backend it
@@ -105,8 +108,8 @@ longer.
 - A set but unrecognised `LLM_PROVIDER` or `LLM_MODEL` means unconfigured (`None`), never a fall back to key inference.
 - The library does no throttling or logging of its own; those are the host's to wrap around a client. It retries
   only two things: `ask` asks again after a reply it cannot read, and a client made by `resource`, `fromEnv` or
-  the streaming `apply` (`ModelClient.streaming`) sends again a request refused for now (`RateLimited`,
-  `Overloaded`), as `ModelConfig.retries` (`Retries`: attempts, backoff, patience) says, through `Retrying`, the
+  the streaming `apply` (`ModelClient.streaming`) sends again a request refused or failed for now
+  (`RateLimited`, `Overloaded`, `Transient`), as `ModelConfig.retries` (`Retries`: attempts, backoff, patience) says, through `Retrying`, the
   innermost `Forwarding`, so a host's `Budget` or meter sees one request. Alec agreed (2026-11-03, for Code
   Switch's many tabs) that backing off from providers' limits belongs in Iris, as the providers' own SDKs do it.
   It waits as asked plus up to `backoff` at random, else `backoff` doubling, less up to half at random, and
@@ -115,7 +118,8 @@ longer.
   closes the failed attempt's scope, aborting its exchange). `ModelClient.apply` over a plain `Backend` stays on
   `MonadThrow`, so cannot wait, and sends each request once. Its tests (`RetrySuite`) run in virtual time through
   cats-effect's `TestControl` (`cats-effect-testkit`, a test dependency), whose `realTime` starts at 1970, and
-  pass `Retrying` a fixed draw. 500s are not retried (out of the first PR's scope).
+  pass `Retrying` a fixed draw. A transport failure or `TimedOut` is not sent again, as a request given up on
+  may have been answered, and charged for.
   `ModelClient.metered` (the user approved it for Code Switch's spending total) runs a host's function on each
   request's `Usage` and `cost` as its reply comes: once per attempt of an ask, before it is read, once for
   `warmCache`, and once for each `stream`, at its `Delta.End` (one stopped before its end reports nothing). It is the
