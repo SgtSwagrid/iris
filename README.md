@@ -15,10 +15,10 @@
 > Iris is still a prototype. Anything could be broken or change between minor versions.
 
 One small interface for sending prompts and conversations to a large language model,
-with adapters for [Anthropic](https://docs.anthropic.com/en/api/messages),
+with adapters for [Anthropic](https://platform.claude.com/docs/en/api/messages),
 [OpenAI](https://platform.openai.com/docs/api-reference/chat) and
-[Google Gemini](https://ai.google.dev/api/generate-content), so that switching provider is a matter of configuration.
-It is built on [Cats Effect](https://typelevel.org/cats-effect/), [sttp](https://sttp.softwaremill.com/) and [Circe](https://circe.github.io/circe/).
+[Google Gemini](https://aistudio.google.com/api-reference/generate-content), so that switching provider is a matter of configuration.
+It is built on [Cats Effect](https://typelevel.org/cats-effect/), [sttp](https://sttp.softwaremill.com/) and [Circe](https://circe.io/circe/).
 
 Named for [Iris](https://en.wikipedia.org/wiki/Iris_(mythology)), messenger of the gods,
 who carried their words to mortals along the rainbow.
