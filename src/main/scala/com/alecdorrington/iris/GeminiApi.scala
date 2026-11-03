@@ -2,6 +2,7 @@ package com.alecdorrington.iris
 
 import fs2.{RaiseThrowable, Stream}
 import io.circe.{Decoder, Json}
+import io.circe.parser.parse
 import io.circe.syntax.*
 import scala.concurrent.duration.FiniteDuration
 import sttp.model.{Header, Uri}
@@ -30,6 +31,36 @@ private[iris] object GeminiApi extends ProviderApi:
 
   override val wholeResponse: Decoder[Either[ModelError, ModelResponse]] =
     Decoder[Response].map(_.toReply)
+
+  /**
+    * As `retry-after` says, else as the `retryDelay` of the error's
+    * `google.rpc.RetryInfo` detail, a protobuf duration (`34s`), as
+    * https://github.com/googleapis/googleapis/blob/master/google/rpc/error_details.proto
+    * describes it.
+    */
+  override def retryAfter
+    (
+      headers: Seq[Header],
+      detail: String,
+      now: FiniteDuration,
+    )
+    : Option[FiniteDuration] = super
+    .retryAfter(headers, detail, now)
+    .orElse(
+      parse(detail)
+        .toOption
+        .flatMap(
+          _.hcursor.downField("error").get[List[Json]]("details").toOption,
+        )
+        .toList
+        .flatten
+        .map(_.hcursor)
+        .find(_.get[String]("@type").toOption.contains(retryInfo))
+        .flatMap(_.get[String]("retryDelay").toOption)
+        .flatMap(Refusal.protobuf),
+    )
+
+  private val retryInfo = "type.googleapis.com/google.rpc.RetryInfo"
 
   /**
     * As https://ai.google.dev/gemini-api/docs/pricing gives them. Google names

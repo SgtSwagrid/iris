@@ -47,10 +47,20 @@ longer.
 - Clients are stateless: no session identity reaches the provider, and a conversation's whole history travels with
   each `Chat`. Keep it that way.
 - Every `ProviderApi` must normalise what it returns: the reply text, a `StopReason` (unknown labels kept as `Other`) and
-  token usage in `ModelResponse`. An unsuccessful response is `ModelError.Unsuccessful` (status and body) and an unreadable one
-  `ModelError.Malformed`, so hosts can tell rate limits from broken responses; a request no answer comes to
-  within `ModelConfig.timeout` is `ModelError.TimedOut`, such as one whose reply takes too long to write;
-  other transport failures are sttp's own.
+  token usage in `ModelResponse`. An unsuccessful response is a refusal for now, `ModelError.RateLimited` (`429`)
+  or `Overloaded` (`503`, Anthropic's `529`), each with the wait the provider asked for, or else
+  `ModelError.Unsuccessful` (status and body), as `Refusal.of` says; an unreadable one is `ModelError.Malformed`;
+  a request no answer comes to within `ModelConfig.timeout` is `ModelError.TimedOut`, such as one whose reply
+  takes too long to write; other transport failures are sttp's own. Each `ProviderApi` reads its own wait
+  (`retryAfter`: `retry-after` in whole seconds for all; OpenAI's `retry-after-ms` first; else the reset of a
+  limit whose remaining header is `0`, Anthropic's an RFC 3339 time, read by hand through `ProviderApi.utc`
+  as JavaScript has no `java.time`, OpenAI's a Go duration; Gemini's `RetryInfo.retryDelay` in the body), and
+  says which `429`s waiting cannot lift (`lasting`: Anthropic's `enforced_spend_limit_reached`, OpenAI's
+  `insufficient_quota` and spent credit or limits by type or code), which stay `Unsuccessful`, as does any
+  refusal with `x-should-retry: false` (undocumented, but the providers' SDKs heed it). Anthropic's streamed
+  `error` event is read as a refusal of its type's status (`overloaded_error` as `529`); OpenAI's and Gemini's
+  streams are not read for errors yet. Waits are clamped (`Refusal.nanos`) so that adding them never
+  overflows.
 - The JDK's client counts a request's read timeout only until its reply begins, so `resource` wraps the backend it
   makes in `Deadlined`, which gives each exchange that long whole, body included, and `SseClient.bounded` gives each
   next part of a stream that long. Neither may wait for the read it gives up on, which cannot be cancelled: sttp
@@ -71,7 +81,11 @@ longer.
   the stream ends, however it ends (after the body's end it does nothing, so a connection read to its end is reused),
   and which `Async.cancelable` aborts where the request is cancelled before its reply begins. `Platform.backends`
   makes them: in JavaScript, a `FetchFs2Backend` for each reply whose `customizeRequest` gives the request a signal of
-  Iris's own, which sttp's own still aborts; on the JVM, one JDK client for every backend (built as sttp builds its
+  Iris's own, which sttp's own still aborts, and which keeps every request it makes for as long as it lives, as Node's
+  `fetch` (undici) has a request follow its signal only through a weak reference to the request's own controller, so
+  a request nobody held, collected while its reply was read, could no longer be aborted (`AbortSuite` failed now and
+  then on a busy machine, main too; `CollectionSuite` collects mid-reply, as Node runs JS tests with `--expose-gc`,
+  `Test / jsEnv` in `build.sbt`); on the JVM, one JDK client for every backend (built as sttp builds its
   own, and shut down on release with `shutdownNow`, which sttp's own never did: `close` would wait for requests given
   up on, which may never end; only from Java 21, so it is called only there), each reply's through an `Abortable` wrapper, whose `AbortableBody` cancels the body's subscription, closing
   its connection, and ends the body with an error, freeing the read. A host's backend (`ModelClient(config,
@@ -89,8 +103,19 @@ longer.
   so a request can never reach a provider that does not serve its model. `ModelProvider.defaultModel` must stay a `def`: as a
   constructor parameter, the two enums would each read the other while it is still being made, and see `null`.
 - A set but unrecognised `LLM_PROVIDER` or `LLM_MODEL` means unconfigured (`None`), never a fall back to key inference.
-- The library does no throttling, retrying or logging of its own; those are the host's to wrap around a client.
-  The one exception is `ask`, which asks again after a reply it cannot read, never after a failed request.
+- The library does no throttling or logging of its own; those are the host's to wrap around a client. It retries
+  only two things: `ask` asks again after a reply it cannot read, and a client made by `resource`, `fromEnv` or
+  the streaming `apply` (`ModelClient.streaming`) sends again a request refused for now (`RateLimited`,
+  `Overloaded`), as `ModelConfig.retries` (`Retries`: attempts, backoff, patience) says, through `Retrying`, the
+  innermost `Forwarding`, so a host's `Budget` or meter sees one request. Alec agreed (2026-11-03, for Code
+  Switch's many tabs) that backing off from providers' limits belongs in Iris, as the providers' own SDKs do it.
+  It waits as asked plus up to `backoff` at random, else `backoff` doubling, less up to half at random, and
+  never past `patience` in all, then gives the last refusal, with the wait asked for, for the host's user. A
+  stream is sent again only while it has emitted nothing (a `Ref` set by its first chunk; `Stream.handleErrorWith`
+  closes the failed attempt's scope, aborting its exchange). `ModelClient.apply` over a plain `Backend` stays on
+  `MonadThrow`, so cannot wait, and sends each request once. Its tests (`RetrySuite`) run in virtual time through
+  cats-effect's `TestControl` (`cats-effect-testkit`, a test dependency), whose `realTime` starts at 1970, and
+  pass `Retrying` a fixed draw. 500s are not retried (out of the first PR's scope).
   `ModelClient.metered` (the user approved it for Code Switch's spending total) runs a host's function on each
   request's `Usage` and `cost` as its reply comes: once per attempt of an ask, before it is read, once for
   `warmCache`, and once for each `stream`, at its `Delta.End` (one stopped before its end reports nothing). It is the

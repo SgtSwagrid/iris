@@ -553,7 +553,9 @@ Each provider keeps a cache per model, and caches nothing shorter than its own m
 ### Errors
 
 A provider's refusal fails the effect with a [`ModelError`](src/main/scala/com/alecdorrington/iris/ModelError.scala):
-`Unsuccessful` for an unsuccessful response, carrying its status and body, `Malformed` for a
+`RateLimited` (`429`) or `Overloaded` (`503`, or Anthropic's `529`) for a request it refused for now and
+went on refusing (below), carrying the wait it asked for, if any, `Unsuccessful` for any other
+unsuccessful response, carrying its status and body, `Malformed` for a
 response that could not be understood, and `TimedOut` for a request no answer came to within the
 configured timeout (`ModelConfig.timeout`), such as one whose reply took too long to write or stalled
 partway. A client made by `resource` or `fromEnv` gives each reply that long whole, from sending the
@@ -564,11 +566,47 @@ its answer was given, could not be read to its end. Response
 bodies may contain provider detail you would rather not show to your own users, so consider logging
 them rather than passing them on.
 
+### Rate limits
+
+Providers limit how many requests, and how many tokens, an account may send a minute, and refuse
+the excess for now, as they do when too busy to answer. A client made by `resource` or `fromEnv`,
+or over a backend of your own that can stream, sends a request it refused so again once the wait
+the provider asked for is over: its `retry-after` (OpenAI's `retry-after-ms` first), else the reset
+of the limit spent (`anthropic-ratelimit-*-reset`, `x-ratelimit-reset-*`), or Gemini's
+`RetryInfo`, and up to a second more at random, so that requests refused together do
+not all come back at once. Where the provider asks for no wait, the client waits a second, then
+twice as long after each refusal, less up to half at random. It gives up after four attempts, or
+before a wait that would take more than a minute in all, failing with `RateLimited` or
+`Overloaded`, which carries the wait the provider last asked for, if any, for your users:
+
+```scala
+case ModelError.RateLimited(provider, wait, _) =>
+  s"$provider is limiting requests. Try again ${ wait.fold("soon")(wait => s"in ${ wait.toSeconds } s") }."
+case ModelError.Overloaded(provider, _, _) => s"$provider is busy. Try again soon."
+```
+
+`ModelConfig.retries` says how many attempts to make, how long to wait where the provider names no
+wait, and how long to wait in all; `Retries.none` gives each refusal at once:
+
+```scala
+config.copy(retries = Retries(attempts = 6, backoff = 2.seconds, patience = 5.minutes))
+```
+
+Nothing is sent again that waiting cannot change: a refused key, a request the provider cannot
+take, a failure of its own, a reply cut off at the token limit, or a refusal saying the account's
+quota, credit or monthly spend is used up (Anthropic's `enforced_spend_limit_reached`, OpenAI's
+`insufficient_quota` and the like). Waiting is cancelled with its request. A stream is sent again
+only while none of its reply has come, so a stream refused once its reply has begun, as Anthropic
+may refuse one with an `overloaded_error` event, fails with `Overloaded` after what it streamed.
+Each attempt of an `ask` is waited out alike, and a request sent again counts as one attempt.
+A client over a backend that cannot stream, whose effect need not be able to wait, sends each
+request once.
+
 ### Wrapping a client
 
-Iris does no throttling, retrying or logging of its own, so that each host can wrap a client in
-exactly the policy it wants. `ask` asks again only for an answer it could not read, and never after a
-request that failed. `mapK` runs every request through one transformation, as a limit on
+Iris does no throttling or logging of its own, and retries only what a provider refused for now
+(above), so that each host can wrap a client in exactly the policy it wants. `ask` asks again
+for an answer it could not read, but never after a request that failed otherwise. `mapK` runs every request through one transformation, as a limit on
 requests in flight does, and each step of a stream alike, so a policy holding a stream as a whole goes
 in a wrapper's `stream` instead:
 
@@ -599,6 +637,17 @@ def logged(client: ModelClient[IO]): ModelClient[IO] = new ModelClient.Forwardin
 
 Both pass `warmCache` on to the client they wrap, as a wrapper must: the default `warmCache` sends
 through `send`, which would lose however the provider itself warms.
+
+### Upgrading from 0.5
+
+- A client made by `resource`, `fromEnv` or over a backend that can stream waits out a provider's
+  refusals for now, as [Rate limits](#rate-limits) says. Give its configuration `retries = Retries.none`
+  to have each refusal at once, as before.
+- A refusal for now is `ModelError.RateLimited` (`429`) or `ModelError.Overloaded` (`503`, `529`),
+  which carry the wait asked for, where it was `Unsuccessful`. `Unsuccessful` no longer has a
+  `retryAfter`, so a match on its fields takes three: `Unsuccessful(provider, status, detail)`.
+- A streamed reply that Anthropic refuses partway, with an `error` event, fails with that error,
+  where it was read as a reply that ended without saying so.
 
 ### Upgrading from 0.4
 

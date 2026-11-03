@@ -2,9 +2,10 @@ package com.alecdorrington.iris
 
 import fs2.{RaiseThrowable, Stream}
 import io.circe.{Decoder, Json}
+import io.circe.parser.parse
 import io.circe.syntax.*
 import scala.concurrent.duration.FiniteDuration
-import sttp.model.{Header, Uri}
+import sttp.model.{Header, StatusCode, Uri}
 
 /**
   * The [[ProviderApi]] of the [Anthropic Messages
@@ -51,6 +52,80 @@ private[iris] object AnthropicApi extends ProviderApi:
 
   /** Anthropic writes the cache without replying when allowed no tokens. */
   override val leastMaxTokens: Int = 0
+
+  /**
+    * As `retry-after` says, else as late as the reset of each limit spent (its
+    * `anthropic-ratelimit-*-remaining` header `0`), which its `*-reset` header
+    * gives as an RFC 3339 time, as
+    * https://platform.claude.com/docs/en/api/rate-limits says.
+    */
+  override def retryAfter
+    (
+      headers: Seq[Header],
+      detail: String,
+      now: FiniteDuration,
+    )
+    : Option[FiniteDuration] = super
+    .retryAfter(headers, detail, now)
+    .orElse(Refusal.spent(headers, resetOf, Refusal.until(now)))
+
+  /** The header saying when the limit of a remaining header resets. */
+  private def resetOf(remaining: String): Option[String] = Option.when(
+    remaining.startsWith("anthropic-") && remaining.endsWith("-remaining"),
+  )(remaining.stripSuffix("-remaining") + "-reset")
+
+  /**
+    * A tier's monthly spend cap reached, a `429` that waiting does not lift
+    * until the month ends, which Anthropic tells by its `error_code`.
+    */
+  override def lasting(detail: String): Boolean = parse(detail)
+    .toOption
+    .flatMap(
+      _.hcursor
+        .downField("error")
+        .downField("details")
+        .get[String]("error_code")
+        .toOption,
+    )
+    .contains("enforced_spend_limit_reached")
+
+  /**
+    * The refusal an `error` event streams once the reply has begun, as an
+    * `overloaded_error` for what would otherwise be a `529`, read as a refusal
+    * of the status its type stands for.
+    */
+  private def streamedError(event: Json): ModelError = Refusal.of(
+    this,
+    StatusCode(
+      event
+        .hcursor
+        .downField("error")
+        .get[String]("type")
+        .toOption
+        .flatMap(errorStatuses.get)
+        .getOrElse(500),
+    ),
+    event.noSpaces,
+    None,
+    false,
+  )
+
+  /**
+    * The status of each error type, as
+    * https://platform.claude.com/docs/en/api/errors lists them.
+    */
+  private val errorStatuses: Map[String, Int] = Map(
+    "invalid_request_error" -> 400,
+    "authentication_error"  -> 401,
+    "billing_error"         -> 402,
+    "permission_error"      -> 403,
+    "not_found_error"       -> 404,
+    "request_too_large"     -> 413,
+    "rate_limit_error"      -> 429,
+    "api_error"             -> 500,
+    "timeout_error"         -> 504,
+    "overloaded_error"      -> 529,
+  )
 
   /** As https://platform.claude.com/docs/en/about-claude/pricing gives them. */
   override def rates(model: Model, at: FiniteDuration): Option[Rates] =
@@ -406,6 +481,7 @@ private[iris] object AnthropicApi extends ProviderApi:
             copy(calls = calls - at) ->
               calls.get(at).map(_.whole(provider)).toList,
           )
+        case Some("error")         => this -> List(Left(streamedError(event)))
         case Some("message_delta") => this -> List(Right(Delta.End(
             stopReason(
               cursor.downField("delta").get[String]("stop_reason").toOption,

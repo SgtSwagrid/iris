@@ -24,8 +24,9 @@ object Dependencies:
   )
 
   lazy val cats = libraryDependencies ++= Seq(
-    "org.typelevel" %% "cats-core"   % V.cats,
-    "org.typelevel" %% "cats-effect" % V.catsEffect,
+    "org.typelevel" %% "cats-core"           % V.cats,
+    "org.typelevel" %% "cats-effect"         % V.catsEffect,
+    "org.typelevel" %% "cats-effect-testkit" % V.catsEffect % Test,
   )
 
   lazy val cadmus =

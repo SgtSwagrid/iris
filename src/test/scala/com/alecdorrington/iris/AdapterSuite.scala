@@ -3,7 +3,6 @@ package com.alecdorrington.iris
 import com.alecdorrington.iris.Fixtures.{answer, config, json}
 import io.circe.Json
 import munit.FunSuite
-import scala.concurrent.duration.DurationInt
 
 class AdapterSuite extends FunSuite:
 
@@ -616,21 +615,6 @@ class AdapterSuite extends FunSuite:
         cacheWriteTokens = 7000,
         visibleTokens = 5,
       )),
-    )
-
-  test("a provider's request to wait is read where it is given in seconds"):
-    List(
-      Some("30")                            -> Some(30.seconds),
-      Some(" 0 ")                           -> Some(0.seconds),
-      None                                  -> None,
-      Some("Wed, 21 Oct 2026 07:28:00 GMT") -> None,
-      Some("-1")                            -> None,
-    ).foreach((header, delay) =>
-      assertEquals(
-        JsonHttp.retryAfter(header),
-        delay,
-        header,
-      ),
     )
 
   private val prefilled = Chat().userSays("Hello").modelSays("Once upon a")

@@ -52,6 +52,44 @@ private[iris] trait ProviderApi:
     )
     : Either[ModelError, Unit] = JsonHttp.refuseUnanswerable(provider, chat)
 
+  /**
+    * How long the provider asks to wait before a request it refused is sent
+    * again, where it says: by the standard `Retry-After` header, in whole
+    * seconds, unless the provider says more.
+    *
+    * @param headers
+    *   The refusal's headers.
+    *
+    * @param detail
+    *   The refusal's body.
+    *
+    * @param now
+    *   The moment the refusal came, since 1970, from which the times it names
+    *   are read.
+    */
+  def retryAfter
+    (
+      headers: Seq[Header],
+      @unused
+      detail: String,
+      @unused
+      now: FiniteDuration,
+    )
+    : Option[FiniteDuration] = Refusal
+    .header(headers, "retry-after")
+    .flatMap(Refusal.seconds)
+
+  /**
+    * Whether a refusal its status calls one for now (`429`, `503` or `529`) is
+    * one waiting cannot lift, by its body, as a spent quota or credit is.
+    */
+  def lasting
+    (
+      @unused
+      detail: String,
+    )
+    : Boolean = false
+
   /** The fewest tokens a reply may be allowed, which warming asks for. */
   def leastMaxTokens: Int = 1
 

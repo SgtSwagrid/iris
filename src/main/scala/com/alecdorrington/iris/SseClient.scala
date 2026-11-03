@@ -126,9 +126,13 @@ private[iris] final class SseClient[F[_] : Async]
         .body
         .fold(
           error =>
-            Stream.raiseError[F](
-              JsonHttp.unsuccessful(api.provider, response, error),
-            ),
+            Stream
+              .eval(Async[F].realTime)
+              .flatMap(now =>
+                Stream.raiseError[F](
+                  JsonHttp.unsuccessful(api, response, error, now),
+                ),
+              ),
           bounded,
         )
 

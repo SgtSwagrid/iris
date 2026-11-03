@@ -4,7 +4,7 @@ import cats.syntax.all.*
 import io.circe.{Decoder, Encoder, Json}
 import io.circe.parser.decode
 import io.circe.syntax.*
-import scala.concurrent.duration.{DurationInt, FiniteDuration}
+import scala.concurrent.duration.FiniteDuration
 import sttp.client4.*
 import sttp.model.Uri
 
@@ -79,32 +79,43 @@ private[iris] object JsonHttp:
     schema        -> tool.parameters,
   )
 
+  /**
+    * The error an unsuccessful response is, as [[Refusal.of]] says, with the
+    * wait its provider asks for, read at a moment since 1970, unless its
+    * `x-should-retry` header says waiting would not help, as the providers' own
+    * SDKs heed it.
+    */
   def unsuccessful
     (
-      provider: ModelProvider,
+      api: ProviderApi,
       response: Response[?],
       detail: String,
+      now: FiniteDuration,
     )
-    : ModelError = ModelError.Unsuccessful(
-    provider.displayName,
+    : ModelError = Refusal.of(
+    api,
     response.code,
-    retryAfter(response.header("Retry-After")),
     detail,
+    api.retryAfter(response.headers, detail, now),
+    response.header("x-should-retry").map(_.trim).contains("false"),
   )
 
-  /** The `Retry-After` delay, where given in seconds; a date is not read. */
-  private[iris] def retryAfter(header: Option[String]): Option[FiniteDuration] =
-    header.map(_.trim).flatMap(_.toIntOption).filter(_ >= 0).map(_.seconds)
-
-  /** Decodes a response's body, failing on an unsuccessful or unreadable one. */
+  /**
+    * Decodes a response's body, failing on an unsuccessful or unreadable one,
+    * read at a moment since 1970.
+    */
   def parse[R : Decoder]
     (
-      provider: ModelProvider,
+      api: ProviderApi,
       response: Response[Either[String, String]],
+      now: FiniteDuration,
     )
     : Either[ModelError, R] = response
     .body
-    .leftMap(unsuccessful(provider, response, _))
+    .leftMap(unsuccessful(api, response, _, now))
     .flatMap: body =>
       decode[R](body).leftMap: error =>
-        ModelError.Malformed(provider.displayName, error.getMessage)
+        ModelError.Malformed(
+          api.provider.displayName,
+          error.getMessage,
+        )

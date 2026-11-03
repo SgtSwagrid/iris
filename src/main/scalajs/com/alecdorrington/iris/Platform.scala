@@ -2,6 +2,7 @@ package com.alecdorrington.iris
 
 import cats.effect.{Async, Resource}
 import org.scalajs.dom.{AbortController, Event, Request, RequestInit}
+import scala.scalajs.js
 import sttp.client4.impl.fs2.FetchFs2Backend
 
 /** What differs between the platforms: in JavaScript, the Fetch API. */
@@ -22,12 +23,21 @@ private[iris] object Platform:
   /**
     * A backend for one streamed reply, whose request takes a signal of Iris's
     * own: sttp aborts its own only until the reply begins (on its timeout, or a
-    * cancel), and never once a body is dropped.
+    * cancel), and never once a body is dropped. It keeps every request it makes
+    * for as long as it lives, as Node's `fetch` (undici) has a request follow
+    * the signal it was made with only through a weak reference to the request's
+    * own controller: once nothing holds a request, a collection while its reply
+    * is read leaves aborting the signal aborting nothing, and the connection
+    * open, as `AbortSuite` saw now and then on a busy machine.
     */
   private def exchange[F[_] : Async]: Exchange[F] =
     val controller = new AbortController()
+    val kept       = js.Array[Request]()
     Exchange(
-      FetchFs2Backend[F](customizeRequest = signalled(controller)),
+      FetchFs2Backend[F](customizeRequest = request =>
+        val sent = signalled(controller)(request)
+        kept.push(request, sent)
+        sent),
       Async[F].delay(controller.abort()),
     )
 
