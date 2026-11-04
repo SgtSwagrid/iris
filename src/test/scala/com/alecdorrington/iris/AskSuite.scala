@@ -24,7 +24,7 @@ class AskSuite extends FunSuite:
 
   private val adaJson = """{"name":"Ada","age":36}"""
 
-  private val instructions = WholeAsker.schemaPrompt(Schema[Person])
+  private val instructions = Reading.schemaPrompt(Schema[Person])
 
   /** Anthropic's answer of the text, stopping as said, costing as said. */
   private def said
@@ -86,7 +86,7 @@ class AskSuite extends FunSuite:
   private def asked[A : Schema]
     (
       client: PromptService[SyncIO],
-      attempts: Int = WholeAsker.attempts,
+      attempts: Int = QueryConfig().maxIterations,
     )
     : Either[Throwable, Option[A]] = client
     .askWhole[A](prompt, attempts = attempts)
@@ -343,7 +343,7 @@ class AskSuite extends FunSuite:
     )
 
   test("text is asked for as JSON, as every type is"):
-    val schema = WholeAsker.schemaPrompt(Schema[String])
+    val schema = Reading.schemaPrompt(Schema[String])
     assert(
       schema.endsWith("""{"type":"string"}"""),
       schema,
@@ -623,6 +623,28 @@ class AskSuite extends FunSuite:
         (Some(ada), List(host, host ++ ending(2), host ++ ending(4))),
         own,
       )
+
+  test("an agent stops at its most rounds, giving the last with no value"):
+    val asked =
+      for
+        ran <- Ref.of[SyncIO, Int](0)
+        weather = RunnableTool[SyncIO](
+          Tool(
+            "weather",
+            "Says the weather.",
+            Json.obj(),
+          ),
+          _ => ran.update(_ + 1).as("Sunny."),
+        )
+        answer <- client(_ => calling).askWhole[Person](
+          prompt,
+          tools = List(weather),
+          rounds = Some(3),
+        )
+        runs <- ran.get
+      yield (answer._1, answer._2.size, runs)
+    // The third round's call is left for the host, as one it cannot run.
+    assertEquals(asked.unsafeRunSync(), (None, 3, 2))
 
   /** A client of a provider answering every request with the body. */
   private def answering(model: Model, body: String): PromptService[SyncIO] =

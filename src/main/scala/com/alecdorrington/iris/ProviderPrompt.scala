@@ -21,20 +21,28 @@ private[iris] final class ProviderPrompt[F[_] : Sync]
   extends PromptService[F]:
 
   override def stream(request: into[PromptRequest]): Stream[F, PromptEvent] =
+    val sent     = closed(request)
     val asked    = config.settings(request)
     val settings =
       asked.copy(maxTokens = asked.maxTokens max provider.leastMaxTokens)
-    Stream.fromEither[F](
-      provider.refuseUnsendable(model, request.conversation, settings),
-    ) >>
+    Stream.fromEither[F](provider.refuseUnsendable(model, sent, settings)) >>
       api
         .stream(ApiRequest(
           provider.path(model, settings.streamed),
-          provider.body(model, request.conversation, settings),
+          provider.body(model, sent, settings),
           settings.streamed,
         ))
         .through(if settings.streamed then provider.deltas[F] else wholes)
         .through(gathered)
+
+  /** The conversation as sent, closed with a breakpoint where asked. */
+  private def closed(request: PromptRequest): Conversation =
+    val conversation = request.conversation
+    if !request.cacheAll || conversation.messages.isEmpty then conversation
+    else
+      conversation.copy(messages =
+        conversation.messages.init :+ conversation.messages.last.closed,
+      )
 
   /** The deltas of whole responses, each as it would have arrived. */
   private def wholes(bodies: Stream[F, Json]): Stream[F, Delta] = bodies

@@ -40,6 +40,11 @@ import scala.compiletime.summonInline
   *   Whether the response is to travel as it is written, so that
   *   [[PromptService.stream]] gives each part as it arrives, rather than all at
   *   once at the end. [[PromptService.send]] asks for it whole.
+  *
+  * @param cacheAll
+  *   Whether a cache breakpoint closes the conversation as it is sent, never
+  *   kept in it, so that a request going on from it reads it all from the
+  *   cache, as an agent marks each round.
   */
 final case class PromptRequest
   (
@@ -51,6 +56,7 @@ final case class PromptRequest
     effort: Option[Effort] = None,
     tools: List[Tool] = List.empty,
     streamed: Boolean = true,
+    cacheAll: Boolean = false,
   )
 
 object PromptRequest:
@@ -77,7 +83,8 @@ object PromptRequest:
   inline given fromContent[A]: Conversion[A, PromptRequest] =
     said(summonInline[Content[A]])
 
-  private def said[A](content: Content[A]): Conversion[A, PromptRequest] =
+  /** A request of one message of the user's, saying a value as it says it. */
+  private[iris] def said[A](content: Content[A]): Conversion[A, PromptRequest] =
     value =>
       PromptRequest(Conversation(List(Message.User(List(content.text(value))))))
 

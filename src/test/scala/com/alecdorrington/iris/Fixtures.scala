@@ -31,7 +31,8 @@ object Fixtures:
 
   /** The usage and cost of every response together, as a query totals them. */
   def totals(responses: List[PromptResponse]): (Usage, Option[Usd]) =
-    val summary = QueryResponse[Id, Nothing](None, responses, ())
+    val summary =
+      QueryResponse[Id, Nothing](None, responses, (), Conversation())
     (summary.usage, summary.cost)
 
   /**
@@ -61,18 +62,28 @@ object Fixtures:
       (
         conversation: Conversation,
         offered: List[Tool] = Nil,
-        attempts: Int = WholeAsker.attempts,
+        attempts: Int = QueryConfig().maxIterations,
         tools: List[RunnableTool[F]] = Nil,
+        rounds: Option[Int] = None,
       )
-      : F[(Option[A], List[PromptResponse])] = WholeAsker
-      .ask[F, A](
-        sent =>
-          prompt.send(PromptRequest(
-            sent,
-            tools = Toolbox(tools).offered(offered),
-          )),
-        conversation,
-        attempts,
+      : F[(Option[A], List[PromptResponse])] = Rounds
+      .run[F, A](
+        request =>
+          Reading.counted(attempts).liftTo[F] *> Reading.whole(
+            prompt.send(_),
+            Schema[A],
+            attempts,
+            request
+              .prompt
+              .copy(conversation =
+                Reading.opening(
+                  request.prompt.conversation,
+                  Reading.schemaPrompt(Schema[A]),
+                ),
+              ),
+          ),
         Toolbox(tools),
+        QueryRequest(PromptRequest(conversation, tools = offered)),
+        rounds,
       )
-      .flatMap(answer => answer.iterations.map(answer.value -> _))
+      .flatMap(answer => answer.responses.map(answer.value -> _))

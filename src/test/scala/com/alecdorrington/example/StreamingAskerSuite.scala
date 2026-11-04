@@ -127,13 +127,34 @@ class StreamingAskerSuite extends FunSuite:
     val scripted: PromptService[IO] = request =>
       Stream
         .eval(
-          sent.update(_ :+ request.conversation) *>
+          sent.update(_ :+ sending(request)) *>
             left.modify(all => (all.tail, all.head)),
         )
         .flatten
         .through(gathered)
     (scripted, sent.get),
   )
+
+  /**
+    * The conversation a provider is sent, closed with a breakpoint where the
+    * request caches it all, as a prompt service closes it.
+    */
+  private def sending(request: PromptRequest): Conversation =
+    val messages = request.conversation.messages
+    if !request.cacheAll then request.conversation
+    else
+      request
+        .conversation
+        .copy(messages =
+          messages.init :+
+            (messages.last match
+              case Message.User(parts) =>
+                Message.User(parts :+ MessagePart.CacheBreakpoint)
+              case Message.Model(parts) =>
+                Message.Model(parts :+ MessagePart.CacheBreakpoint)
+              case Message.Tool(parts) =>
+                Message.Tool(parts :+ MessagePart.CacheBreakpoint)),
+        )
 
   /** Runs a test's effect, giving up on one that waits for good. */
   private def run[A](effect: IO[A]): Future[A] = effect
@@ -1271,6 +1292,46 @@ class StreamingAskerSuite extends FunSuite:
             error.detail,
           )
         case other => fail(s"Not failed: $other"),
+    )
+
+  test(
+    "a stream given through emit fails still calling tools in its last round",
+  ):
+    run(
+      for
+        asked    <- Ref.of[IO, List[String]](Nil)
+        (llm, _) <- streamer(
+          Stream(emit("a"), look("b")) ++ toolStop,
+          Stream(emit("b"), look("c")) ++ toolStop,
+          stop,
+        )
+        words <- llm
+          .query
+          .agent(AgentConfig(
+            List(dictionary(asked)),
+            maxIterations = Some(2),
+          ))
+          .send[Stream[IO, Word]](Conversation.userSays("Translate."))
+          .flatMap(_.value.get.attempt.compile.toList)
+        looked <- asked.get
+      yield
+        assertEquals(looked, List("b"))
+        words match
+          case List(
+              Right(first),
+              Right(second),
+              Left(error: QueryError.Unreadable),
+            ) =>
+            assertEquals(
+              List(first, second),
+              List(Word("a"), Word("b")),
+            )
+            assertEquals(error.responses.size, 2)
+            assert(
+              error.detail.contains("after 2 rounds"),
+              error.detail,
+            )
+          case other => fail(s"Not failed: $other"),
     )
 
   test("a reply cut off after its elements were read fails the stream"):
