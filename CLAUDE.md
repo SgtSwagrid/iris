@@ -29,8 +29,12 @@ the one below with a request, a response, a configuration and errors of its own:
 - `query` (`QueryService`, `QueryRequest`, `QueryResponse`, `QueryConfig`, `QueryError`): a value of any type with a
   `Schema`, made by `prompt.query`.
 - `agent` (`AgentService`, `AgentRequest`, `AgentResponse`, `AgentConfig`): a value with tools run, made by
-  `query.agent(tools*)`. For now `Querying` runs both, a query being an agent with no tools: `Agency` asks through
-  its query's `prompt` and `config` with its own `Toolbox`, and groups the responses into rounds after.
+  `query.agent(tools*)`. A query (`Querying`) reads a type holding no stream once its response is whole
+  (`Reading.whole`) and any other as it arrives (`Unfolding`), its schema prompt added once per conversation
+  (`Reading.opening`), and gives the conversation as the model saw it last (`QueryResponse.conversation`). An agent
+  (`Agency`) runs rounds over `query.send` (`Rounds`): the tools in its `Toolbox` run, the query sent again going on
+  from that conversation with their results, each round's query attempting afresh; a stream with tools comes
+  through `emit` (`Emitting`, below).
 Every service has one abstract method: `send` for `query` and `agent`, and `stream` for `api` and `prompt`, whose
 responses hold no type to carry a stream, where `send` is `stream` gathered, forcing `streamed = false`. A request
 holds the one below's (`agentRequest.query.prompt.conversation`), and every `send` takes `into[ThatLayersRequest]`
@@ -46,7 +50,7 @@ but its streams is read, and its `iterations`, an `F[List[PromptResponse]]` of e
 over a backend that cannot stream answers a streamed request whole, reading its SSE body at once, so it still answers
 a type holding a stream, all at once. A query needs `Async`, as it reads a streamed response in a fiber of its own
 (unscoped, by the user's choice: read to its end once the value is given, unless `QueryResponse.cancel`, which the
-user asked for, cancels that fiber); tests in `SyncIO` ask through `Fixtures.askWhole`, which is `WholeAsker.ask`
+user asked for, cancels that fiber); tests in `SyncIO` ask through `Fixtures.askWhole`, which is `Rounds.run` over `Reading.whole`
 over a prompt service's `send`. Each `ModelProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`,
 `GeminiApi`, sharing `JsonHttp`), which tells `HttpApi` and `ProviderPrompt` all they need to know of it: its paths,
 request bodies, credentials, the conversations it refuses, how its responses read, and how it counts tokens.
@@ -156,32 +160,37 @@ is made, and a request with none fails with `ApiError.Misconfigured`.
   checked: a `Budget` is what bounds the tool loop below, which nothing else caps. Services themselves stay
   stateless. Iris runs a tool only where the host hands an agent one with its implementation (`RunnableTool`), which
   the user chose, as handing it over says it may run: the agent then runs any the model asks for alone (`Toolbox.runs`), tells
-  it their outputs and asks it to go on (`WholeAsker.onwards`, `Verdict.Run`), not counting those rounds against
-  `attempts`. Nothing caps the rounds: the user chose to bound a runaway loop by what it spends, through a
+  it their outputs and asks it to go on (`Rounds.onwards`), each round's query with `maxIterations` attempts of its
+  own. Nothing caps the rounds: the user chose to bound a runaway loop by what it spends, through a
   metered prompt service, over a count of rounds, which says little of cost. `PromptRequest.tools` still offers tools for the host to run, reported in `PromptResponse.toolCalls`; a
   reply asking for any of those ends the ask with no value. Where tools are run and the answer is itself a
   stream (`Emit.element`), its elements come through a tool of Iris's own, `emit`, one call each (wrapped under
   `element`, any `$defs` hoisted), so the model can call tools between them: measured on Haiku 4.5, it batches
-  emits per reply and interleaves lookups as told. In the reply giving its last element the model calls a
+  emits per reply and interleaves lookups as told. Emit is the agent's tools, as the design has it: each round is a
+  query for `List[E]` instructed by `Emit.prompt` (`QueryRequest.instructions`), and its calls are read in order once
+  its response ends (`Emitting.turned`), each element fed then, so a stream's elements arrive a round at a time, not
+  as each call arrives (the user's design; no host streamed with tools). In the reply giving its last element the model calls a
   second tool, `done` (the user chose a tool of its own over a flag on `emit`), and that reply ends the stream
-  with no request after it (`Round.ends`), unless it also asks for another tool or has an element refused,
-  when `done` is told it was not taken (`Emit.unfinished`) and the stream goes on; the last of
-  the last of its `iterations` is then that reply as given, its stop reason `ToolCall`. A reply calling `done`
-  with no element emitted has its text read as a whole ask's is (`WholeAsker.read`), so that elements written as
+  with no request after it (`Turn.ends`), unless it also asks for another tool or has an element refused,
+  when `done` is told it was not taken (`Emit.unfinished`) and the stream goes on. A reply calling `done`
+  with no element emitted has its text read as a whole query's is (`Reading.read`), so that elements written as
   JSON instead are kept. Measured on Haiku 4.5 and 5.5 (2026-10-31, 16 runs), `done` came with the last emit
   every time, never early, sparing the request each stream otherwise ends with to hear the model stop. `emit` takes one element per call, by the user's choice: a call reaches Iris only
   whole, so a list would hold its elements back, and models already batch emits as parallel calls. An
   unreadable element is told back, the reply's later emits refused unread (`Emit.skipped`) so that elements
   keep their order, and the model emits again from it, up to `attempts` times in a row per element. What
-  each call is told is kept aligned with the calls (`Round.told`), never by id, which Gemini repeats. A
-  model writing JSON instead is read whole at the end as a whole ask is (`WholeAsker.verdict` on
-  `Schema.listOf`), asked again where it cannot be. Tools for the host to run are refused beside `emit`
+  each call is told is kept aligned with the calls (`Turn.told`), never by id, which Gemini repeats. A
+  model writing JSON instead is read as its round's query reads any value, asked again where it cannot be;
+  once elements have come, a response asking for nothing ends the stream, read once (`maxIterations` 1), its
+  failure to read caught where it stopped as the model meant. A response cut off or stopped still feeds the
+  elements of its whole calls before the stream fails, and a failure carries every round's responses. Tools for the host to run are refused beside `emit`
   (`Emit.unclaimed`), as an answer already given could not end at their calls, as are tools named `emit` or
   `done`. Gemini refuses a tool whose object schema has no properties, so `GeminiApi` declares one taking
   nothing (`properties` empty, and `additionalProperties` absent or `false`), as `done`, with no `parameters`;
   a map's schema, or one with no `properties` at all, is sent as it is.
   Each request after a round (and any correction after one) closes with a breakpoint of Iris's own
-  (`WholeAsker.cached`, added as it is sent, so the conversation an ask goes on with holds none and the mark moves on), so
+  (`PromptRequest.cacheAll`, added by `ProviderPrompt` as it is sent, so the conversation an agent goes on with holds
+  none and the mark moves on), so
   it reads the earlier rounds from the cache and writes only its own, where N rounds once cost O(N²) uncached input.
   Only the newest end is marked, as Anthropic finds the previous write itself, up to 20 blocks back, a run of
   tool calls or of results counting as one. It goes after the results, as the schema prompt lies before every round
@@ -258,10 +267,10 @@ is made, and a request with none fails with `ApiError.Misconfigured`.
 - `QueryService.send[A : Schema]` reads every type one way, `String` included, and always gives a
   `QueryResponse[F, A]`: `value: Option[A]`, `None` where the model asked for a tool, and `iterations`, every
   response the query took, the last the one the value was read from. Tool calls count only under `ToolCall`,
-  `Completed` or `StopSequence` (`WholeAsker.calledTools`), never under a refusal or the token limit. Never read one type differently from another, as
+  `Completed` or `StopSequence` (`Reading.calledTools`), never under a refusal or the token limit. Never read one type differently from another, as
   0.2's `Answer` type class once did, nor give some types a different result: the user wants every ask
   uniform. The provider's own response is a `PromptResponse`, which a prompt's `send` and `warmCache` give. A query is built on
-  its prompt service alone, provider-agnostic, passing `WholeAsker.ask` its `send` as a function: the schema is asked for in words closing the
+  its prompt service alone, provider-agnostic, passing `Reading.whole` its `send` as a function: the schema is asked for in words closing the
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
   native structured output. It stays after every breakpoint of the host's, so is never cached with the host's
   prefix (only within an ask, by a round's, above), by the user's choice on the
@@ -368,7 +377,7 @@ is made, and a request with none fails with `ApiError.Misconfigured`.
   `ProviderApi.deltas` reads the whole stream of events, remembering across them what it must (`zipWithScan1`):
   Gemini's whether a tool was asked for, as it may say so before it says it stopped, Anthropic's the counts it
   started with, and OpenAI's how it stopped until its usage comes.
-- An ask of a type holding an `fs2.Stream` (`StreamingAsker`) gives its `QueryResponse` as soon as all of `A` but its streams is
+- A query of a type holding an `fs2.Stream` (`Unfolding`) gives its `QueryResponse` as soon as all of `A` but its streams is
   read; each stream (not within a list or map, which are read whole)
   is then fed as its elements close. The user chose live streams in the value over snapshots of a partial value,
   knowing the costs: `Schema[Stream[F, A]]`'s encoder throws (a stream cannot be said without being run), nothing is
@@ -384,13 +393,13 @@ is made, and a request with none fails with `ApiError.Misconfigured`.
   a union whose case is whole waits to be whole itself. So how a reply's parts arrive can decide whether a value is
   given early (a stream opening and closing within one part is never seen open); tests that mean a stream to be
   seen open feed it a character at a time. A given answer's reply is checked at its end as `verdict` checks one
-  (`StreamingAsker.fault`): tool calls, a stop, the token limit or unended JSON fail it as `UnreadableResponse`. Once a value is handed over (`Frame.taken`), a member it
+  (`Unfolding.fault`): tool calls, a stop, the token limit or unended JSON fail it as `UnreadableResponse`. Once a value is handed over (`Frame.taken`), a member it
   knows arriving later, or a reserved stream never begun, fails the reply rather than be lost. `Unfinished` follows only brackets, strings,
   escapes, commas and colons
   (circe parses each value once whole, and the schema's own decoder reads it, so every value is decoded by the
   same code as a whole reply), standing in for each open stream with a placeholder `Json` found by identity
   through a `DynamicVariable` while decoding. A type with no stream is not read early, but at the end through
-  `WholeAsker.verdict`, as a whole query reads it. `StreamingAsker` drives it in a background fiber, keeping each stream's elements
+  `Reading.verdict`, as a whole query reads it. `Unfolding` drives it in a background fiber, keeping each stream's elements
   and end in a `SignallingRef` (never a `Channel`, which serves one reader), so a stream reads alike however often,
   as `Stream.emits` from a whole reply does.
 - What differs between the platforms is in `Platform` alone, one per platform (`src/main/scalajvm`,

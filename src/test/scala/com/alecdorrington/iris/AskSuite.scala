@@ -24,7 +24,7 @@ class AskSuite extends FunSuite:
 
   private val adaJson = """{"name":"Ada","age":36}"""
 
-  private val instructions = WholeAsker.schemaPrompt(Schema[Person])
+  private val instructions = Reading.schemaPrompt(Schema[Person])
 
   /** Anthropic's answer of the text, stopping as said, costing as said. */
   private def said
@@ -86,7 +86,7 @@ class AskSuite extends FunSuite:
   private def asked[A : Schema]
     (
       client: PromptService[SyncIO],
-      attempts: Int = WholeAsker.attempts,
+      attempts: Int = QueryConfig().maxIterations,
     )
     : Either[Throwable, Option[A]] = client
     .askWhole[A](prompt, attempts = attempts)
@@ -343,7 +343,7 @@ class AskSuite extends FunSuite:
     )
 
   test("text is asked for as JSON, as every type is"):
-    val schema = WholeAsker.schemaPrompt(Schema[String])
+    val schema = Reading.schemaPrompt(Schema[String])
     assert(
       schema.endsWith("""{"type":"string"}"""),
       schema,

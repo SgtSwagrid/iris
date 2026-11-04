@@ -417,9 +417,9 @@ runs any it asks for, tells it their outputs, and asks it to go on, as often as 
 value. What a tool does, and whether it may, is yours to decide in `run`. A tool's arguments are a type with
 a `Schema`, which describes them to the model and reads them back; arguments that cannot be read, or are no
 JSON, are answered with why, for the model to call it again. A `run` that fails fails the request with its
-error, the model not told, so turn any failure the model should hear of into output instead. A
-response asking for tools does not count against the query's `maxIterations`, and nothing counts how many
-rounds there are: an agent runs tools for as long as the model asks for them, each round a request, so bound what it may spend
+error, the model not told, so turn any failure the model should hear of into output instead. Each round
+is a query of its own, going on from the conversation the last one ended with, so it has its own
+`maxIterations` attempts, and nothing counts how many rounds there are: an agent runs tools for as long as the model asks for them, each round a request, so bound what it may spend
 with a [budget](#budgets), rather than how many rounds it takes.
 
 ```scala
@@ -434,11 +434,12 @@ prompt.query.agent(dictionary).send[Review](conversation)
 ```
 
 An `AgentResponse` gives its `value`, its `iterations`, the query of each round, and `responses`, every
-prompt they took, oldest first.
+prompt they took, oldest first. A query's own `conversation` is the conversation as the model saw it last,
+its instructions included, which a query of the same type goes on from without being told them again.
 
 Where the value is itself a stream, as `Stream[IO, Word]`, and tools are given, the model gives its elements
 through a tool of its own, `emit`, one call each, and may call the others between them: each element reaches
-the stream as soon as its call has, in order, and the stream goes on after each tool has run. In the
+the stream once the response holding its call ends, in order, and the stream goes on after each tool has run. In the
 response giving its last element, the model calls a second tool of Iris's, `done`, and that response ends the
 stream with no request after it; a model that does not stops in a response of its own, a request later.
 `done` is not taken in a response that also asks for another tool, or gives an element that cannot be read,
@@ -652,6 +653,9 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
 - A service over a backend that cannot stream answers a streamed request whole, reading its events at
   once; counting tokens with OpenAI is no longer offered at all, where it failed with `Unsupported`.
 - `warmCache` asks for no tokens of response, which each provider raises to the least it allows.
+- Each round of an agent's tools is a query of its own, with its own `maxIterations` attempts, where an
+  ask's attempts were shared by its rounds. A stream given through `emit` gets its elements as each
+  response ends, where each came as its call did.
 
 ### Upgrading from 0.4
 

@@ -346,8 +346,8 @@ private[iris] final class Unfinished(schema: Schema[?], live: Int => Any):
     opening += Event.Opened(streams)
     streams -> hole
 
-  private def read(schema: Schema[?], json: Json): Either[String, Any] =
-    WholeAsker.decoded(schema, json)
+  private def read(schema: Schema[?], json: Json): Either[String, Any] = Reading
+    .decoded(schema, json)
 
   private def parsed(start: Int, end: Int): Either[String, Json] =
     parse(written.substring(start, end)).leftMap(_ => Unfinished.unparsed)
@@ -396,7 +396,7 @@ private[iris] object Unfinished:
     */
   def standIn(schema: Schema[?], stream: Any): Either[String, Any] =
     val hole = Json.obj("stream" -> Json.fromInt(0))
-    holding(List(hole -> stream))(WholeAsker.decoded(schema, hole))
+    holding(List(hole -> stream))(Reading.decoded(schema, hole))
 
   /** Reads with the streams that placeholders stand for. */
   private def holding[A](filled: List[(Json, Any)])(read: => A): A = holes

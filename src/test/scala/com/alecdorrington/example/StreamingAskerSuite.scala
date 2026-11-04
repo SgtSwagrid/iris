@@ -127,13 +127,34 @@ class StreamingAskerSuite extends FunSuite:
     val scripted: PromptService[IO] = request =>
       Stream
         .eval(
-          sent.update(_ :+ request.conversation) *>
+          sent.update(_ :+ sending(request)) *>
             left.modify(all => (all.tail, all.head)),
         )
         .flatten
         .through(gathered)
     (scripted, sent.get),
   )
+
+  /**
+    * The conversation a provider is sent, closed with a breakpoint where the
+    * request caches it all, as a prompt service closes it.
+    */
+  private def sending(request: PromptRequest): Conversation =
+    val messages = request.conversation.messages
+    if !request.cacheAll then request.conversation
+    else
+      request
+        .conversation
+        .copy(messages =
+          messages.init :+
+            (messages.last match
+              case Message.User(parts) =>
+                Message.User(parts :+ MessagePart.CacheBreakpoint)
+              case Message.Model(parts) =>
+                Message.Model(parts :+ MessagePart.CacheBreakpoint)
+              case Message.Tool(parts) =>
+                Message.Tool(parts :+ MessagePart.CacheBreakpoint)),
+        )
 
   /** Runs a test's effect, giving up on one that waits for good. */
   private def run[A](effect: IO[A]): Future[A] = effect
