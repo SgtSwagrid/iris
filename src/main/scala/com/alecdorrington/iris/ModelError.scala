@@ -143,7 +143,7 @@ enum ModelError(message: String) extends Exception(message):
     extends ModelError(s"Cannot address $provider: $detail")
 
   /**
-    * A chat the provider would refuse. No request is made.
+    * A conversation the provider would refuse. No request is made.
     *
     * @param provider
     *   The name of the provider, for display.
@@ -152,7 +152,7 @@ enum ModelError(message: String) extends Exception(message):
     *   The description of what the provider would refuse.
     */
   case Unsendable(provider: String, detail: String)
-    extends ModelError(s"$provider will not answer this chat: $detail")
+    extends ModelError(s"$provider will not answer this conversation: $detail")
 
   /**
     * An operation the provider's API does not offer, which fails every time. No

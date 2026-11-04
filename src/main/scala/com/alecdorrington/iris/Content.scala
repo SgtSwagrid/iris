@@ -5,23 +5,22 @@ import scala.annotation.implicitNotFound
 import scala.util.NotGiven
 
 /**
-  * What may be said to the model: how a value is written as a part of a
-  * message, wherever a [[Chat]] or [[Message]] takes one. Values of different
-  * kinds mix freely there, each said as its own type's content:
+  * What may be said to the model: how a value is written as text in a message,
+  * wherever a [[Conversation]] takes one. Values of different kinds mix freely
+  * there, each said as its own type's content, beside parts given as
+  * themselves:
   *
   * {{{
-  * chat.userSays("Review this draft.", draft, MessagePart.CacheBreakpoint, "Be brief.")
+  * conversation.userSays("Review this draft.", draft, MessagePart.CacheBreakpoint, "Be brief.")
   * }}}
   *
-  * A `String` is said as text, and a [[MessagePart]] as itself. A value of a
-  * type with a [[Schema]] is said as JSON as that writes it, so that it is
-  * written as the schema the model may be told describes it, and a value of
-  * another type with a circe `Encoder` as that writes it. A type given a
-  * content of its own is said as that says it, as a picture of one's own may
-  * be:
+  * A `String` is said as itself. A value of a type with a [[Schema]] is said as
+  * JSON as that writes it, so that it is written as the schema the model may be
+  * told describes it, and a value of another type with a circe `Encoder` as
+  * that writes it. A type given a content of its own is said as that says it:
   *
   * {{{
-  * given Content[Scan] = scan => MessagePart.Media(MediaType.Png, scan.base64)
+  * given Content[Money] = money => MessagePart.Text(s"${money.amount} USD")
   * }}}
   *
   * No other value can be said, and one holding an fs2 `Stream` has a schema but
@@ -32,20 +31,20 @@ import scala.util.NotGiven
   *   The type of the value.
   */
 @implicitNotFound(
-  "${A} cannot be said to the model: say a String, a MessagePart, or a value with a Schema, a circe Encoder or a Content of its own. Text is never said as part of a union, such as the String | Double of a list of text and numbers: say each value where its own type is known.",
+  "${A} cannot be said to the model here: say a String, a part of a kind this message holds, or a value with a Schema, a circe Encoder or a Content of its own. Text is never said as part of a union, such as the String | Double of a list of text and numbers: say each value where its own type is known.",
 )
 trait Content[A]:
 
   /**
-    * Writes a value as a part of a message.
+    * Writes a value as text in a message.
     *
     * @param value
     *   The value.
     *
     * @return
-    *   A part saying the value.
+    *   The text saying the value.
     */
-  def part(value: A): MessagePart
+  def text(value: A): MessagePart.Text
 
 object Content:
 
@@ -53,20 +52,10 @@ object Content:
   given text: Content[String] = MessagePart.Text(_)
 
   /**
-    * A part, said as itself.
-    *
-    * @tparam P
-    *   The kind of part.
-    *
-    * @return
-    *   The content of a part.
-    */
-  given part[P <: MessagePart]: Content[P] = identity(_)
-
-  /**
     * A value with a schema, said as JSON, for every type but parts, which are
-    * [[part]], and those text may be, which are [[text]] where `String` and
-    * otherwise none, so that text inferred with other values into a union, as
+    * said as themselves where their message holds them and nowhere else, and
+    * those text may be, which are [[text]] where `String` and otherwise none,
+    * so that text inferred with other values into a union, as
     * `String | Double`, is never said as JSON, but refused.
     *
     * @tparam A
@@ -85,7 +74,7 @@ object Content:
 
   /**
     * A value of a type with an encoder but no [[Schema]], said as JSON, for
-    * every type but parts, which are [[part]].
+    * every type but parts.
     *
     * @tparam A
     *   The type of the value.

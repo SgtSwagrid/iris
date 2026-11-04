@@ -14,15 +14,15 @@ Keep it concise and actionable.
 This is Iris, a Scala 3 library giving one provider-agnostic interface to the APIs of large language models, with
 adapters for Anthropic, OpenAI and Google Gemini, built on Cats Effect, sttp and Circe. It is still a prototype.
 
-It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js. `ModelClient` is the public interface: callers `ask` a `Chat`
+It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js. `ModelClient` is the public interface: callers `ask` a `Conversation`
 for a value of any type with a `Schema`, `String` included, as a uniform `ValidatedResponse[F, A]`: its `value` as soon
 as all but its streams is read, and its `responses`, an `F[List[ModelResponse]]` of every response the ask took
 (retries, tool and `emit` rounds), once the last ends (the user chose one `ask` with the responses lazy over a second,
 streamed ask). The `ValidatedResponse` is their summary, totalling them (`usage`, `cost`); no made-up `ModelResponse`
 sums them (the user's choice). A `ModelResponse` is one response as the provider gave it: what `send` and `warmCache`
-give, and what `ModelError.UnreadableResponse` keeps. A `ModelRequest` is a chat and its `ModelRequest.Options`, which
+give, and what `ModelError.UnreadableResponse` keeps. A `ModelRequest` is a conversation and its `ModelRequest.Options`, which
 `send`, `stream`, `countTokens` and `warmCache` take, one parameter, so that a wrapper's overrides never break when a
-request gains a field; `ask` takes the chat and options apart. `send` is the protected request every
+request gains a field; `ask` takes the conversation and options apart. `send` is the protected request every
 ask of a type holding no stream makes (`Schema.gradual` false), and `stream` (text and tool calls as they arrive,
 through an `SseClient` where the backend can stream) the one every other makes; `JsonClient` implements both, and
 wrappers override them (`ModelClient.Forwarding`, `mapK`). `stream` defaults to `send`'s response whole, so a client
@@ -32,20 +32,20 @@ streamed response in a fiber of its own (unscoped, by the user's choice: read to
 unless `ValidatedResponse.cancel`, which the user asked for, cancels that fiber);
 tests in `SyncIO` ask through `Fixtures.askWhole`, which is `WholeAsker.ask` over `send`. Each `ModelProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
 `JsonHttp`), which tells the one `JsonClient` and the one `SseClient` all they need to know of it: its endpoints,
-request bodies, credentials, the chats it refuses, how its replies read, and how it counts tokens. Anything
+request bodies, credentials, the conversations it refuses, how its replies read, and how it counts tokens. Anything
 provider-specific goes there, never in the clients. `ModelConfig` holds a model (and so its provider), key, token limit and an optional base URL, and
 `ModelConfig.fromEnv` reads them from `LLM_*` and the providers' `*_API_KEY` variables (`ModelConfig.from` through a
 lookup of the host's), with the token limit when `LLM_MAX_TOKENS` is unset a parameter, for hosts whose replies run
 longer.
 
 - Names are plain and of one sense (the user's 0.5.0 naming pass): never a name as readily taken for a verb as for
-  what it names, as `Reply` and `Answer` were (`ModelRequest`, with its prefix, reads only as a thing), nor "assistant" (the roles are `Role.User` and `Role.Model`, each provider naming them as
+  what it names, as `Reply` and `Answer` were (`ModelRequest`, with its prefix, reads only as a thing), nor "assistant" (a message's owners are the user, the model and the tools, each provider naming them as
   its API does). Public types take the `Model` prefix (`ModelClient`, `ModelRequest`, `ModelResponse`, `ModelError`),
   never `Llm`, and never a name sttp has too (`Response`, `RequestOptions`), as hosts import `sttp.client4.*` beside
-  Iris: hence `ModelRequest.Options`. A chat's messages are said by `userSays` and `modelSays`. `Role.Model` hides the
-  `Model` type under `import Role.*`, so roles are written `Role.Model` and `Role.User`.
+  Iris: hence `ModelRequest.Options`. A conversation's messages are said by `userSays`, `modelSays` and `toolSays`. `Message.Model` hides the
+  `Model` type under `import Message.*`, so owners are written `Message.Model` and `Message.User`.
 - Clients are stateless: no session identity reaches the provider, and a conversation's whole history travels with
-  each `Chat`. Keep it that way.
+  each `Conversation`. Keep it that way.
 - Every `ProviderApi` must normalise what it returns: the reply text, a `StopReason` (unknown labels kept as `Other`) and
   token usage in `ModelResponse`. An unsuccessful response is a refusal for now, `ModelError.RateLimited` (`429`)
   or `Overloaded` (`503`, Anthropic's `529`), or a failure for now, `Transient` (`408`, `409`, `500`, `502`,
@@ -161,7 +161,7 @@ longer.
   nothing (`properties` empty, and `additionalProperties` absent or `false`), as `done`, with no `parameters`;
   a map's schema, or one with no `properties` at all, is sent as it is.
   Each request after a round (and any correction after one) closes with a breakpoint of Iris's own
-  (`WholeAsker.cached`, added as it is sent, so the chat an ask goes on with holds none and the mark moves on), so
+  (`WholeAsker.cached`, added as it is sent, so the conversation an ask goes on with holds none and the mark moves on), so
   it reads the earlier rounds from the cache and writes only its own, where N rounds once cost O(N²) uncached input.
   Only the newest end is marked, as Anthropic finds the previous write itself, up to 20 blocks back, a run of
   tool calls or of results counting as one. It goes after the results, as the schema prompt lies before every round
@@ -179,12 +179,12 @@ longer.
   one back only with a call.
 - A `MessagePart.CacheBreakpoint` ends a prefix worth caching and says nothing to the model. Anthropic is told of one by
   `cache_control` on the block before it (in its message, else the previous message's last, else the system message),
-  marking at most four blocks per chat, counted as sent (breakpoints in a row mark one), else refused, but for
-  breakpoints closing a chat (its last parts, which only an ask's rounds and `warmCache` write), marking its last
+  marking at most four blocks per conversation, counted as sent (breakpoints in a row mark one), else refused, but for
+  breakpoints closing a conversation (its last parts, which only an ask's rounds and `warmCache` write), marking its last
   block only where the others leave room (`AnthropicApi.placed`). So an ask's own never crowd out the host's nor get
-  a chat refused: where the host's mark four, rounds go unmarked, the host's choice winning. OpenAI and Gemini cache
+  a conversation refused: where the host's mark four, rounds go unmarked, the host's choice winning. OpenAI and Gemini cache
   prefixes unasked and are sent nothing, so their APIs drop them (`Message.withoutBreakpoints`). `ModelClient.warmCache` sends
-  `Chat.cachePrefix` with the least reply the provider allows (`ProviderApi.leastMaxTokens`: Anthropic `max_tokens: 0`,
+  `Conversation.cachePrefix` with the least reply the provider allows (`ProviderApi.leastMaxTokens`: Anthropic `max_tokens: 0`,
   others 1); a wrapper around a
   client must forward `warmCache`, not inherit the default, which `ModelClient.Forwarding` (override only what changes) and
   `mapK` (one transformation for every request) both do. `cachePrefix` always ends with the user saying something:
@@ -255,32 +255,46 @@ longer.
   and asked again, `attempts` requests in all, then `ModelError.UnreadableResponse`, carrying every response. A reply asking
   for a tool, by its stop reason or its calls (OpenAI says `stop` for a forced call), is given at once with no
   answer. One stopped at `MaxTokens` or an `Other` reason, or blank, fails at once, before any reading, as what
-  parses of a cut reply may be cut (`4` of `42`): an identical chat is never resent. A stop sequence is read, and
+  parses of a cut reply may be cut (`4` of `42`): an identical conversation is never resent. A stop sequence is read, and
   asked again if it can't be, the model told so, as only Anthropic reports one and others would read it as
-  complete. A chat `Chat.unanswerable` refuses (no messages, a silent one, or none of the user's) is sent
-  uninstructed, so `JsonHttp.refuseUnanswerable` refuses it with the provider's name before any request; a chat
+  complete. A conversation `Conversation.unanswerable` refuses (no messages, a silent one, or none of the user's) is sent
+  uninstructed, so `JsonHttp.refuseUnanswerable` refuses it with the provider's name before any request; a conversation
   ending with the model's message gets the schema prompt in a user message after it, so the model answers afresh
   (the user chose this over continuing a prefill). `ValidatedResponse.usage` totals every response's. `UnreadableResponse`'s message carries neither the responses nor `detail`, which is what
   the model was told, circe's own failures, which quote the reply's values, so hosts may log it. JSON is read
   from the whole reply, then its last fence, and nowhere else (the user chose this over finding JSON amid prose),
   so a fence inside a JSON string is never taken.
-- What goes in is a `Content[A]` everywhere: `String` as text, a `MessagePart` as itself, a value with a `Schema` as its
-  JSON, else an `Encoder`'s JSON, and a type's own given `Content` ahead of all (being monomorphic). `NotGiven`s
+- A `Message` is one case per owner (`Message.User`, `Message.Model`, `Message.Tool`; the user chose this over a
+  `Role` beside any parts), each holding only that owner's parts: `UserPart` (text, media), `ModelPart` (text, tool
+  calls) and `ToolPart` (tool results), sealed traits the part case classes extend, `CacheBreakpoint` all three. What
+  every owner's message does alike goes through `Message.edited`, a polymorphic function over its parts given the
+  breakpoint, the one part every owner writes. The tools' results are their own message (`toolSays`), never the
+  user's: Anthropic and Gemini have no role for them, so a tool message and any user message after it are sent as
+  one user turn, results first (`JsonHttp.turns`, which runs messages of one role in a row together before
+  `Message.separated`), and OpenAI sends one `tool` message per result. Gemini's count keeps its system message a
+  user content of its own, as before. A tool call's `arguments` are the text the model wrote, never parsed by a
+  provider reading a reply (a streamed call's fragments are joined, `{}` where none came): what reads them, as
+  `RunnableTool.of` and emit do, tells the model when they are no JSON. Anthropic and Gemini take them as an
+  object, so refuse a call whose arguments are none before any request (`JsonHttp.refuseUnreadableArguments`).
+- What goes in is a `Content[A]` everywhere: `String` as text, a value with a `Schema` as its
+  JSON, else an `Encoder`'s JSON, and a type's own given `Content` ahead of all (being monomorphic), each written as
+  text (`MessagePart.Text`); a part goes in as itself where its message holds its kind, and nowhere else. `NotGiven`s
   keep the givens apart, `Schema` winning (a derived one too), so a value is said as the schema the model is told
-  describes it. `Chat.userSays`, a chat's `userSays`/`modelSays` and `Message.apply` take `into[MessagePart]*` (Scala 3.9's
-  `scala.Conversion.into`), so values of any kinds mix in one call, each converted by `MessagePart.fromContent`, an
+  describes it. `Conversation.userSays` and a conversation's `userSays`/`modelSays` take `into[UserPart]*` and `into[ModelPart]*` (Scala 3.9's
+  `scala.Conversion.into`), so values of any kinds mix in one call, each converted by `UserPart.fromContent` or `ModelPart.fromContent`, an
   `inline given` summoning its `Content` with `summonInline`: an `into` parameter needs no
   `scala.language.implicitConversions` where it is called, which a plain `Conversion` would (a feature warning,
   fatal in CI), and the inline summon reports `Content`'s own `@implicitNotFound` at the argument, where a
   `using` clause would leave a bare type mismatch. A spliced list must already be of parts (`values.map(MessagePart.of)*`).
-  `fromContent` lies in `MessagePart`'s implicit scope, as it must for a caller's `into` call to find it, so it converts
-  wherever a `MessagePart` is expected: `val p: MessagePart = "text"` compiles with a feature warning (an error under `WERROR`)
+  `fromContent` lies in `UserPart`'s and `ModelPart`'s implicit scope, as it must for a caller's `into` call to find it, so it converts
+  wherever one is expected: `val p: UserPart = "text"` compiles with a feature warning (an error under `WERROR`)
   where it was a type mismatch. Only `into` parameters take a value unwarned.
   No type text may be (`NotGiven[String <:< A]`) is said as JSON: `List("a", 1.5).map(MessagePart.of)` infers
-  `String | Double`, which has a schema, and must still be refused. A single-turn prompt is `Chat.userSays(content*)`, the
-  companion's beside the instance's, never an overload of `Chat.apply`, which would capture `Chat(messages)` (the
-  case class's own `apply` needs the default `instructions`, so loses). `Message(role, List[MessagePart])` is the case class's own, chosen over the varargs
-  `apply` as more specific.
+  `String | Double`, which has a schema, and must still be refused. A single-turn prompt is `Conversation.userSays(content*)`, the
+  companion's beside the instance's, never an overload of `Conversation.apply`, which would capture `Conversation(messages)` (the
+  case class's own `apply` needs the default `instructions`, so loses). `Content`'s givens for a schema and an encoder
+  refuse parts (`NotGiven[A <:< MessagePart]`), so that a part of another owner's kind, as a tool call given to
+  `userSays`, is refused rather than said as JSON.
 - Media types are `MediaType` cases, as models are `Model` cases: `MediaType.Listed` (the pictures and PDFs
   more than one provider takes) and `MediaType.Other`, made only by `MediaType.of` (lower case, parameters
   dropped), so that a listed name is always its listed case. Anthropic and OpenAI each list the media they take

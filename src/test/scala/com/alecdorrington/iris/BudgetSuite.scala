@@ -75,31 +75,35 @@ class BudgetSuite extends FunSuite:
     // The first reply is prose, not JSON, so it is asked for again.
     assertEquals(
       metering(config, said("Hi"), hi)(client =>
-        client.askWhole[String](Chat.userSays("Hi")) >>
-          client.warmCache(ModelRequest(Chat.userSays(
+        client.askWhole[String](Conversation.userSays("Hi")) >>
+          client.warmCache(ModelRequest(Conversation.userSays(
             MessagePart.of("A document."),
             MessagePart.CacheBreakpoint,
-          ))) >> client.countTokens(ModelRequest(Chat.userSays("Hi"))),
+          ))) >> client.countTokens(ModelRequest(Conversation.userSays("Hi"))),
       ),
       List.fill(3)(usage -> Some(usd("0.2"))),
     )
     // An ask that never reads is metered for every attempt, before it fails.
     assertEquals(
-      metering(config, said("Hi"))(_.askWhole[String](Chat.userSays("Hi")))
-        .size,
+      metering(config, said("Hi"))(
+        _.askWhole[String](Conversation.userSays("Hi")),
+      ).size,
       3,
     )
 
   test("a meter sees a stream once, at its end, and none stopped before it"):
     assertEquals(
       metering(config, hi)(
-        _.stream(ModelRequest(Chat.userSays("Hi"))).compile.drain,
+        _.stream(ModelRequest(Conversation.userSays("Hi"))).compile.drain,
       ),
       List(usage -> Some(usd("0.2"))),
     )
     assertEquals(
       metering(config, hi)(
-        _.stream(ModelRequest(Chat.userSays("Hi"))).take(1).compile.drain,
+        _.stream(ModelRequest(Conversation.userSays("Hi")))
+          .take(1)
+          .compile
+          .drain,
       ),
       List.empty,
     )
@@ -107,9 +111,9 @@ class BudgetSuite extends FunSuite:
   test("a meter is told no cost for a model iris cannot price"):
     val next = Model.of(ModelProvider.Anthropic, "claude-next").get
     assertEquals(
-      metering(config.copy(model = next), hi)(_.askWhole[String](Chat.userSays(
-        "Hi",
-      ))),
+      metering(config.copy(model = next), hi)(_.askWhole[String](
+        Conversation.userSays("Hi"),
+      )),
       List(usage -> None),
     )
 
@@ -119,7 +123,7 @@ class BudgetSuite extends FunSuite:
     )
     assertEquals(
       failing
-        .askWhole[String](Chat.userSays("Hi"))
+        .askWhole[String](Conversation.userSays("Hi"))
         .attempt
         .unsafeRunSync()
         .left
@@ -133,8 +137,8 @@ class BudgetSuite extends FunSuite:
       budget <- Budget[SyncIO](usd("0.5"))
       limited = budget.limits(client(config, sent, hi))
       // Each ask costs $0.20; the third takes the spending past the limit.
-      _        <- limited.askWhole[String](Chat.userSays("Hi")).replicateA(3)
-      refused  <- limited.askWhole[String](Chat.userSays("Hi")).attempt
+      _ <- limited.askWhole[String](Conversation.userSays("Hi")).replicateA(3)
+      refused  <- limited.askWhole[String](Conversation.userSays("Hi")).attempt
       spent    <- budget.spent
       left     <- budget.remaining
       requests <- sent.get
@@ -154,14 +158,14 @@ class BudgetSuite extends FunSuite:
       budget <- Budget[SyncIO](usd("10"))
       // The first reply is prose, not JSON, so it is asked for again.
       limited = budget.limits(client(config, sent, said("Hi"), hi))
-      _     <- limited.askWhole[String](Chat.userSays("Hi"))
+      _     <- limited.askWhole[String](Conversation.userSays("Hi"))
       asked <- budget.spent
-      _     <- limited.warmCache(ModelRequest(Chat.userSays(
+      _     <- limited.warmCache(ModelRequest(Conversation.userSays(
         MessagePart.of("A document."),
         MessagePart.CacheBreakpoint,
       )))
       warmed  <- budget.spent
-      _       <- limited.countTokens(ModelRequest(Chat.userSays("Hi")))
+      _       <- limited.countTokens(ModelRequest(Conversation.userSays("Hi")))
       counted <- budget.spent
     yield (asked, warmed, counted)).unsafeRunSync()
     assertEquals(asked, usd("0.4"))
@@ -176,9 +180,12 @@ class BudgetSuite extends FunSuite:
       budget <- Budget[SyncIO](usd("0.1"))
       limited = budget.limits(client(config, sent, hi))
       // The first stream runs, so is charged in full, past the limit.
-      _       <- limited.stream(ModelRequest(Chat.userSays("Hi"))).compile.drain
+      _ <- limited
+        .stream(ModelRequest(Conversation.userSays("Hi")))
+        .compile
+        .drain
       refused <- limited
-        .stream(ModelRequest(Chat.userSays("Hi")))
+        .stream(ModelRequest(Conversation.userSays("Hi")))
         .compile
         .drain
         .attempt
@@ -213,7 +220,7 @@ class BudgetSuite extends FunSuite:
       refused <- WholeAsker
         .ask[SyncIO, String](
           limited.sent(_),
-          Chat.userSays("Look up hi."),
+          Conversation.userSays("Look up hi."),
           WholeAsker.attempts,
           Toolbox(List(look)),
         )
@@ -240,10 +247,10 @@ class BudgetSuite extends FunSuite:
         sent,
         hi,
       ))
-      _       <- haiku.askWhole[String](Chat.userSays("Hi"))
-      _       <- sonnet.askWhole[String](Chat.userSays("Hi"))
+      _       <- haiku.askWhole[String](Conversation.userSays("Hi"))
+      _       <- sonnet.askWhole[String](Conversation.userSays("Hi"))
       spent   <- budget.spent
-      counted <- haiku.countTokens(ModelRequest(Chat.userSays("Hi")))
+      counted <- haiku.countTokens(ModelRequest(Conversation.userSays("Hi")))
     yield (spent, counted)).unsafeRunSync()
     assertEquals(spent, usd("0.8"))
     assertEquals(counted, 12)
@@ -257,13 +264,13 @@ class BudgetSuite extends FunSuite:
       budget   <- Budget[SyncIO](usd("1"))
       unpriced <- budget
         .limits(client(config.copy(model = next), sent, hi))
-        .askWhole[String](Chat.userSays("Hi"))
+        .askWhole[String](Conversation.userSays("Hi"))
         .attempt
       spent   <- budget.spent
       none    <- Budget[SyncIO](Usd.zero)
       nothing <- none
         .limits(client(config, sent, hi))
-        .askWhole[String](Chat.userSays("Hi"))
+        .askWhole[String](Conversation.userSays("Hi"))
         .attempt
     yield (unpriced, spent, nothing)).unsafeRunSync()
     assertEquals(unpriced, Left(ModelError.Unpriced))

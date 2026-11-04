@@ -33,7 +33,7 @@ object Fixtures:
       */
     def askWhole[A : Schema]
       (
-        chat: Chat,
+        conversation: Conversation,
         options: ModelRequest.Options = ModelRequest.Options(),
         attempts: Int = WholeAsker.attempts,
         tools: List[RunnableTool[F]] = Nil,
@@ -41,7 +41,7 @@ object Fixtures:
       : F[(Option[A], List[ModelResponse])] = WholeAsker
       .ask[F, A](
         Sending(client).sent(_, Toolbox(tools).offered(options)),
-        chat,
+        conversation,
         attempts,
         Toolbox(tools),
       )
@@ -57,7 +57,7 @@ object Fixtures:
 
     def sent
       (
-        chat: Chat,
+        conversation: Conversation,
         options: ModelRequest.Options = ModelRequest.Options(),
       )
-      : F[ModelResponse] = send(ModelRequest(chat, options))
+      : F[ModelResponse] = send(ModelRequest(conversation, options))

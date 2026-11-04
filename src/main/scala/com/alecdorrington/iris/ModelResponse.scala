@@ -5,12 +5,12 @@ import cats.syntax.functor.*
 import cats.syntax.traverse.*
 
 /**
-  * The model's response to a [[Chat]] as [[ModelClient.ask]] gives it, its
-  * value read and validated against the type's schema, alike for every type:
-  * the value, as soon as everything in it but its streams is read, and every
-  * response the ask took, once the last ends. An ask may take several, each a
-  * request of its own: asking again after a response that cannot be read, and
-  * going on after tools are run.
+  * The model's response to a [[Conversation]] as [[ModelClient.ask]] gives it,
+  * its value read and validated against the type's schema, alike for every
+  * type: the value, as soon as everything in it but its streams is read, and
+  * every response the ask took, once the last ends. An ask may take several,
+  * each a request of its own: asking again after a response that cannot be
+  * read, and going on after tools are run.
   *
   * @tparam F
   *   The effect type.
@@ -182,7 +182,7 @@ final case class Usage
     thinkingTokens: Int = 0,
   ):
 
-  /** The number of tokens in the request, the whole chat included. */
+  /** The number of tokens in the request, the whole conversation included. */
   def inputTokens: Int = uncachedTokens + cacheReadTokens + cacheWriteTokens +
     uncachedAudioTokens + cacheReadAudioTokens
 

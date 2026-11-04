@@ -13,7 +13,7 @@ class AdapterSuite extends FunSuite:
   /** An Anthropic model Iris does not list. */
   private val unlisted = Model.of(ModelProvider.Anthropic, "claude-new").get
 
-  private val chat = Chat()
+  private val conversation = Conversation()
     .withInstructions("Be brief.")
     .userSays("Hello")
     .modelSays("Hi!")
@@ -29,7 +29,7 @@ class AdapterSuite extends FunSuite:
   test("each provider is sent the history, system and options in its own form"):
     val anthropic = json(AnthropicApi.body(
       config,
-      chat,
+      conversation,
       ModelRequest.Options(
         temperature = Some(0.5),
         stopSequences = List("END"),
@@ -62,7 +62,7 @@ class AdapterSuite extends FunSuite:
     // A token limit named for a request outranks the configured one.
     val openAi = json(OpenAiApi.body(
       config,
-      chat,
+      conversation,
       ModelRequest.Options(maxTokens = Some(64)),
     ))
     assertEquals(
@@ -73,7 +73,7 @@ class AdapterSuite extends FunSuite:
       roles(openAi, "messages"),
       Some(List("system", "user", "assistant", "user")),
     )
-    val google = json(GeminiApi.body(gemini, chat, options))
+    val google = json(GeminiApi.body(gemini, conversation, options))
     assertEquals(
       roles(google, "contents"),
       Some(List("user", "model", "user")),
@@ -89,7 +89,8 @@ class AdapterSuite extends FunSuite:
     )
 
   test("unset options are omitted from every provider's request"):
-    val anthropic = json(AnthropicApi.body(config, chat, options)).hcursor
+    val anthropic = json(AnthropicApi.body(config, conversation, options))
+      .hcursor
     List(
       "temperature",
       "top_p",
@@ -103,7 +104,7 @@ class AdapterSuite extends FunSuite:
         field,
       ),
     )
-    val openAi = json(OpenAiApi.body(config, chat, options)).hcursor
+    val openAi = json(OpenAiApi.body(config, conversation, options)).hcursor
     List(
       "temperature",
       "top_p",
@@ -113,7 +114,7 @@ class AdapterSuite extends FunSuite:
       "stream",
       "stream_options",
     ).foreach(field => assert(openAi.downField(field).failed, field))
-    val google = json(GeminiApi.body(gemini, chat, options)).hcursor
+    val google = json(GeminiApi.body(gemini, conversation, options)).hcursor
     assert(google.downField("tools").failed)
     val generation = google.downField("generationConfig")
     assert(generation.downField("maxOutputTokens").succeeded)
@@ -137,9 +138,11 @@ class AdapterSuite extends FunSuite:
       Model.ClaudeSonnet5  -> false,
       unlisted             -> false,
     ).foreach: (model, samples) =>
-      val body =
-        json(AnthropicApi.body(config.copy(model = model), chat, sampled))
-          .hcursor
+      val body = json(AnthropicApi.body(
+        config.copy(model = model),
+        conversation,
+        sampled,
+      )).hcursor
       assertEquals(
         body.get[String]("model").toOption,
         Some(model.id),
@@ -156,7 +159,7 @@ class AdapterSuite extends FunSuite:
   test("an effort is sent as each provider asks for one"):
     val thoughtful = ModelRequest.Options(effort = Some(Effort.Medium))
     assertEquals(
-      json(AnthropicApi.body(config, chat, thoughtful))
+      json(AnthropicApi.body(config, conversation, thoughtful))
         .hcursor
         .downField("output_config")
         .get[String]("effort")
@@ -164,14 +167,14 @@ class AdapterSuite extends FunSuite:
       Some("medium"),
     )
     assertEquals(
-      json(OpenAiApi.body(config, chat, thoughtful))
+      json(OpenAiApi.body(config, conversation, thoughtful))
         .hcursor
         .get[String]("reasoning_effort")
         .toOption,
       Some("medium"),
     )
     assertEquals(
-      json(GeminiApi.body(gemini, chat, thoughtful))
+      json(GeminiApi.body(gemini, conversation, thoughtful))
         .hcursor
         .downField("generationConfig")
         .downField("thinkingConfig")
@@ -183,7 +186,7 @@ class AdapterSuite extends FunSuite:
   /** The reasoning effort OpenAI is asked of a model for the most effort. */
   private def most(model: Model): Option[String] = json(OpenAiApi.body(
     config.copy(model = model),
-    chat,
+    conversation,
     ModelRequest.Options(effort = Some(Effort.Max)),
   )).hcursor.get[String]("reasoning_effort").toOption
 
@@ -200,19 +203,20 @@ class AdapterSuite extends FunSuite:
   private val picture = MessagePart.Media(MediaType.Png, "aGVsbG8=")
 
   /** Two text parts in a row, then the picture they ask about. */
-  private val looking = Chat().userSays(
+  private val looking = Conversation().userSays(
     MessagePart.Text("Look."),
     MessagePart.Text("What is this?"),
     picture,
   )
 
   private val paper =
-    Chat().userSays(MessagePart.Media(MediaType.Pdf, "JVBERi0="))
+    Conversation().userSays(MessagePart.Media(MediaType.Pdf, "JVBERi0="))
 
-  private val recording =
-    Chat().userSays(MessagePart.Media(MediaType.of("audio/mp3").get, "SUQz"))
+  private val recording = Conversation().userSays(
+    MessagePart.Media(MediaType.of("audio/mp3").get, "SUQz"),
+  )
 
-  private val named = Chat().userSays(
+  private val named = Conversation().userSays(
     MessagePart.Text("BOOK 1: notes.txt"),
     MessagePart.Text("Chapter one."),
   )
@@ -274,23 +278,22 @@ class AdapterSuite extends FunSuite:
     )
     // A message's text holds each text part as a paragraph of its own.
     assertEquals(
-      Message(
-        Role.User,
-        List(
+      Message
+        .User(List(
           MessagePart.Text("Page 1"),
           picture,
           MessagePart.Text(""),
           MessagePart.Text("End."),
-        ),
-      ).text,
+        ))
+        .text,
       "Page 1\n\nEnd.",
     )
 
   test(
     "openai sends text around a tool call apart, once the call is taken out",
   ):
-    val call  = MessagePart.ToolCall("1", "weather", Json.obj())
-    val asked = Chat()
+    val call  = MessagePart.ToolCall("1", "weather", "{}")
+    val asked = Conversation()
       .userSays("Hi")
       .modelSays(
         MessagePart.Text("Looking."),
@@ -378,7 +381,7 @@ class AdapterSuite extends FunSuite:
     )
 
   test(
-    "anthropic sends a document as one, which openai cannot carry in a chat",
+    "anthropic sends a document as one, which openai cannot carry in a conversation",
   ):
     assertEquals(
       parts(
@@ -392,7 +395,7 @@ class AdapterSuite extends FunSuite:
       OpenAiApi.refuseUnsendable(config, paper, options),
       Left(ModelError.Unsupported(
         "OpenAI",
-        "sending application/pdf in a chat",
+        "sending application/pdf in a conversation",
       )),
     )
     assert(OpenAiApi.refuseUnsendable(config, looking, options).isRight)
@@ -402,7 +405,7 @@ class AdapterSuite extends FunSuite:
       AnthropicApi.refuseUnsendable(config, recording, options),
       Left(ModelError.Unsupported(
         "Anthropic",
-        "sending audio/mp3 in a chat",
+        "sending audio/mp3 in a conversation",
       )),
     )
     assert(AnthropicApi.refuseUnsendable(config, paper, options).isRight)
@@ -420,7 +423,7 @@ class AdapterSuite extends FunSuite:
     )
 
   test("counting asks for no reply, so needs no limit"):
-    val body = json(AnthropicApi.countBody(config, chat))
+    val body = json(AnthropicApi.countBody(config, conversation))
     assertEquals(
       body.hcursor.get[String]("model").toOption,
       Some("claude-haiku-4-5"),
@@ -617,7 +620,9 @@ class AdapterSuite extends FunSuite:
       )),
     )
 
-  private val prefilled = Chat().userSays("Hello").modelSays("Once upon a")
+  private val prefilled = Conversation()
+    .userSays("Hello")
+    .modelSays("Once upon a")
 
   test("only a model which accepts a prefill is asked to continue one"):
     List(
@@ -626,7 +631,7 @@ class AdapterSuite extends FunSuite:
       // Opus 4.6 still samples, but no longer continues a prefill.
       ("opus 4.6, prefilled", prefilled, Model.ClaudeOpus4_6, false),
       ("an unlisted model, prefilled", prefilled, unlisted, false),
-      ("sonnet 5, asked by the user", chat, Model.ClaudeSonnet5, true),
+      ("sonnet 5, asked by the user", conversation, Model.ClaudeSonnet5, true),
     ).foreach: (row, asked, model, continues) =>
       assertEquals(
         AnthropicApi.refusePrefill(asked, model).isRight,

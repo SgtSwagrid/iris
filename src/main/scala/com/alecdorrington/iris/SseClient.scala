@@ -61,11 +61,11 @@ private[iris] final class SseClient[F[_] : Async]
 
   def stream
     (
-      chat: Chat,
+      conversation: Conversation,
       options: ModelRequest.Options,
     )
     : Stream[F, Delta] = Stream
-    .eval(Async[F].fromEither(request(chat, options)))
+    .eval(Async[F].fromEither(request(conversation, options)))
     .flatMap(request =>
       Stream.bracket(exchanges)(_.abort).flatMap(sent(request, _)),
     )
@@ -88,18 +88,18 @@ private[iris] final class SseClient[F[_] : Async]
 
   private def request
     (
-      chat: Chat,
+      conversation: Conversation,
       options: ModelRequest.Options,
     )
     : Either[ModelError, SseRequest[F]] =
     for
-      _        <- api.refuseUnsendable(config, chat, options)
+      _        <- api.refuseUnsendable(config, conversation, options)
       endpoint <- api.endpoint(config, options, true)
     yield api
       .post(
         config,
         endpoint,
-        api.body(config, chat, options, true),
+        api.body(config, conversation, options, true),
       )
       .response(asStreamUnsafe(Fs2Streams[F]))
 

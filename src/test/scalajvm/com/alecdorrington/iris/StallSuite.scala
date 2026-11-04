@@ -50,7 +50,7 @@ class StallSuite extends FunSuite:
 
   private def asked(configured: ModelConfig) = ModelClient
     .resource[IO](configured)
-    .use(_.ask[String](Chat.userSays("Hello")).attempt)
+    .use(_.ask[String](Conversation.userSays("Hello")).attempt)
     .unsafeRunTimed(30.seconds)
 
   private val timedOut = ModelError.TimedOut("Anthropic", 1.second)
@@ -79,7 +79,11 @@ class StallSuite extends FunSuite:
       assertEquals(
         ModelClient
           .resource[IO](configured)
-          .use(_.stream(ModelRequest(Chat.userSays("Hello"))).compile.toList)
+          .use(
+            _.stream(ModelRequest(Conversation.userSays("Hello")))
+              .compile
+              .toList,
+          )
           .unsafeRunTimed(30.seconds),
         // Claude Haiku 4.5's $1 and $5 per million tokens.
         Some(List(Delta.End(
@@ -111,7 +115,7 @@ class StallSuite extends FunSuite:
         ModelClient
           .resource[IO](configured)
           .use(
-            _.stream(ModelRequest(Chat.userSays("Hello")))
+            _.stream(ModelRequest(Conversation.userSays("Hello")))
               .attempt
               .compile
               .toList,

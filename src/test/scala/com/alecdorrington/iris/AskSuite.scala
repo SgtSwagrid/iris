@@ -15,7 +15,7 @@ class AskSuite extends FunSuite:
 
   private val asking = "Invent a person."
 
-  private val prompt = Chat.userSays(asking)
+  private val prompt = Conversation.userSays(asking)
 
   private val ada = Person("Ada", 36, None)
 
@@ -64,6 +64,10 @@ class AskSuite extends FunSuite:
         ),
     )
 
+  /** A message of the user's, of text alone. */
+  private def user(text: String): Message =
+    Message.User(List(MessagePart.Text(text)))
+
   /** The messages Anthropic was sent, each of text alone. */
   private def messages(body: Json): List[Message] = body
     .hcursor
@@ -71,11 +75,9 @@ class AskSuite extends FunSuite:
     .toOption
     .get
     .map(message =>
-      Message(
-        if message.hcursor.get[String]("role").contains("user") then Role.User
-        else Role.Model,
-        message.hcursor.get[String]("content").getOrElse(""),
-      ),
+      val said = message.hcursor.get[String]("content").getOrElse("")
+      if message.hcursor.get[String]("role").contains("user") then user(said)
+      else Message.Model(List(MessagePart.Text(said))),
     )
 
   /** The answer an ask gives, or why it gave none. */
@@ -99,8 +101,7 @@ class AskSuite extends FunSuite:
   test("the schema closes the user's message, as a paragraph of its own"):
     assert(instructions.contains(Schema[Person].json.noSpaces))
     val told = client(sent =>
-      if sent == List(Message(Role.User, s"$asking\n\n$instructions")) then
-        said(adaJson)
+      if sent == List(user(s"$asking\n\n$instructions")) then said(adaJson)
       else said("Not told."),
     )
     assertEquals(
@@ -108,16 +109,17 @@ class AskSuite extends FunSuite:
       Right(Some(ada)),
     )
 
-  test("a chat the assistant ended is followed by the instructions"):
-    val chat = Chat().userSays("Invent a person.").modelSays("Let me think.")
+  test("a conversation the assistant ended is followed by the instructions"):
+    val conversation = Conversation()
+      .userSays("Invent a person.")
+      .modelSays("Let me think.")
     val told = client(sent =>
-      if sent.lastOption.contains(Message(Role.User, instructions)) then
-        said(adaJson)
+      if sent.lastOption.contains(user(instructions)) then said(adaJson)
       else said("Not told."),
     )
     assertEquals(
       told
-        .askWhole[Person](chat, attempts = 1)
+        .askWhole[Person](conversation, attempts = 1)
         .map(_._1)
         .attempt
         .unsafeRunSync(),
@@ -154,10 +156,11 @@ class AskSuite extends FunSuite:
     val corrected = client: sent =>
       val again = sent.drop(1) match
         case List(
-            Message(Role.Model, reply),
-            Message(Role.User, why),
+            Message.Model(reply),
+            Message.User(why),
           ) => reply == List(MessagePart.Text("Ada, 36.")) &&
-          Message(Role.User, why)
+          Message
+            .User(why)
             .text
             .startsWith("That reply could not be read:\nIt is not JSON")
         case _ => false
@@ -344,8 +347,7 @@ class AskSuite extends FunSuite:
       schema,
     )
     val told = client(sent =>
-      if sent == List(Message(Role.User, s"$asking\n\n$schema")) then
-        said("\"Ada, 36.\"")
+      if sent == List(user(s"$asking\n\n$schema")) then said("\"Ada, 36.\"")
       else said("Not told."),
     )
     assertEquals(
@@ -355,17 +357,13 @@ class AskSuite extends FunSuite:
 
   test("a value asked about is sent as json, followed by the instructions"):
     val told = client(sent =>
-      if sent == List(Message(
-          Role.User,
-          s"$adaJson\n\n$instructions",
-        ))
-      then said(adaJson)
+      if sent == List(user(s"$adaJson\n\n$instructions")) then said(adaJson)
       else said("Not told."),
     )
     assertEquals(
       told
         .askWhole[Person](
-          Chat.userSays(ada),
+          Conversation.userSays(ada),
           ModelRequest.Options(),
         )
         .map(_._1)
@@ -478,22 +476,25 @@ class AskSuite extends FunSuite:
   private def never: ModelClient[SyncIO] =
     client(_ => throw AssertionError("A request was made."))
 
-  test("a chat in which the user says nothing is refused before any request"):
-    for (chat, why) <- List(
-        Chat()                                       -> "it has no messages",
-        Chat().withInstructions("Answer in French.") -> "it has no messages",
-        Chat().userSays(MessagePart.CacheBreakpoint) ->
+  test(
+    "a conversation in which the user says nothing is refused before any request",
+  ):
+    for (conversation, why) <- List(
+        Conversation() -> "it has no messages",
+        Conversation().withInstructions("Answer in French.") ->
+          "it has no messages",
+        Conversation().userSays(MessagePart.CacheBreakpoint) ->
           "one of its messages says nothing",
         // Not the last message alone: any of them saying nothing.
-        Chat().userSays(MessagePart.CacheBreakpoint).userSays("Hi") ->
+        Conversation().userSays(MessagePart.CacheBreakpoint).userSays("Hi") ->
           "one of its messages says nothing",
-        Chat().modelSays("Bonjour.") -> "the user says nothing in it",
+        Conversation().modelSays("Bonjour.") -> "the user says nothing in it",
       )
     do
       assertEquals(
-        never.askWhole[String](chat).attempt.unsafeRunSync(),
+        never.askWhole[String](conversation).attempt.unsafeRunSync(),
         Left(ModelError.Unsendable("Anthropic", why)),
-        chat,
+        conversation,
       )
 
   /** Whether a reply fails an ask of a type at once. */
@@ -504,15 +505,15 @@ class AskSuite extends FunSuite:
       case other => fail(s"Expected the ask to fail at once, not $other.")
 
   test("the request after a tool's result carries it, then the instructions"):
-    val calling  = MessagePart.ToolCall("call_1", "weather", Json.obj())
-    val answered = Chat()
+    val calling  = MessagePart.ToolCall("call_1", "weather", "{}")
+    val answered = Conversation()
       .userSays("What is the weather?")
       .modelSays(ModelResponse(
         "",
         StopReason.ToolCall,
         toolCalls = List(calling),
       ))
-      .userSays(MessagePart.ToolResult("call_1", "weather", "Snowing."))
+      .toolSays(MessagePart.ToolResult("call_1", "weather", "Snowing."))
     val checked = ModelClient[SyncIO](
       config,
       BackendStub(CatsMonadError[SyncIO]())
@@ -586,7 +587,7 @@ class AskSuite extends FunSuite:
     // the rounds and what follows them, the round's results and then why its
     // reply could not be read, where Anthropic has room.
     List(1, AnthropicApi.maxBreakpoints).foreach: own =>
-      val prompt = Chat.userSays(
+      val prompt = Conversation.userSays(
         (1 to own)
           .toList
           .flatMap(n =>

@@ -9,8 +9,8 @@ import sttp.model.{Header, Uri}
 
 /**
   * One provider's API, which [[JsonClient]] and [[SseClient]] alike speak:
-  * where a request goes, how it is written and authenticated, which chats the
-  * provider refuses, and how its answers read.
+  * where a request goes, how it is written and authenticated, which
+  * conversations the provider refuses, and how its answers read.
   */
 private[iris] trait ProviderApi:
 
@@ -27,7 +27,7 @@ private[iris] trait ProviderApi:
   def body
     (
       config: ModelConfig,
-      chat: Chat,
+      conversation: Conversation,
       options: ModelRequest.Options,
       streamed: Boolean = false,
     )
@@ -41,16 +41,17 @@ private[iris] trait ProviderApi:
   /** The reply a stream's events make up, read as they arrive. */
   def deltas[F[_] : RaiseThrowable](events: Stream[F, Json]): Stream[F, Delta]
 
-  /** Why this provider would refuse the chat, where it would. */
+  /** Why this provider would refuse the conversation, where it would. */
   def refuseUnsendable
     (
       @unused
       config: ModelConfig,
-      chat: Chat,
+      conversation: Conversation,
       @unused
       options: ModelRequest.Options,
     )
-    : Either[ModelError, Unit] = JsonHttp.refuseUnanswerable(provider, chat)
+    : Either[ModelError, Unit] =
+    JsonHttp.refuseUnanswerable(provider, conversation)
 
   /**
     * How long the provider asks to wait before a request it refused is sent
@@ -113,13 +114,13 @@ private[iris] trait ProviderApi:
     .orElse(rates(config.model, at))
     .map(_.cost(usage))
 
-  /** The request counting a chat's tokens, refused where there is none. */
+  /** The request counting a conversation's tokens, refused where there is none. */
   def counting
     (
       @unused
       config: ModelConfig,
       @unused
-      chat: Chat,
+      conversation: Conversation,
       @unused
       options: ModelRequest.Options,
     )
@@ -166,7 +167,7 @@ private[iris] object ProviderApi:
   /** A rate from its decimal figure, as the provider's page gives it. */
   def usd(figure: Double): Usd = Usd(BigDecimal(figure))
 
-/** A request counting a chat's tokens, and how to read the count back. */
+/** A request counting a conversation's tokens, and how to read the count back. */
 private[iris] final case class Counting
   (
     endpoint: Uri,

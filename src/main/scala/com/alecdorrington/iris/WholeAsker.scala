@@ -21,83 +21,93 @@ private[iris] object WholeAsker:
     * asks for a tool, telling it what was wrong with each that could not, so
     * long as asking again could help, and running the tools in the box, where
     * it asks for those alone, before asking it to go on, each request after
-    * them [[cached]]. A chat no provider would answer is sent uninstructed, so
-    * that the provider refuses it before any request.
+    * them [[cached]]. A conversation no provider would answer is sent
+    * uninstructed, so that the provider refuses it before any request.
     */
   def ask[F[_] : MonadThrow, A : Schema as A]
     (
-      send: Chat => F[ModelResponse],
-      chat: Chat,
+      send: Conversation => F[ModelResponse],
+      conversation: Conversation,
       attempts: Int,
       tools: Toolbox[F] = Toolbox[F](Nil),
     )
     : F[ValidatedResponse[F, A]] =
-    val start = opening(chat, schemaPrompt(A))
-    // Sends the chat, after the replies so far, `tried` of them read.
+    val start = opening(conversation, schemaPrompt(A))
+    // Sends the conversation, after the replies so far, `tried` of them read.
     def attempt
       (
-        chat: Chat,
+        conversation: Conversation,
         replies: Vector[ModelResponse],
         tried: Int,
       )
-      : F[ValidatedResponse[F, A]] = send(cached(start, chat)).flatMap(reply =>
-      verdict(
-        A,
-        chat,
-        replies :+ reply,
-        attempts,
-        tried + 1,
-        tools,
-      ) match
-        case Verdict.Answered(value, responses) => ValidatedResponse(
-            value,
-            responses.pure[F],
-            MonadThrow[F].unit,
-          ).pure[F]
-        case Verdict.Run(calls) => tools
-            .ran(calls)
-            .flatMap(results =>
-              attempt(
-                onwards(chat, reply, results),
-                replies :+ reply,
-                tried,
-              ),
-            )
-        case Verdict.Again(next)   => attempt(next, replies :+ reply, tried + 1)
-        case Verdict.Failed(error) => error.raiseError,
-    )
+      : F[ValidatedResponse[F, A]] =
+      send(cached(start, conversation)).flatMap(reply =>
+        verdict(
+          A,
+          conversation,
+          replies :+ reply,
+          attempts,
+          tried + 1,
+          tools,
+        ) match
+          case Verdict.Answered(value, responses) => ValidatedResponse(
+              value,
+              responses.pure[F],
+              MonadThrow[F].unit,
+            ).pure[F]
+          case Verdict.Run(calls) => tools
+              .ran(calls)
+              .flatMap(results =>
+                attempt(
+                  onwards(conversation, reply, results),
+                  replies :+ reply,
+                  tried,
+                ),
+              )
+          case Verdict.Again(next) => attempt(next, replies :+ reply, tried + 1)
+          case Verdict.Failed(error) => error.raiseError,
+      )
     counted(attempts).fold(
       _.raiseError,
       _ => attempt(start, Vector.empty, 0),
     )
 
-  /** The chat after a reply asking for tools, and what they gave. */
+  /** The conversation after a reply asking for tools, and what they gave. */
   def onwards
     (
-      chat: Chat,
+      conversation: Conversation,
       reply: ModelResponse,
       results: List[MessagePart.ToolResult],
     )
-    : Chat = chat.modelSays(reply).userSays(results*)
+    : Conversation = conversation.modelSays(reply).toolSays(results*)
 
   /**
-    * The chat to send, its end closed by a breakpoint once tools have been run
-    * since the `opening`, so that each request after a round reads the rounds
-    * before it from the cache, and writes only its own. The first after the
-    * opening writes all past the host's last breakpoint, the whole prompt where
-    * there is none. Only the newest end is marked: Anthropic, which caches only
-    * where told, finds the last write by itself, looking up to twenty blocks
-    * back (a run of tool calls, or of their results, counting as one), and
-    * marks at most four blocks, the host's first. The chat an ask goes on with
-    * is never marked, so that the mark moves on with each request.
+    * The conversation to send, its end closed by a breakpoint once tools have
+    * been run since the `opening`, so that each request after a round reads the
+    * rounds before it from the cache, and writes only its own. The first after
+    * the opening writes all past the host's last breakpoint, the whole prompt
+    * where there is none. Only the newest end is marked: Anthropic, which
+    * caches only where told, finds the last write by itself, looking up to
+    * twenty blocks back (a run of tool calls, or of their results, counting as
+    * one), and marks at most four blocks, the host's first. The conversation an
+    * ask goes on with is never marked, so that the mark moves on with each
+    * request.
     */
-  def cached(opening: Chat, chat: Chat): Chat =
-    if chat.messages.drop(opening.messages.size).exists(_.toolResults.nonEmpty)
-    then chat.copy(messages = chat.messages.init :+ closed(chat.messages.last))
-    else chat
-
-  private def closed(message: Message): Message =
-    message.copy(parts = message.parts :+ MessagePart.CacheBreakpoint)
+  def cached
+    (
+      opening: Conversation,
+      conversation: Conversation,
+    )
+    : Conversation =
+    if conversation
+        .messages
+        .drop(opening.messages.size)
+        .exists(_.isInstanceOf[Message.Tool])
+    then
+      conversation.copy(messages =
+        conversation.messages.init :+ conversation.messages.last.closed,
+      )
+    else conversation
 
   /** What the model is told of the form its reply must take. */
   def schemaPrompt(schema: Schema[?]): String =
@@ -115,12 +125,17 @@ private[iris] object WholeAsker:
     )
 
   /**
-    * The chat to send first: instructed, unless no provider would answer it, so
-    * that the provider refuses it before any request.
+    * The conversation to send first: instructed, unless no provider would
+    * answer it, so that the provider refuses it before any request.
     */
-  def opening(chat: Chat, prompt: String): Chat = chat
+  def opening
+    (
+      conversation: Conversation,
+      prompt: String,
+    )
+    : Conversation = conversation
     .unanswerable
-    .fold(instructed(chat, prompt))(_ => chat)
+    .fold(instructed(conversation, prompt))(_ => conversation)
 
   /**
     * What becomes of an ask once its latest reply has come, the `tried`th read
@@ -131,7 +146,7 @@ private[iris] object WholeAsker:
   def verdict[A]
     (
       schema: Schema[A],
-      chat: Chat,
+      conversation: Conversation,
       replies: Vector[ModelResponse],
       attempts: Int,
       tried: Int,
@@ -148,7 +163,7 @@ private[iris] object WholeAsker:
         case None        => read(schema, reply).leftMap(stopped(reply, _)) match
             case Right(value) => Verdict.Answered(Some(value), replies.toList)
             case Left(why) if tried < attempts =>
-              Verdict.Again(corrected(chat, reply, why))
+              Verdict.Again(corrected(conversation, reply, why))
             case Left(why) => Verdict.Failed(unreadable(replies, why))
 
   /** What becomes of an ask once its latest reply has come. */
@@ -164,8 +179,8 @@ private[iris] object WholeAsker:
     /** The tools asked for, to run before asking the model to go on. */
     case Run(calls: List[MessagePart.ToolCall])
 
-    /** Another attempt, at the chat told what was wrong. */
-    case Again(chat: Chat)
+    /** Another attempt, at the conversation told what was wrong. */
+    case Again(conversation: Conversation)
 
     /** The failure, where asking again could not help. */
     case Failed(error: ModelError)
@@ -219,22 +234,29 @@ private[iris] object WholeAsker:
     * model's, adds it in a message of its own, so that the model answers
     * afresh. A cached prefix is sent as it was.
     */
-  private def instructed(chat: Chat, prompt: String): Chat =
-    chat.messages.lastOption.filter(_.role == Role.User) match
-      case Some(last) => chat.copy(messages =
-          chat.messages.init :+
-            last.copy(parts = last.parts :+ MessagePart.Text(prompt)),
-        )
-      case None => chat.userSays(prompt)
+  private def instructed
+    (
+      conversation: Conversation,
+      prompt: String,
+    )
+    : Conversation = conversation.messages.lastOption match
+    case Some(Message.User(parts)) => conversation.copy(messages =
+        conversation.messages.init :+
+          Message.User(parts :+ MessagePart.Text(prompt)),
+      )
+    case _ => conversation.userSays(prompt)
 
-  /** The chat continued with a reply that said something, and why it failed. */
+  /**
+    * The conversation continued with a reply that said something, and why it
+    * failed.
+    */
   private def corrected
     (
-      chat: Chat,
+      conversation: Conversation,
       reply: ModelResponse,
       why: String,
     )
-    : Chat = chat
+    : Conversation = conversation
     .modelSays(reply.text)
     .userSays(s"That reply could not be read:\n$why\n\nReply again as asked.")
 
