@@ -157,12 +157,15 @@ is made, and a request with none fails with `ApiError.Misconfigured`.
   after the provider has charged for it, which is documented, not prevented (the user chose this over a flag
   saying whether a service can price, by which `limits` would refuse up front). Counting tokens is no prompt, so
   is never refused. Each tool round and `emit` round of an agent is a prompt of its own, so is metered and
-  checked: a `Budget` is what bounds the tool loop below, which nothing else caps. Services themselves stay
+  checked: a `Budget` is what bounds the tool loop below by what it spends. Services themselves stay
   stateless. Iris runs a tool only where the host hands an agent one with its implementation (`RunnableTool`), which
   the user chose, as handing it over says it may run: the agent then runs any the model asks for alone (`Toolbox.runs`), tells
   it their outputs and asks it to go on (`Rounds.onwards`), each round's query with `maxIterations` attempts of its
-  own. Nothing caps the rounds: the user chose to bound a runaway loop by what it spends, through a
-  metered prompt service, over a count of rounds, which says little of cost. `PromptRequest.tools` still offers tools for the host to run, reported in `PromptResponse.toolCalls`; a
+  own. The rounds are as many as the model asks for unless the agent's own `maxIterations` (`AgentConfig`, or
+  `AgentRequest` for one) caps them, as the design gives every layer one: the last round's response is then given
+  with no value, its calls unrun (`Rounds.run`), and a stream through `emit` fails (`Emitting.called`). Uncapped is
+  the default, as the user chose to bound a runaway loop by what it spends, through a metered prompt service, a
+  count of rounds saying little of cost. `PromptRequest.tools` still offers tools for the host to run, reported in `PromptResponse.toolCalls`; a
   reply asking for any of those ends the ask with no value. Where tools are run and the answer is itself a
   stream (`Emit.element`), its elements come through a tool of Iris's own, `emit`, one call each (wrapped under
   `element`, any `$defs` hoisted), so the model can call tools between them: measured on Haiku 4.5, it batches

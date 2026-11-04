@@ -287,8 +287,8 @@ A [`Budget`](src/main/scala/com/alecdorrington/iris/Budget.scala) limits what re
 dollars, as for a session: every prompt service it limits spends from it, whatever its model or provider.
 A request is refused with `PromptError.OverBudget` once as much as the limit has been spent, before
 anything is sent, and is charged what its response cost when it ends. Every attempt of a query is charged,
-every round of an agent, and warming, as `metered` meters them, so a budget is what bounds a tool loop,
-which nothing else caps.
+every round of an agent, and warming, as `metered` meters them, so a budget bounds a tool loop by what it
+spends, where an agent's `maxIterations` only counts its rounds.
 
 ```scala
 for
@@ -419,8 +419,10 @@ a `Schema`, which describes them to the model and reads them back; arguments tha
 JSON, are answered with why, for the model to call it again. A `run` that fails fails the request with its
 error, the model not told, so turn any failure the model should hear of into output instead. Each round
 is a query of its own, going on from the conversation the last one ended with, so it has its own
-`maxIterations` attempts, and nothing counts how many rounds there are: an agent runs tools for as long as the model asks for them, each round a request, so bound what it may spend
-with a [budget](#budgets), rather than how many rounds it takes.
+`maxIterations` attempts. An agent runs tools for as long as the model asks for them, unless its own
+`maxIterations` (in `AgentConfig`, or an `AgentRequest` for one request) caps the rounds: the last round's
+response is then given with no value, its calls not run, and a stream given through `emit` fails. Each round
+is a request, so bound what an agent may spend with a [budget](#budgets) either way.
 
 ```scala
 import com.alecdorrington.iris.RunnableTool
@@ -654,7 +656,7 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
   once; counting tokens with OpenAI is no longer offered at all, where it failed with `Unsupported`.
 - `warmCache` asks for no tokens of response, which each provider raises to the least it allows.
 - Each round of an agent's tools is a query of its own, with its own `maxIterations` attempts, where an
-  ask's attempts were shared by its rounds. A stream given through `emit` gets its elements as each
+  ask's attempts were shared by its rounds. The agent's own `maxIterations` caps how many rounds it runs. A stream given through `emit` gets its elements as each
   response ends, where each came as its call did.
 
 ### Upgrading from 0.4

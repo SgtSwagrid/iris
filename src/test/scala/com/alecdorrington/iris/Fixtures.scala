@@ -64,6 +64,7 @@ object Fixtures:
         offered: List[Tool] = Nil,
         attempts: Int = QueryConfig().maxIterations,
         tools: List[RunnableTool[F]] = Nil,
+        rounds: Option[Int] = None,
       )
       : F[(Option[A], List[PromptResponse])] = Rounds
       .run[F, A](
@@ -83,5 +84,6 @@ object Fixtures:
           ),
         Toolbox(tools),
         QueryRequest(PromptRequest(conversation, tools = offered)),
+        rounds,
       )
       .flatMap(answer => answer.responses.map(answer.value -> _))

@@ -624,6 +624,28 @@ class AskSuite extends FunSuite:
         own,
       )
 
+  test("an agent stops at its most rounds, giving the last with no value"):
+    val asked =
+      for
+        ran <- Ref.of[SyncIO, Int](0)
+        weather = RunnableTool[SyncIO](
+          Tool(
+            "weather",
+            "Says the weather.",
+            Json.obj(),
+          ),
+          _ => ran.update(_ + 1).as("Sunny."),
+        )
+        answer <- client(_ => calling).askWhole[Person](
+          prompt,
+          tools = List(weather),
+          rounds = Some(3),
+        )
+        runs <- ran.get
+      yield (answer._1, answer._2.size, runs)
+    // The third round's call is left for the host, as one it cannot run.
+    assertEquals(asked.unsafeRunSync(), (None, 3, 2))
+
   /** A client of a provider answering every request with the body. */
   private def answering(model: Model, body: String): PromptService[SyncIO] =
     prompting(

@@ -25,11 +25,16 @@ import scala.compiletime.summonInline
   * @param tools
   *   The tools to offer the model and run, or `None` for the service's
   *   [[AgentConfig.tools]].
+  *
+  * @param maxIterations
+  *   The most rounds to run, or `None` for the service's
+  *   [[AgentConfig.maxIterations]].
   */
 final case class AgentRequest[F[_], A]
   (
     query: QueryRequest[A],
     tools: Option[List[RunnableTool[F]]] = None,
+    maxIterations: Option[Int] = None,
   )
 
 object AgentRequest:
@@ -113,8 +118,16 @@ object AgentRequest:
   *
   * @param tools
   *   The tools to offer the model and run.
+  *
+  * @param maxIterations
+  *   The most rounds to run, each a query of its own, or `None` for as many as
+  *   the model asks for.
   */
-final case class AgentConfig[F[_]](tools: List[RunnableTool[F]] = List.empty)
+final case class AgentConfig[F[_]]
+  (
+    tools: List[RunnableTool[F]] = List.empty,
+    maxIterations: Option[Int] = None,
+  )
 
 /**
   * A value of a type as an [[AgentService]] gives it, alike for every type: the
@@ -129,7 +142,8 @@ final case class AgentConfig[F[_]](tools: List[RunnableTool[F]] = List.empty)
   *
   * @param value
   *   The value read from the last response, or `None` where the model asked for
-  *   a tool the service was not given to run, for the host to run it.
+  *   a tool, one the service was not given to run, for the host to run it, or
+  *   any in the last round allowed.
   *
   * @param iterations
   *   Every round the request took, oldest first, once the last ends: each a
@@ -180,9 +194,11 @@ final case class AgentResponse[F[_], +A]
   * the tools' results, and closes its request with a cache breakpoint, so that
   * the rounds before it are read from the cache. A value holding a stream
   * arrives through two tools of Iris's own, `emit`, one element a call, and
-  * `done`, so that the model may call tools between its elements. Nothing caps
-  * the rounds: a budget on the prompt service bounds what they spend. A service
-  * is made from the query service it asks through, as `query.agent(tools*)`.
+  * `done`, so that the model may call tools between its elements. The rounds
+  * are as many as the model asks for unless [[AgentConfig.maxIterations]] caps
+  * them, so that a budget on the prompt service bounds what they spend. A
+  * service is made from the query service it asks through, as
+  * `query.agent(tools*)`.
   *
   * @tparam F
   *   The effect type.
@@ -243,19 +259,25 @@ private[iris] final class Agency[F[_] : Async]
     (request: into[AgentRequest[F, A]])
     : F[AgentResponse[F, A]] =
     val tools = Toolbox(request.tools.getOrElse(config.tools))
-    Emit
-      .element(A)
-      .filter(_ => tools.tools.nonEmpty)
-      .fold(Rounds.run(query.send[A](_), tools, request.query))(
-        Emitting.run(query, tools, request.query, A, _),
-      )
+    val most  = request.maxIterations.orElse(config.maxIterations)
+    most.traverse_(Reading.counted).liftTo[F] *>
+      Emit
+        .element(A)
+        .filter(_ => tools.tools.nonEmpty)
+        .fold(Rounds.run(
+          query.send[A](_),
+          tools,
+          request.query,
+          most,
+        ))(Emitting.run(query, tools, request.query, most, A, _))
 
 /**
   * The rounds of an agent's request: a query sent, the tools it asks for run,
   * and the query sent again, going on from it with their results, until the
-  * model gives its value or asks for a tool not in the box. Each round after
-  * the first caches the whole conversation, so that the next reads the rounds
-  * before it from the cache and writes only its own.
+  * model gives its value, asks for a tool not in the box, or has had the most
+  * rounds allowed. Each round after the first caches the whole conversation, so
+  * that the next reads the rounds before it from the cache and writes only its
+  * own.
   */
 private[iris] object Rounds:
 
@@ -264,6 +286,7 @@ private[iris] object Rounds:
       send: QueryRequest[A] => F[QueryResponse[F, A]],
       tools: Toolbox[F],
       asked: QueryRequest[A],
+      maxIterations: Option[Int],
     )
     : F[AgentResponse[F, A]] =
     def round
@@ -284,7 +307,8 @@ private[iris] object Rounds:
           .iterations
           .map(_.last.toolCalls)
           .flatMap(calls =>
-            if !tools.runs(calls) then answered
+            if !tools.runs(calls) || maxIterations.contains(rounds.size) then
+              answered
             else
               (tools.ran(calls), response.conversation).flatMapN(
                 (results, conversation) =>
@@ -327,7 +351,8 @@ private[iris] object Rounds:
   * gives through [[Emit]], one call each, so that it may call the box's tools
   * between them: the stream given at once, and fed each element as its round
   * ends, in a fiber of its own, until the model calls [[Emit.done]] in a round
-  * that asks for nothing more, or stops calling tools. A model writing the
+  * that asks for nothing more, or stops calling tools, failing it where the
+  * model is still calling them in the last round allowed. A model writing the
   * elements as JSON instead has them read as a query reads any value.
   */
 private[iris] final class Emitting[F[_] : Async]
@@ -336,6 +361,7 @@ private[iris] final class Emitting[F[_] : Async]
     tools: Toolbox[F],
     element: Schema[?],
     limit: Int,
+    maxIterations: Option[Int],
     feeds: Feeds[F],
     rounds: Deferred[
       F,
@@ -463,6 +489,12 @@ private[iris] final class Emitting[F[_] : Async]
           else Reading.read(listed, responses.last).getOrElse(Nil),
           done,
         )
+      else if maxIterations.contains(done.size) then
+        unreadable(
+          done.init,
+          responses,
+          s"It was still calling tools after ${ done.size } rounds.",
+        )
       else
         calls
           .zip(turn.told)
@@ -555,6 +587,7 @@ private[iris] object Emitting:
       query: QueryService[F],
       tools: Toolbox[F],
       asked: QueryRequest[A],
+      maxIterations: Option[Int],
       schema: Schema[A],
       element: Schema[?],
     )
@@ -579,6 +612,7 @@ private[iris] object Emitting:
                 tools,
                 element,
                 asked.maxIterations.getOrElse(QueryConfig().maxIterations),
+                maxIterations,
                 feeds,
                 rounds,
               ).run(QueryRequest(

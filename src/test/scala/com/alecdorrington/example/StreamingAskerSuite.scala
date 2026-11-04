@@ -1294,6 +1294,46 @@ class StreamingAskerSuite extends FunSuite:
         case other => fail(s"Not failed: $other"),
     )
 
+  test(
+    "a stream given through emit fails still calling tools in its last round",
+  ):
+    run(
+      for
+        asked    <- Ref.of[IO, List[String]](Nil)
+        (llm, _) <- streamer(
+          Stream(emit("a"), look("b")) ++ toolStop,
+          Stream(emit("b"), look("c")) ++ toolStop,
+          stop,
+        )
+        words <- llm
+          .query
+          .agent(AgentConfig(
+            List(dictionary(asked)),
+            maxIterations = Some(2),
+          ))
+          .send[Stream[IO, Word]](Conversation.userSays("Translate."))
+          .flatMap(_.value.get.attempt.compile.toList)
+        looked <- asked.get
+      yield
+        assertEquals(looked, List("b"))
+        words match
+          case List(
+              Right(first),
+              Right(second),
+              Left(error: QueryError.Unreadable),
+            ) =>
+            assertEquals(
+              List(first, second),
+              List(Word("a"), Word("b")),
+            )
+            assertEquals(error.responses.size, 2)
+            assert(
+              error.detail.contains("after 2 rounds"),
+              error.detail,
+            )
+          case other => fail(s"Not failed: $other"),
+    )
+
   test("a reply cut off after its elements were read fails the stream"):
     run(
       (

@@ -311,7 +311,7 @@ private[iris] object Reading:
       iterations >= 1,
       (),
       IllegalArgumentException(
-        s"A query needs at least one iteration, not $iterations.",
+        s"At least one iteration is needed, not $iterations.",
       ),
     )
 
