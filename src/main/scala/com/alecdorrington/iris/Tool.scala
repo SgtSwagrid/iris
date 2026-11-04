@@ -4,9 +4,9 @@ import io.circe.Json
 
 /**
   * A tool the model may ask to have run, as it is told of it: offered through
-  * [[ModelRequest.Options.tools]], for the host to run, where the model asks in
-  * [[ModelResponse.toolCalls]] and the host answers with a
-  * [[MessagePart.ToolResult]], or given to [[ModelClient.ask]] with what
+  * [[PromptRequest.tools]], for the host to run, where the model asks in
+  * [[PromptResponse.toolCalls]] and the host answers with a
+  * [[MessagePart.ToolResult]], or given to an [[AgentService]] with what
   * running it does, as a [[RunnableTool]], for the ask to run.
   *
   * @param name

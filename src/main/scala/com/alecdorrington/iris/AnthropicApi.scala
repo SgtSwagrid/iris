@@ -5,7 +5,7 @@ import io.circe.{Decoder, Json}
 import io.circe.parser.parse
 import io.circe.syntax.*
 import scala.concurrent.duration.FiniteDuration
-import sttp.model.{Header, StatusCode, Uri}
+import sttp.model.{Header, StatusCode}
 
 /**
   * The [[ProviderApi]] of the [Anthropic Messages
@@ -15,16 +15,11 @@ private[iris] object AnthropicApi extends ProviderApi:
 
   override val provider: ModelProvider = ModelProvider.Anthropic
 
-  override def endpoint
-    (
-      config: ModelConfig,
-      options: ModelRequest.Options,
-      streamed: Boolean,
-    )
-    : Either[ModelError, Uri] = messagesEndpoint(config)
+  override def path(model: Model, streamed: Boolean): List[String] =
+    List("v1", "messages")
 
-  override def credentials(config: ModelConfig): Seq[Header] = Seq(
-    Header("x-api-key", config.apiKey),
+  override def credentials(key: String): Seq[Header] = Seq(
+    Header("x-api-key", key),
     Header("anthropic-version", "2023-06-01"),
   ) ++ Option.when(Platform.browser)(
     // Anthropic refuses a request that carries a page's origin unless it says
@@ -35,7 +30,7 @@ private[iris] object AnthropicApi extends ProviderApi:
     ),
   )
 
-  override val wholeResponse: Decoder[Either[ModelError, ModelResponse]] =
+  override val wholeResponse: Decoder[Either[ApiError, PromptResponse]] =
     Decoder[Response].map(_.toReply)
 
   /**
@@ -89,12 +84,21 @@ private[iris] object AnthropicApi extends ProviderApi:
     )
     .contains("enforced_spend_limit_reached")
 
+  override def opening(event: Json): Boolean = event
+    .hcursor
+    .get[String]("type")
+    .exists(Set("message_start", "ping").contains)
+
+  override def failure(event: Json): Option[ApiError] = Option.when(
+    event.hcursor.get[String]("type").contains("error"),
+  )(streamedError(event))
+
   /**
     * The refusal an `error` event streams once the reply has begun, as an
     * `overloaded_error` for what would otherwise be a `529`, read as a refusal
     * of the status its type stands for.
     */
-  private def streamedError(event: Json): ModelError = Refusal.of(
+  private def streamedError(event: Json): ApiError = Refusal.of(
     this,
     StatusCode(
       event
@@ -160,41 +164,30 @@ private[iris] object AnthropicApi extends ProviderApi:
   )
 
   override def counting
-    (
-      config: ModelConfig,
-      conversation: Conversation,
-      options: ModelRequest.Options,
-    )
-    : Either[ModelError, Counting] =
-    for
-      _        <- JsonHttp.refuseUnanswerable(provider, conversation)
-      endpoint <- messagesEndpoint(config, "count_tokens")
-    yield Counting(
-      endpoint,
-      countBody(config, conversation),
-      Decoder[CountResponse].map(_.inputTokens),
-    )
-
-  /** The Messages API's endpoint, or one beneath it. */
-  private def messagesEndpoint
-    (config: ModelConfig, path: String*)
-    : Either[ModelError, Uri] = JsonHttp.endpoint(
-    provider,
-    config.origin,
-    ("v1" +: "messages" +: path)*,
+    (model: Model, conversation: Conversation)
+    : Option[Either[PromptError, Counting]] = Some(
+    JsonHttp
+      .refuseUnanswerable(provider, conversation)
+      .map(_ =>
+        Counting(
+          List("v1", "messages", "count_tokens"),
+          countBody(model, conversation),
+          Decoder[CountResponse].map(_.inputTokens),
+        ),
+      ),
   )
 
   /** Refuses an empty conversation, a refused prefill, or too many cache marks. */
   override def refuseUnsendable
     (
-      config: ModelConfig,
+      model: Model,
       conversation: Conversation,
-      options: ModelRequest.Options,
+      settings: Settings,
     )
-    : Either[ModelError, Unit] =
+    : Either[PromptError, Unit] =
     for
       _ <- JsonHttp.refuseUnanswerable(provider, conversation)
-      _ <- refusePrefill(conversation, config.model)
+      _ <- refusePrefill(conversation, model)
       _ <- refuseExcessBreakpoints(conversation)
       _ <- JsonHttp.refuseUnsupportedMedia(provider, conversation, media)
       _ <- JsonHttp.refuseUnreadableArguments(provider, conversation)
@@ -219,11 +212,11 @@ private[iris] object AnthropicApi extends ProviderApi:
 
   def refusePrefill
     (conversation: Conversation, model: Model)
-    : Either[ModelError, Unit] = Either.cond(
+    : Either[PromptError, Unit] = Either.cond(
     prefilling.contains(model) ||
     !conversation.messages.lastOption.exists(_.isInstanceOf[Message.Model]),
     (),
-    ModelError.Unsendable(
+    PromptError.Unsendable(
       provider.displayName,
       s"${ model.id } will not continue a message of its own",
     ),
@@ -247,7 +240,7 @@ private[iris] object AnthropicApi extends ProviderApi:
     */
   def refuseExcessBreakpoints
     (conversation: Conversation)
-    : Either[ModelError, Unit] =
+    : Either[PromptError, Unit] =
     val count = marks(
       conversation,
       laid(unclosed(conversation)),
@@ -255,7 +248,7 @@ private[iris] object AnthropicApi extends ProviderApi:
     Either.cond(
       count <= maxBreakpoints,
       (),
-      ModelError.Unsendable(
+      PromptError.Unsendable(
         provider.displayName,
         s"its cache breakpoints mark $count blocks, and at most $maxBreakpoints are kept",
       ),
@@ -276,15 +269,10 @@ private[iris] object AnthropicApi extends ProviderApi:
     onSystem + blocks.flatten.count(_._2)
 
   /** Serialises a conversation to count, which takes no `max_tokens`. */
-  def countBody
-    (
-      config: ModelConfig,
-      conversation: Conversation,
-    )
-    : String =
+  def countBody(model: Model, conversation: Conversation): Json =
     val (system, messages) = serialised(conversation)
-    JsonHttp.body(
-      "model"    -> config.model.id.asJson,
+    JsonHttp.objectOf(
+      "model"    -> model.id.asJson,
       "system"   -> system,
       "messages" -> messages,
     )
@@ -298,25 +286,24 @@ private[iris] object AnthropicApi extends ProviderApi:
 
   override def body
     (
-      config: ModelConfig,
+      model: Model,
       conversation: Conversation,
-      options: ModelRequest.Options,
-      streamed: Boolean,
+      settings: Settings,
     )
-    : String =
-    val samples            = sampling.contains(config.model)
+    : Json =
+    val samples            = sampling.contains(model)
     val (system, messages) = serialised(conversation)
-    JsonHttp.body(
-      "model"          -> config.model.id.asJson,
-      "max_tokens"     -> config.limit(options).asJson,
-      "temperature"    -> options.temperature.filter(_ => samples).asJson,
-      "top_p"          -> options.topP.filter(_ => samples).asJson,
-      "stop_sequences" -> JsonHttp.unlessEmpty(options.stopSequences),
+    JsonHttp.objectOf(
+      "model"          -> model.id.asJson,
+      "max_tokens"     -> settings.maxTokens.asJson,
+      "temperature"    -> settings.temperature.filter(_ => samples).asJson,
+      "top_p"          -> settings.topP.filter(_ => samples).asJson,
+      "stop_sequences" -> JsonHttp.unlessEmpty(settings.stopSequences),
       "tools"          -> JsonHttp.unlessEmpty(
-        options.tools.map(JsonHttp.declared(_, "input_schema")),
+        settings.tools.map(JsonHttp.declared(_, "input_schema")),
       ),
-      "output_config" -> options.effort.map(output).asJson,
-      "stream"        -> Option.when(streamed)(true).asJson,
+      "output_config" -> settings.effort.map(output).asJson,
+      "stream"        -> Option.when(settings.streamed)(true).asJson,
       "system"        -> system,
       "messages"      -> messages,
     )
@@ -468,7 +455,7 @@ private[iris] object AnthropicApi extends ProviderApi:
     ):
 
     /** This, after an event, and the deltas the event makes, or why not. */
-    def read(event: Json): (Streamed, List[Either[ModelError, Delta]]) =
+    def read(event: Json): (Streamed, List[Either[ApiError, Delta]]) =
       val cursor = event.hcursor
       val index  = cursor.get[Int]("index").toOption
       cursor.get[String]("type").toOption match
@@ -613,7 +600,7 @@ private[iris] object AnthropicApi extends ProviderApi:
     ):
 
     /** This response as a reply, which may be empty, as on a refusal. */
-    def toReply: Either[ModelError, ModelResponse] = Right(ModelResponse(
+    def toReply: Either[ApiError, PromptResponse] = Right(PromptResponse(
       text = content.flatMap(_.visibleText).mkString,
       stopReason = AnthropicApi.stopReason(stopReason),
       usage = usage.fold(Usage())(_.toUsage),

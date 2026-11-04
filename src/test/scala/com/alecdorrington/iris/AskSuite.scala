@@ -2,7 +2,10 @@ package com.alecdorrington.iris
 
 import cats.effect.{Ref, SyncIO}
 import com.alecdorrington.example.{Colour, Person}
-import com.alecdorrington.iris.Fixtures.{askWhole, config, json, totals}
+import com.alecdorrington.iris.Fixtures.{
+  askWhole, config, json, prompting, totals,
+}
+import fs2.Stream
 import io.circe.Json
 import io.circe.syntax.*
 import munit.FunSuite
@@ -51,9 +54,8 @@ class AskSuite extends FunSuite:
     .noSpaces
 
   /** A client answering each request as `answer` does its messages. */
-  private def client(answer: List[Message] => String): ModelClient[SyncIO] =
-    ModelClient[SyncIO](
-      config,
+  private def client(answer: List[Message] => String): PromptService[SyncIO] =
+    prompting(
       BackendStub(CatsMonadError[SyncIO]())
         .whenAnyRequest
         .thenRespondF(request =>
@@ -83,7 +85,7 @@ class AskSuite extends FunSuite:
   /** The answer an ask gives, or why it gave none. */
   private def asked[A : Schema]
     (
-      client: ModelClient[SyncIO],
+      client: PromptService[SyncIO],
       attempts: Int = WholeAsker.attempts,
     )
     : Either[Throwable, Option[A]] = client
@@ -131,8 +133,8 @@ class AskSuite extends FunSuite:
     asked[Person](client(_ => said(written)), attempts = 1)
       .left
       .map:
-        case ModelError.UnreadableResponse(detail, _) => detail
-        case other                                    => other.toString
+        case QueryError.Unreadable(detail, _) => detail
+        case other                            => other.toString
 
   test("JSON is read from the whole reply, else its last fence, and no other"):
     List(
@@ -173,7 +175,7 @@ class AskSuite extends FunSuite:
   test("the last unreadable reply fails the ask, keeping every reply"):
     // Text is no exception: unquoted, it is not JSON.
     asked[String](client(_ => said("Paris"))) match
-      case Left(ModelError.UnreadableResponse(detail, answers)) =>
+      case Left(QueryError.Unreadable(detail, answers)) =>
         assertEquals(answers.size, 3)
         assertEquals(detail, "It is not JSON.")
         assertEquals(
@@ -226,7 +228,7 @@ class AskSuite extends FunSuite:
       ),
     ).foreach: (row, result, told, withheld) =>
       result match
-        case Left(failure @ ModelError.UnreadableResponse(detail, _)) =>
+        case Left(failure @ QueryError.Unreadable(detail, _)) =>
           told.foreach(field =>
             assert(
               detail.contains(field),
@@ -362,10 +364,7 @@ class AskSuite extends FunSuite:
     )
     assertEquals(
       told
-        .askWhole[Person](
-          Conversation.userSays(ada),
-          ModelRequest.Options(),
-        )
+        .askWhole[Person](Conversation.userSays(ada))
         .map(_._1)
         .attempt
         .unsafeRunSync(),
@@ -393,14 +392,14 @@ class AskSuite extends FunSuite:
     assertEquals(
       responses,
       List(
-        ModelResponse(
+        PromptResponse(
           text = "Ada, 36.",
           stopReason = StopReason.Completed,
           usage = Usage(uncachedTokens = 10, visibleTokens = 2),
           // Claude Haiku 4.5's $1 and $5 per million tokens.
           cost = Some(Usd(BigDecimal("0.00002"))),
         ),
-        ModelResponse(
+        PromptResponse(
           text = adaJson,
           stopReason = StopReason.Completed,
           usage = Usage(uncachedTokens = 20, visibleTokens = 5),
@@ -457,23 +456,21 @@ class AskSuite extends FunSuite:
       (11 + 22 + 33 + 44 + 55, 22 + 55, 66 + 77),
     )
 
-  test("a wrapper around the client sees every attempt"):
+  test("a wrapper around the service sees every attempt"):
     val corrected =
       client(sent => if sent.size > 1 then said(adaJson) else said("Ada, 36."))
     val counted =
       for
         sent <- Ref.of[SyncIO, Int](0)
-        counting = new ModelClient.Forwarding(corrected):
-          override protected def send
-            (request: ModelRequest)
-            : SyncIO[ModelResponse] = sent.update(_ + 1) *> super.send(request)
+        counting: PromptService[SyncIO] = request =>
+          Stream.exec(sent.update(_ + 1)) ++ corrected.stream(request)
         (value, _) <- counting.askWhole[Person](prompt)
         total      <- sent.get
       yield (value, total)
     assertEquals(counted.unsafeRunSync(), (Some(ada), 2))
 
   /** A client failing the test if it is ever asked to send. */
-  private def never: ModelClient[SyncIO] =
+  private def never: PromptService[SyncIO] =
     client(_ => throw AssertionError("A request was made."))
 
   test(
@@ -493,14 +490,14 @@ class AskSuite extends FunSuite:
     do
       assertEquals(
         never.askWhole[String](conversation).attempt.unsafeRunSync(),
-        Left(ModelError.Unsendable("Anthropic", why)),
+        Left(PromptError.Unsendable("Anthropic", why)),
         conversation,
       )
 
   /** Whether a reply fails an ask of a type at once. */
   private def failsAtOnceAs[A : Schema](answer: String, detail: String): Unit =
     asked[A](client(_ => answer)) match
-      case Left(ModelError.UnreadableResponse(said, answers)) =>
+      case Left(QueryError.Unreadable(said, answers)) =>
         assertEquals((said, answers.size), (detail, 1))
       case other => fail(s"Expected the ask to fail at once, not $other.")
 
@@ -508,14 +505,13 @@ class AskSuite extends FunSuite:
     val calling  = MessagePart.ToolCall("call_1", "weather", "{}")
     val answered = Conversation()
       .userSays("What is the weather?")
-      .modelSays(ModelResponse(
+      .modelSays(PromptResponse(
         "",
         StopReason.ToolCall,
         toolCalls = List(calling),
       ))
       .toolSays(MessagePart.ToolResult("call_1", "weather", "Snowing."))
-    val checked = ModelClient[SyncIO](
-      config,
+    val checked = prompting(
       BackendStub(CatsMonadError[SyncIO]())
         .whenAnyRequest
         .thenRespondF(request =>
@@ -604,8 +600,7 @@ class AskSuite extends FunSuite:
       val asked =
         for
           bodies <- Ref.of[SyncIO, List[Json]](Nil)
-          client = ModelClient[SyncIO](
-            config,
+          client = prompting(
             BackendStub(CatsMonadError[SyncIO]())
               .whenAnyRequest
               .thenRespondF(request =>
@@ -630,12 +625,12 @@ class AskSuite extends FunSuite:
       )
 
   /** A client of a provider answering every request with the body. */
-  private def answering(model: Model, body: String): ModelClient[SyncIO] =
-    ModelClient[SyncIO](
-      config.copy(model = model),
+  private def answering(model: Model, body: String): PromptService[SyncIO] =
+    prompting(
       BackendStub(CatsMonadError[SyncIO]())
         .whenAnyRequest
         .thenRespond(ResponseStub.adjust(body)),
+      model,
     )
 
   test("every provider's reply is asked for and read alike"):
@@ -653,7 +648,7 @@ class AskSuite extends FunSuite:
       assertEquals(
         answering(model, body).askWhole[Person](prompt).attempt.unsafeRunSync(),
         Right(
-          Some(ada) -> List(ModelResponse(
+          Some(ada) -> List(PromptResponse(
             adaJson,
             StopReason.Completed,
             Usage(uncachedTokens = 5, visibleTokens = 3),
@@ -665,28 +660,33 @@ class AskSuite extends FunSuite:
 
   test("a model iris does not list costs nothing known, unless configured"):
     val next = Model.of(ModelProvider.Anthropic, "claude-next").get
-    def costing(configured: ModelConfig) = ModelClient[SyncIO](
-      configured,
+    def costing
+      (
+        model: Model,
+        configured: PromptConfig = config,
+      ) = prompting(
       BackendStub(CatsMonadError[SyncIO]())
         .whenAnyRequest
         .thenRespond(ResponseStub.adjust(
           said(adaJson, cost = Some((1000, 100))),
         )),
+      model,
+      configured,
     ).askWhole[Person](prompt).map(_._2.last.cost).attempt.unsafeRunSync()
-    assertEquals(
-      costing(config.copy(model = next)),
-      Right(None),
-    )
+    assertEquals(costing(next), Right(None))
     val rates = Rates.of(
       Usd(BigDecimal(3)),
       Usd(BigDecimal(15)),
     )
     assertEquals(
-      costing(config.copy(model = next, rates = Some(rates))),
+      costing(next, config.copy(rates = Some(rates))),
       Right(Some(Usd(BigDecimal("0.0045")))),
     )
     // A configuration's rates stand in for those listed, too.
     assertEquals(
-      costing(config.copy(rates = Some(rates))),
+      costing(
+        Fixtures.model,
+        config.copy(rates = Some(rates)),
+      ),
       Right(Some(Usd(BigDecimal("0.0045")))),
     )

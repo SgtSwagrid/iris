@@ -28,30 +28,28 @@ private[iris] object StreamingAsker:
     */
   def ask[F[_] : Async, A : Schema as A]
     (
-      stream: (Conversation, ModelRequest.Options) => Stream[F, Delta],
+      stream: (Conversation, List[Tool]) => Stream[F, PromptEvent],
       conversation: Conversation,
-      options: ModelRequest.Options,
+      requested: List[Tool],
       attempts: Int,
       tools: Toolbox[F],
     )
-    : F[ValidatedResponse[F, A]] =
+    : F[QueryResponse[F, A]] =
     val emitting = Emit.element(A).filter(_ => tools.tools.nonEmpty)
-    val base     = tools.offered(options)
-    val offered  = emitting.fold(base)(element =>
-      base.copy(tools = base.tools ++ Emit.tools(element)),
-    )
-    val start = WholeAsker.opening(
+    val base     = tools.offered(requested)
+    val offered  = emitting.fold(base)(base ++ Emit.tools(_))
+    val start    = WholeAsker.opening(
       conversation,
       emitting.fold(WholeAsker.schemaPrompt(A))(_ => Emit.prompt),
     )
-    (WholeAsker.counted(attempts) *> Emit.unclaimed(emitting, options, offered))
-      .liftTo[F] *>
+    (WholeAsker.counted(attempts) *>
+      Emit.unclaimed(emitting, requested, offered)).liftTo[F] *>
       (
         Ref.of[F, Map[Int, SignallingRef[F, Feed]]](Map.empty),
         Deferred[F, Either[Throwable, Option[A]]],
         Deferred[
           F,
-          Either[Throwable, List[ModelResponse]],
+          Either[Throwable, List[PromptResponse]],
         ],
       ).mapN(Asking(
           sent => stream(WholeAsker.cached(start, sent), offered),
@@ -72,7 +70,7 @@ private[iris] object StreamingAsker:
               .flatMap(reading =>
                 poll(asking.value.get.rethrow)
                   .onCancel(reading.cancel)
-                  .map(ValidatedResponse(
+                  .map(QueryResponse(
                     _,
                     asking.responses.get.rethrow,
                     reading.cancel,
@@ -80,6 +78,16 @@ private[iris] object StreamingAsker:
               ),
           ),
         )
+
+  /** A tool call, as its event gives it whole. */
+  private object Called:
+
+    def unapply(event: PromptEvent): Option[MessagePart.ToolCall] = event match
+      case PromptEvent.Written(
+          PromptEvent.Part.Call(id, tool, signature),
+          arguments,
+        ) => Some(MessagePart.ToolCall(id, tool, arguments, signature))
+      case _ => None
 
   /**
     * What a stream has been fed: its elements so far, each read from the first,
@@ -99,15 +107,14 @@ private[iris] object StreamingAsker:
       if end.isDefined then this else copy(end = Some(outcome))
 
   /**
-    * One reply of an answer given through [[Emit]], as it arrives: its text,
-    * the calls in it, what the model is told of each, aligned with them, or
-    * `None` for a tool to run, whether an emit in it was refused, after which
-    * every later one is too, so that elements arrive in order, and whether it
-    * called [[Emit.done]].
+    * One reply of an answer given through [[Emit]], as it arrives: the calls in
+    * it, what the model is told of each, aligned with them, or `None` for a
+    * tool to run, whether an emit in it was refused, after which every later
+    * one is too, so that elements arrive in order, and whether it called
+    * [[Emit.done]].
     */
   private final case class Round
     (
-      text: String = "",
       calls: Vector[MessagePart.ToolCall] = Vector.empty,
       told: Vector[Option[String]] = Vector.empty,
       refused: Boolean = false,
@@ -161,7 +168,7 @@ private[iris] object StreamingAsker:
     */
   private final class Asking[F[_] : Async, A]
     (
-      stream: Conversation => Stream[F, Delta],
+      stream: Conversation => Stream[F, PromptEvent],
       schema: Schema[A],
       attempts: Int,
       tools: Toolbox[F],
@@ -170,7 +177,7 @@ private[iris] object StreamingAsker:
       val value: Deferred[F, Either[Throwable, Option[A]]],
       val responses: Deferred[
         F,
-        Either[Throwable, List[ModelResponse]],
+        Either[Throwable, List[PromptResponse]],
       ],
     ):
 
@@ -200,33 +207,29 @@ private[iris] object StreamingAsker:
     private def attempt
       (
         conversation: Conversation,
-        replies: Vector[ModelResponse],
+        replies: Vector[PromptResponse],
         tried: Int,
       )
       : F[Unit] = Async[F]
       .delay(Unfinished(schema, live))
       .flatMap(unfinished =>
         stream(conversation)
-          .evalMapAccumulate(Vector.empty[MessagePart.ToolCall]):
-            case (calls, Delta.Text(text)) => Async[F]
+          .evalMap:
+            case PromptEvent.Written(PromptEvent.Part.Text, text) => Async[F]
                 .delay(unfinished.feed(text))
                 .flatMap(_.traverse_(performed(unfinished, replies)))
-                .as(calls -> None)
-            case (calls, Delta.ToolCall(call)) => (calls :+ call, None).pure[F]
-            case (calls, end: Delta.End)       => (calls, Some(end)).pure[F]
-          .collectFirst { case (calls, Some(end)) => calls -> end }
+                .as(none[PromptResponse])
+            case PromptEvent.Written(_, _)   => none[PromptResponse].pure[F]
+            case PromptEvent.Ended(response) => response.some.pure[F]
+          .unNone
           .compile
           .last
           .flatMap(ending =>
             ended(
               unfinished,
               conversation,
-              replies :+ ModelResponse(
-                text = unfinished.text,
-                stopReason = ending.fold(StopReason.Unknown)(_._2.stopReason),
-                usage = ending.fold(Usage())(_._2.usage),
-                cost = ending.flatMap(_._2.cost),
-                toolCalls = ending.fold(Nil)(_._1.toList),
+              replies :+ ending.getOrElse(
+                PromptResponse(unfinished.text, StopReason.Unknown),
               ),
               ending.isDefined,
               tried,
@@ -238,7 +241,7 @@ private[iris] object StreamingAsker:
     private def performed
       (
         unfinished: Unfinished,
-        replies: Vector[ModelResponse],
+        replies: Vector[PromptResponse],
       )
       (event: Unfinished.Event)
       : F[Unit] = event match
@@ -250,7 +253,7 @@ private[iris] object StreamingAsker:
         feeds.get.flatMap(_(stream).update(_.ended(Right(()))))
       case Unfinished.Event.Failed(detail) => WholeAsker
           .unreadable(
-            replies :+ ModelResponse(unfinished.text, StopReason.Unknown),
+            replies :+ PromptResponse(unfinished.text, StopReason.Unknown),
             detail,
           )
           .raiseError
@@ -264,7 +267,7 @@ private[iris] object StreamingAsker:
       (
         unfinished: Unfinished,
         conversation: Conversation,
-        replies: Vector[ModelResponse],
+        replies: Vector[PromptResponse],
         said: Boolean,
         tried: Int,
       )
@@ -313,7 +316,7 @@ private[iris] object StreamingAsker:
       */
     private def fault
       (
-        replies: Vector[ModelResponse],
+        replies: Vector[PromptResponse],
         whole: Boolean,
       )
       : Option[String] =
@@ -336,17 +339,16 @@ private[iris] object StreamingAsker:
     private def emitted
       (
         conversation: Conversation,
-        replies: Vector[ModelResponse],
+        replies: Vector[PromptResponse],
         progress: Progress,
         element: Schema[?],
       )
       : F[Unit] = stream(conversation)
       .evalTap(_ => standIn.liftTo[F].flatMap(handOver))
       .evalMapAccumulate((Round(), progress)):
-        case ((round, progress), Delta.Text(text)) =>
-          ((round.copy(text = round.text + text), progress), None).pure[F]
-        case ((round, progress), Delta.ToolCall(call))
-          if call.tool == Emit.name =>
+        case (state, PromptEvent.Written(PromptEvent.Part.Text, _)) =>
+          (state, None).pure[F]
+        case ((round, progress), Called(call)) if call.tool == Emit.name =>
           if round.refused then
             ((round.called(call, Some(Emit.skipped)), progress), None).pure[F]
           else
@@ -370,12 +372,13 @@ private[iris] object StreamingAsker:
                   ),
                   None,
                 ).pure[F]
-        case ((round, progress), Delta.ToolCall(call))
-          if call.tool == Emit.done =>
+        case ((round, progress), Called(call)) if call.tool == Emit.done =>
           ((round.ending(call), progress), None).pure[F]
-        case ((round, progress), Delta.ToolCall(call)) =>
+        case ((round, progress), Called(call)) =>
           ((round.called(call), progress), None).pure[F]
-        case (state, end: Delta.End) => (state, Some(end)).pure[F]
+        case (state, PromptEvent.Ended(response)) => (state, Some(response))
+            .pure[F]
+        case (state, _) => (state, None).pure[F]
       .collectFirst { case (state, Some(end)) => state -> end }
       .compile
       .last
@@ -386,15 +389,9 @@ private[iris] object StreamingAsker:
               "Its stream ended before it said it was over.",
             )
             .raiseError
-        case Some(((round, progress), end)) => afterwards(
+        case Some(((round, progress), response)) => afterwards(
             conversation,
-            replies :+ ModelResponse(
-              round.text,
-              end.stopReason,
-              end.usage,
-              end.cost,
-              round.calls.toList,
-            ),
+            replies :+ response,
             round,
             progress,
             element,
@@ -409,7 +406,7 @@ private[iris] object StreamingAsker:
     private def afterwards
       (
         conversation: Conversation,
-        replies: Vector[ModelResponse],
+        replies: Vector[PromptResponse],
         round: Round,
         progress: Progress,
         element: Schema[?],
@@ -458,7 +455,7 @@ private[iris] object StreamingAsker:
     private def whole
       (
         conversation: Conversation,
-        replies: Vector[ModelResponse],
+        replies: Vector[PromptResponse],
         progress: Progress,
         element: Schema[?],
       )
@@ -490,7 +487,7 @@ private[iris] object StreamingAsker:
       */
     private def written
       (
-        reply: ModelResponse,
+        reply: PromptResponse,
         progress: Progress,
         element: Schema[?],
       )
@@ -506,7 +503,7 @@ private[iris] object StreamingAsker:
     private def finished
       (
         elements: List[Any],
-        whole: List[ModelResponse],
+        whole: List[PromptResponse],
       )
       : F[Unit] = feeds
       .get
@@ -515,9 +512,9 @@ private[iris] object StreamingAsker:
       ) *> responses.complete(Right(whole)).void
 
     /** The answer an [[Emit]] stream is: its stream, stood in for. */
-    private lazy val standIn: Either[ModelError, Any] = Unfinished
+    private lazy val standIn: Either[IllegalStateException, Any] = Unfinished
       .standIn(schema, live(Emit.stream))
-      .leftMap(why => ModelError.Malformed("Iris", why))
+      .leftMap(IllegalStateException(_))
 
     private def opened(stream: Int): F[Unit] = SignallingRef
       .of[F, Feed](Feed())
@@ -615,18 +612,18 @@ private[iris] object Emit:
   def unclaimed
     (
       emitting: Option[Schema[?]],
-      options: ModelRequest.Options,
-      offered: ModelRequest.Options,
+      requested: List[Tool],
+      offered: List[Tool],
     )
     : Either[IllegalArgumentException, Unit] =
     if emitting.isEmpty then Right(())
-    else if options.tools.nonEmpty then
+    else if requested.nonEmpty then
       Left(IllegalArgumentException(
-        s"A tool cannot be offered for the host to run where a streamed answer is given through `$name`, as the answer could not end at its call: give it to `ask` to run.",
+        s"A tool cannot be offered for the host to run where a streamed answer is given through `$name`, as the answer could not end at its call: give it to the agent to run.",
       ))
     else
       List(name, done)
-        .find(reserved => offered.tools.count(_.name == reserved) != 1)
+        .find(reserved => offered.count(_.name == reserved) != 1)
         .map(reserved =>
           IllegalArgumentException(
             s"A tool named `$reserved` cannot be run where a streamed answer is given through one of that name.",
@@ -689,7 +686,7 @@ private[iris] object Emit:
     */
   def fault
     (
-      reply: ModelResponse,
+      reply: PromptResponse,
       others: List[MessagePart.ToolCall],
       tools: Toolbox[?],
       wrong: Int,

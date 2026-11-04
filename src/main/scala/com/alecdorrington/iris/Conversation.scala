@@ -87,7 +87,7 @@ object MessagePart:
 
   /**
     * A picture, document or other media for the model to look at. A provider
-    * refuses media it cannot take with [[ModelError.Unsupported]], before any
+    * refuses media it cannot take with [[PromptError.Unsupported]], before any
     * request: Anthropic takes every [[MediaType]] Iris lists, and OpenAI its
     * pictures alone. Gemini is sent any media, and judges it itself.
     *
@@ -175,13 +175,14 @@ object MessagePart:
     * the model.
     *
     * Anthropic caches only at breakpoints, and refuses a conversation whose
-    * breakpoints mark more than four blocks with [[ModelError.Unsendable]], but
-    * for any closing the conversation, which mark its last block only where the
-    * others leave room; OpenAI and Gemini cache long prefixes by themselves. A
-    * prefix too short for the provider is not cached. Requests sent at once
-    * cannot read one another's writes, so call [[ModelClient.warmCache]] before
-    * a batch. An ask running tools closes each request after a round of them
-    * with one of its own, so that the rounds before it are read from the cache.
+    * breakpoints mark more than four blocks with [[PromptError.Unsendable]],
+    * but for any closing the conversation, which mark its last block only where
+    * the others leave room; OpenAI and Gemini cache long prefixes by
+    * themselves. A prefix too short for the provider is not cached. Requests
+    * sent at once cannot read one another's writes, so call
+    * [[PromptService.warmCache]] before a batch. An ask running tools closes
+    * each request after a round of them with one of its own, so that the rounds
+    * before it are read from the cache.
     */
   case object CacheBreakpoint extends UserPart, ModelPart, ToolPart
 
@@ -286,10 +287,10 @@ object Message:
   *
   * {{{
   * for
-  *   first     <- client.ask[String](conversation)
-  *   responses <- first.responses
-  *   next       = conversation.modelSays(responses.last).userSays("Tell me more.")
-  *   second    <- client.ask[String](next)
+  *   first  <- query.send[String](conversation)
+  *   asked  <- first.iterations
+  *   next    = conversation.modelSays(asked.last).userSays("Tell me more.")
+  *   second <- query.send[String](next)
   * yield second.value
   * }}}
   *
@@ -297,7 +298,7 @@ object Message:
   * what to answer in a message of the user's after it, and so answers afresh
   * rather than going on with its own response. A conversation with no messages,
   * a message of breakpoints alone, or no message of the user's fails with
-  * [[ModelError.Unsendable]] before any request is made.
+  * [[PromptError.Unsendable]] before any request is made.
   *
   * @param messages
   *   The messages exchanged so far, oldest first.
@@ -341,7 +342,7 @@ final case class Conversation
 
   /**
     * Appends a message of the model's saying each value as its [[Content]] says
-    * it, as of a value [[ModelClient.ask]] gave, to go on from.
+    * it, as of a value [[QueryService.send]] gave, to go on from.
     *
     * @param content
     *   The values, in reading order.
@@ -361,11 +362,8 @@ final case class Conversation
     * @return
     *   A copy of this conversation ending with the response.
     */
-  def modelSays(response: ModelResponse): Conversation = appended(Message.Model(
-    Option
-      .when(response.text.nonEmpty)(MessagePart.Text(response.text))
-      .toList ++ response.toolCalls,
-  ))
+  def modelSays(response: PromptResponse): Conversation =
+    appended(response.message)
 
   /**
     * Appends a message of the tools' results, answering the calls the model's

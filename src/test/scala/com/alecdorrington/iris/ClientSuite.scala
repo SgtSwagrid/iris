@@ -1,10 +1,12 @@
 package com.alecdorrington.iris
 
-import cats.effect.SyncIO
-import com.alecdorrington.iris.Fixtures.{config, Sending}
+import cats.effect.{Ref, SyncIO}
+import cats.syntax.all.*
+import com.alecdorrington.iris.Fixtures.{access, json, prompting}
+import io.circe.Json
 import munit.FunSuite
 import scala.concurrent.duration.DurationInt
-import sttp.client4.SttpClientException
+import sttp.client4.{Backend, StringBody, SttpClientException}
 import sttp.client4.impl.cats.CatsMonadError
 import sttp.client4.testing.{BackendStub, ResponseStub}
 import sttp.model.{Header, StatusCode}
@@ -13,30 +15,38 @@ class ClientSuite extends FunSuite:
 
   private val prompt = Conversation.userSays("Hello")
 
-  private def client
+  /** A backend answering every request with the body. */
+  private def answering
     (
       body: String,
       status: StatusCode = StatusCode.Ok,
       headers: Seq[Header] = Seq.empty,
-      config: ModelConfig = config,
     )
-    : ModelClient[SyncIO] = ModelClient[SyncIO](
-    config,
-    BackendStub(CatsMonadError[SyncIO]())
-      .whenAnyRequest
-      .thenRespond(ResponseStub.adjust(body, status, headers)),
+    : Backend[SyncIO] = BackendStub(CatsMonadError[SyncIO]())
+    .whenAnyRequest
+    .thenRespond(ResponseStub.adjust(body, status, headers))
+
+  private def service
+    (
+      body: String,
+      status: StatusCode = StatusCode.Ok,
+      headers: Seq[Header] = Seq.empty,
+      access: ApiConfig = access,
+    )
+    : PromptService[SyncIO] = prompting(
+    answering(body, status, headers),
+    access = access,
   )
 
   private def result
-    (client: ModelClient[SyncIO])
-    : Either[Throwable, ModelResponse] = Sending(client)
-    .sent(prompt)
+    (service: PromptService[SyncIO])
+    : Either[Throwable, PromptResponse] = service
+    .send(prompt)
     .attempt
     .unsafeRunSync()
 
   test("a request no answer comes to in time is an error saying so"):
-    val slow = ModelClient[SyncIO](
-      config,
+    val slow = prompting(
       BackendStub(CatsMonadError[SyncIO]())
         .whenAnyRequest
         .thenRespondF(request =>
@@ -48,53 +58,138 @@ class ClientSuite extends FunSuite:
     )
     assertEquals(
       result(slow),
-      Left(ModelError.TimedOut("Anthropic", config.timeout)),
+      Left(ApiError.TimedOut("Anthropic", access.timeout)),
     )
 
-  test("a client over a backend that cannot stream streams its reply whole"):
+  /** Anthropic's response of text and a call, whole. */
+  private val whole =
+    """{"content":[{"type":"text","text":"Hi"},{"type":"tool_use",
+      "id":"call_1","name":"look","input":{}}],"stop_reason":"tool_use"}"""
+
+  /** The same response, as the events of a stream. */
+  private val streamed = """data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}
+
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_1","name":"look","input":{}}}
+
+data: {"type":"content_block_stop","index":1}
+
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
+
+"""
+
+  test(
+    "over a backend that cannot stream, a streamed response is read at once",
+  ):
+    // Each request asks for its response as it would arrive, or is refused.
+    val backend = BackendStub(CatsMonadError[SyncIO]())
+      .whenAnyRequest
+      .thenRespondF(request =>
+        request.body match
+          case StringBody(sent, _, _) => SyncIO(ResponseStub.adjust(
+              if json(sent).hcursor.get[Boolean]("stream").contains(true) then
+                streamed
+              else whole,
+            ))
+          case _ => SyncIO.raiseError(Exception("No JSON was sent.")),
+      )
+    val looked   = MessagePart.ToolCall("call_1", "look", "{}")
+    val response = PromptResponse(
+      "Hi",
+      StopReason.ToolCall,
+      Usage(),
+      // Priced as it came, at Claude Haiku 4.5's rates, though it reports none.
+      Some(Usd(BigDecimal(0))),
+      List(looked),
+    )
+    val events = List(
+      PromptEvent.Written(PromptEvent.Part.Text, "Hi"),
+      PromptEvent.Written(
+        PromptEvent.Part.Call("call_1", "look", None),
+        "{}",
+      ),
+      PromptEvent.Ended(response),
+    )
+    val reading = prompting(backend)
+    // A whole response arrives as the same events, all at the end.
+    List(
+      PromptRequest(prompt),
+      PromptRequest(prompt, streamed = false),
+    ).foreach(request =>
+      assertEquals(
+        reading.stream(request).compile.toList.attempt.unsafeRunSync(),
+        Right(events),
+        request.streamed,
+      ),
+    )
     assertEquals(
-      client("""{"content":[{"type":"text","text":"Hi"},{"type":"tool_use",
-          "id":"call_1","name":"look","input":{}}],"stop_reason":"tool_use"}""")
-        .stream(ModelRequest(prompt))
-        .compile
-        .toList
-        .unsafeRunSync(),
-      List(
-        Delta.Text("Hi"),
-        Delta.ToolCall(MessagePart.ToolCall("call_1", "look", "{}")),
-        // Priced as it came, at Claude Haiku 4.5's rates, though it reports none.
-        Delta.End(
-          StopReason.ToolCall,
-          Usage(),
-          Some(Usd(BigDecimal(0))),
-        ),
+      reading.send(prompt).attempt.unsafeRunSync(),
+      Right(response),
+    )
+    assertEquals(
+      response.message,
+      Message.Model(List(MessagePart.Text("Hi"), looked)),
+    )
+
+  test("a prompt is what the user says, a conversation, or a request of one"):
+    val heard =
+      for
+        bodies <- Ref.of[SyncIO, List[Json]](Nil)
+        said = prompting(
+          BackendStub(CatsMonadError[SyncIO]())
+            .whenAnyRequest
+            .thenRespondF(request =>
+              request.body match
+                case StringBody(sent, _, _) => bodies
+                    .update(_ :+ json(sent))
+                    .as(ResponseStub.adjust(
+                      """{"content":[{"type":"text","text":"Hi"}],
+                        "stop_reason":"end_turn"}""",
+                    ))
+                case _ => SyncIO.raiseError(Exception("No JSON was sent.")),
+            ),
+        )
+        texts <- List(
+          said.send("Hello"),
+          said.send(prompt),
+          said.send(PromptRequest(prompt)),
+        ).sequence
+        sent <- bodies.get
+      yield (texts.map(_.text), sent.map(_.hcursor.downField("messages").focus))
+    assertEquals(
+      heard.unsafeRunSync(),
+      (
+        List.fill(3)("Hi"),
+        List.fill(3)(Some(Json.arr(Json.obj(
+          "role"    -> Json.fromString("user"),
+          "content" -> Json.fromString("Hello"),
+        )))),
       ),
     )
 
   test("a refusal for now carries the wait asked for, given at once here"):
-    // A client whose effect cannot wait sends nothing again.
+    // A service over a host's backend sends each request once.
     List(
       Seq(Header("Retry-After", "30")) -> Some(30.seconds),
       Seq.empty                        -> None,
     ).foreach: (headers, delay) =>
       assertEquals(
-        result(client(
+        result(service(
           "slow down",
           StatusCode.TooManyRequests,
           headers,
         )),
-        Left(ModelError.RateLimited("Anthropic", delay, "slow down")),
+        Left(ApiError.RateLimited("Anthropic", delay, "slow down")),
         headers,
       )
     assertEquals(
-      result(client("busy", StatusCode(529))),
-      Left(ModelError.Overloaded("Anthropic", None, "busy")),
+      result(service("busy", StatusCode(529))),
+      Left(ApiError.Overloaded("Anthropic", None, "busy")),
     )
 
   test("a failure for now carries its status, given at once here"):
     assertEquals(
-      result(client("down", StatusCode.InternalServerError)),
-      Left(ModelError.Transient(
+      result(service("down", StatusCode.InternalServerError)),
+      Left(ApiError.Transient(
         "Anthropic",
         StatusCode.InternalServerError,
         None,
@@ -104,8 +199,8 @@ class ClientSuite extends FunSuite:
 
   test("any other unsuccessful response is an error carrying its status"):
     assertEquals(
-      result(client("no such key", StatusCode.Unauthorized)),
-      Left(ModelError.Unsuccessful(
+      result(service("no such key", StatusCode.Unauthorized)),
+      Left(ApiError.Unsuccessful(
         "Anthropic",
         StatusCode.Unauthorized,
         "no such key",
@@ -114,41 +209,64 @@ class ClientSuite extends FunSuite:
 
   test("a response which is not json at all is malformed"):
     assert(
-      result(client("<html>down for maintenance</html>"))
+      result(service("<html>down for maintenance</html>"))
         .left
         .exists:
-          case ModelError.Malformed("Anthropic", _) => true
-          case _                                    => false,
+          case ApiError.Malformed("Anthropic", _) => true
+          case _                                  => false,
     )
 
   test("a base url which is not a url fails the effect, never the call"):
-    val broken = config.copy(baseUrl = Some("https://proxy.test/%"))
+    val broken = access.copy(baseUrl = Some("https://proxy.test/%"))
     assert(
-      result(client("{}", config = broken))
+      result(service("{}", access = broken))
         .left
         .exists:
-          case ModelError.Misconfigured("Anthropic", _) => true
-          case _                                        => false,
+          case ApiError.Misconfigured("Anthropic", _) => true
+          case _                                      => false,
     )
+
+  test("a key given nowhere fails the effect, before any request"):
+    val unkeyed = ModelProvider.values.toList.filter(_.key(Model.env).isEmpty)
+    assume(
+      unkeyed.nonEmpty,
+      "Every provider's key is set in the environment.",
+    )
+    val never = BackendStub(CatsMonadError[SyncIO]())
+      .whenAnyRequest
+      .thenRespondF(_ =>
+        SyncIO.raiseError(AssertionError("A request was made.")),
+      )
+    unkeyed.foreach: provider =>
+      val keyless = prompting(
+        never,
+        provider.defaultModel,
+        access = ApiConfig(),
+      )
+      assert(
+        result(keyless)
+          .left
+          .exists:
+            case ApiError.Misconfigured(name, detail) =>
+              name == provider.displayName &&
+              detail.contains(provider.keyVariables.head)
+            case _ => false,
+        provider,
+      )
 
   test(
     "a conversation is counted before it is sent, where its provider can count",
   ):
     List(
-      (Model.ClaudeHaiku4_5, """{"input_tokens":42}""", Right(42)),
-      (Model.Gemini2_5Flash, """{"totalTokens":17}""", Right(17)),
-      // OpenAI says it cannot count rather than guessing.
-      (
-        Model.Gpt5,
-        "{}",
-        Left(ModelError.Unsupported("OpenAI", "counting tokens")),
-      ),
+      (Model.ClaudeHaiku4_5, """{"input_tokens":42}""", Some(Right(42))),
+      (Model.Gemini2_5Flash, """{"totalTokens":17}""", Some(Right(17))),
+      // OpenAI has no counter, rather than one guessing.
+      (Model.Gpt5, "{}", None),
     ).foreach: (model, body, count) =>
       assertEquals(
-        client(body, config = config.copy(model = model))
-          .countTokens(ModelRequest(prompt))
-          .attempt
-          .unsafeRunSync(),
+        model
+          .counter(model.provider.api(access, answering(body)))
+          .map(_.countTokens(prompt).attempt.unsafeRunSync()),
         count,
         model,
       )
@@ -182,12 +300,12 @@ class ClientSuite extends FunSuite:
         """{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}""",
       ),
     ).foreach: (provider, name, key, body) =>
-      val keyed = ModelClient[SyncIO](
-        config.copy(model = provider.defaultModel),
+      val keyed = prompting(
         BackendStub(CatsMonadError[SyncIO]())
           .whenRequestMatches(_.header(name).contains(key))
           .thenRespond(ResponseStub.adjust(body, StatusCode.Ok))
           .whenAnyRequest
           .thenRespond(ResponseStub.adjust("unkeyed", StatusCode.Unauthorized)),
+        provider.defaultModel,
       )
       assert(result(keyed).isRight, provider)

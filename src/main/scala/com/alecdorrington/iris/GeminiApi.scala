@@ -15,21 +15,19 @@ private[iris] object GeminiApi extends ProviderApi:
 
   override val provider: ModelProvider = ModelProvider.Gemini
 
-  /** Gemini streams a reply from an endpoint of its own. */
-  override def endpoint
-    (
-      config: ModelConfig,
-      options: ModelRequest.Options,
-      streamed: Boolean,
-    )
-    : Either[ModelError, Uri] =
-    if streamed then streaming(config, config.model)
-    else endpoint(config, config.model)
+  /** Gemini streams a response from a method of its own. */
+  override def path(model: Model, streamed: Boolean): List[String] = calling(
+    model,
+    if streamed then "streamGenerateContent" else "generateContent",
+  )
 
-  override def credentials(config: ModelConfig): Seq[Header] =
-    Seq(Header("x-goog-api-key", config.apiKey))
+  /** Gemini streams server-sent events only where asked to. */
+  override def streaming(uri: Uri): Uri = uri.addParam("alt", "sse")
 
-  override val wholeResponse: Decoder[Either[ModelError, ModelResponse]] =
+  override def credentials(key: String): Seq[Header] =
+    Seq(Header("x-goog-api-key", key))
+
+  override val wholeResponse: Decoder[Either[ApiError, PromptResponse]] =
     Decoder[Response].map(_.toReply)
 
   /**
@@ -141,50 +139,32 @@ private[iris] object GeminiApi extends ProviderApi:
   )
 
   override def counting
-    (
-      config: ModelConfig,
-      conversation: Conversation,
-      options: ModelRequest.Options,
-    )
-    : Either[ModelError, Counting] =
-    for
-      _        <- JsonHttp.refuseUnanswerable(provider, conversation)
-      endpoint <- calling(config, config.model, "countTokens")
-    yield Counting(
-      endpoint,
-      countBody(conversation),
-      Decoder[CountResponse].map(_.totalTokens),
-    )
+    (model: Model, conversation: Conversation)
+    : Option[Either[PromptError, Counting]] = Some(
+    JsonHttp
+      .refuseUnanswerable(provider, conversation)
+      .map(_ =>
+        Counting(
+          calling(model, "countTokens"),
+          countBody(conversation),
+          Decoder[CountResponse].map(_.totalTokens),
+        ),
+      ),
+  )
 
-  /** The URL of a model's method, encoding the model so it cannot add a path. */
-  private def calling
-    (
-      config: ModelConfig,
-      model: Model,
-      method: String,
-    )
-    : Either[ModelError, Uri] = JsonHttp.endpoint(
-    provider,
-    config.origin,
+  /** The path of a model's method, the model one segment, so it adds none. */
+  private def calling(model: Model, method: String): List[String] = List(
     "v1beta",
     "models",
     s"${ model.id }:$method",
   )
-
-  def endpoint(config: ModelConfig, model: Model): Either[ModelError, Uri] =
-    calling(config, model, "generateContent")
-
-  def streaming(config: ModelConfig, model: Model): Either[ModelError, Uri] =
-    calling(config, model, "streamGenerateContent").map(
-      _.addParam("alt", "sse"),
-    )
 
   /**
     * Serialises a conversation to count. Counting takes no
     * `system_instruction`, so a system message is counted as a user message of
     * its own.
     */
-  def countBody(conversation: Conversation): String = JsonHttp.body(
+  def countBody(conversation: Conversation): Json = JsonHttp.objectOf(
     "contents" ->
       (conversation
         .instructions
@@ -195,11 +175,11 @@ private[iris] object GeminiApi extends ProviderApi:
   /** Refuses an empty conversation, and a call whose arguments are no object. */
   override def refuseUnsendable
     (
-      config: ModelConfig,
+      model: Model,
       conversation: Conversation,
-      options: ModelRequest.Options,
+      settings: Settings,
     )
-    : Either[ModelError, Unit] = JsonHttp
+    : Either[PromptError, Unit] = JsonHttp
     .refuseUnanswerable(provider, conversation)
     .flatMap(_ => JsonHttp.refuseUnreadableArguments(provider, conversation))
 
@@ -208,25 +188,24 @@ private[iris] object GeminiApi extends ProviderApi:
   /** Serialises a conversation alike whether streamed. */
   override def body
     (
-      config: ModelConfig,
+      model: Model,
       conversation: Conversation,
-      options: ModelRequest.Options,
-      streamed: Boolean,
+      settings: Settings,
     )
-    : String = JsonHttp.body(
+    : Json = JsonHttp.objectOf(
     "system_instruction" ->
       conversation
         .instructions
         .map(text => Json.obj("parts" -> Json.arr(part(text))))
         .asJson,
-    "tools"            -> tools(options),
+    "tools"            -> tools(settings.tools),
     "contents"         -> contents(conversation.messages).asJson,
     "generationConfig" -> JsonHttp.objectOf(
-      "maxOutputTokens" -> config.limit(options).asJson,
-      "temperature"     -> options.temperature.asJson,
-      "topP"            -> options.topP.asJson,
-      "stopSequences"   -> JsonHttp.unlessEmpty(options.stopSequences),
-      "thinkingConfig"  -> options.effort.map(thinking).asJson,
+      "maxOutputTokens" -> settings.maxTokens.asJson,
+      "temperature"     -> settings.temperature.asJson,
+      "topP"            -> settings.topP.asJson,
+      "stopSequences"   -> JsonHttp.unlessEmpty(settings.stopSequences),
+      "thinkingConfig"  -> settings.effort.map(thinking).asJson,
     ),
   )
 
@@ -304,9 +283,9 @@ private[iris] object GeminiApi extends ProviderApi:
     )
 
   /** Serialises the tools on offer, which Gemini takes under one entry. */
-  private def tools(options: ModelRequest.Options): Json = Option
-    .when(options.tools.nonEmpty)(List(
-      Json.obj("functionDeclarations" -> options.tools.map(declared).asJson),
+  private def tools(offered: List[Tool]): Json = Option
+    .when(offered.nonEmpty)(List(
+      Json.obj("functionDeclarations" -> offered.map(declared).asJson),
     ))
     .asJson
 
@@ -498,15 +477,15 @@ private[iris] object GeminiApi extends ProviderApi:
       * This response as a reply, failing without a candidate: a blocked prompt
       * gets `200` and none, which would pass for an empty reply.
       */
-    def toReply: Either[ModelError, ModelResponse] = candidates
+    def toReply: Either[ApiError, PromptResponse] = candidates
       .flatMap(_.headOption)
-      .toRight(ModelError.Malformed(
+      .toRight(ApiError.Malformed(
         ModelProvider.Gemini.displayName,
         unanswered,
       ))
       .map: candidate =>
         val calls = toolCalls(candidate)
-        ModelResponse(
+        PromptResponse(
           text = text(candidate),
           stopReason = stopped(calls.nonEmpty, candidate.finishReason),
           usage = usageMetadata.fold(Usage())(_.toUsage),

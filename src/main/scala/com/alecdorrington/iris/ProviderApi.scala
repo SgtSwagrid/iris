@@ -4,54 +4,22 @@ import fs2.{RaiseThrowable, Stream}
 import io.circe.{Decoder, Json}
 import scala.annotation.unused
 import scala.concurrent.duration.*
-import sttp.client4.*
 import sttp.model.{Header, Uri}
 
 /**
-  * One provider's API, which [[JsonClient]] and [[SseClient]] alike speak:
-  * where a request goes, how it is written and authenticated, which
-  * conversations the provider refuses, and how its answers read.
+  * One provider's API: how its [[ApiService]] reaches it, and how its
+  * [[PromptService]] speaks to it, where a request goes, how it is written,
+  * which conversations the provider refuses, and how its responses read.
   */
 private[iris] trait ProviderApi:
 
   def provider: ModelProvider
 
-  def endpoint
-    (
-      config: ModelConfig,
-      options: ModelRequest.Options,
-      streamed: Boolean,
-    )
-    : Either[ModelError, Uri]
+  /** The headers authenticating a request with a key. */
+  def credentials(key: String): Seq[Header]
 
-  def body
-    (
-      config: ModelConfig,
-      conversation: Conversation,
-      options: ModelRequest.Options,
-      streamed: Boolean = false,
-    )
-    : String
-
-  def credentials(config: ModelConfig): Seq[Header]
-
-  /** One whole reply, or why it is none. */
-  def wholeResponse: Decoder[Either[ModelError, ModelResponse]]
-
-  /** The reply a stream's events make up, read as they arrive. */
-  def deltas[F[_] : RaiseThrowable](events: Stream[F, Json]): Stream[F, Delta]
-
-  /** Why this provider would refuse the conversation, where it would. */
-  def refuseUnsendable
-    (
-      @unused
-      config: ModelConfig,
-      conversation: Conversation,
-      @unused
-      options: ModelRequest.Options,
-    )
-    : Either[ModelError, Unit] =
-    JsonHttp.refuseUnanswerable(provider, conversation)
+  /** Where a streamed request goes, given where a whole one would. */
+  def streaming(uri: Uri): Uri = uri
 
   /**
     * How long the provider asks to wait before a request it refused is sent
@@ -91,57 +59,80 @@ private[iris] trait ProviderApi:
     )
     : Boolean = false
 
-  /** The fewest tokens a reply may be allowed, which warming asks for. */
+  /** The path of a model's endpoint, for a whole or streamed response. */
+  def path(model: Model, streamed: Boolean): List[String]
+
+  /** A request's body. */
+  def body
+    (
+      model: Model,
+      conversation: Conversation,
+      settings: Settings,
+    )
+    : Json
+
+  /** One whole response, or why it is none. */
+  def wholeResponse: Decoder[Either[ApiError, PromptResponse]]
+
+  /**
+    * Whether a streamed event only opens a stream, before anything the model
+    * writes, as Anthropic's `message_start` and `ping` do, so that a refusal
+    * after it still fails the stream before anything is given.
+    */
+  def opening
+    (
+      @unused
+      event: Json,
+    )
+    : Boolean = false
+
+  /**
+    * The refusal or failure a streamed event reports, where it reports one, as
+    * Anthropic's `error` event does, which fails the stream at the API, so that
+    * one failing before anything else arrives is sent again.
+    */
+  def failure
+    (
+      @unused
+      event: Json,
+    )
+    : Option[ApiError] = None
+
+  /** The response a stream's events make up, read as they arrive. */
+  def deltas[F[_] : RaiseThrowable](events: Stream[F, Json]): Stream[F, Delta]
+
+  /** Why this provider would refuse the conversation, where it would. */
+  def refuseUnsendable
+    (
+      @unused
+      model: Model,
+      conversation: Conversation,
+      @unused
+      settings: Settings,
+    )
+    : Either[PromptError, Unit] =
+    JsonHttp.refuseUnanswerable(provider, conversation)
+
+  /** The fewest tokens a response may be allowed, which warming asks for. */
   def leastMaxTokens: Int = 1
 
   /**
     * The rates of a model this provider serves at a moment since 1970, as its
     * pricing page gives them, with any change it has announced from its day, or
-    * `None` for a model Iris does not list. A reply is priced at the rates of
-    * the moment it arrives.
+    * `None` for a model Iris does not list. A response is priced at the rates
+    * of the moment it arrives.
     */
   def rates(model: Model, at: FiniteDuration): Option[Rates]
 
-  /** What a reply cost at a moment: at the configuration's rates, else listed. */
-  final def cost
-    (
-      config: ModelConfig,
-      usage: Usage,
-      at: FiniteDuration,
-    )
-    : Option[Usd] = config
-    .rates
-    .orElse(rates(config.model, at))
-    .map(_.cost(usage))
-
-  /** The request counting a conversation's tokens, refused where there is none. */
+  /** The request counting a conversation's tokens, or `None` where none can. */
   def counting
     (
       @unused
-      config: ModelConfig,
+      model: Model,
       @unused
       conversation: Conversation,
-      @unused
-      options: ModelRequest.Options,
     )
-    : Either[ModelError, Counting] = Left(ModelError.Unsupported(
-    provider.displayName,
-    "counting tokens",
-  ))
-
-  /** Posts JSON with this provider's credentials and the configured timeout. */
-  final def post
-    (
-      config: ModelConfig,
-      endpoint: Uri,
-      body: String,
-    )
-    : Request[Either[String, String]] = basicRequest
-    .post(endpoint)
-    .body(body)
-    .contentType("application/json")
-    .headers(credentials(config)*)
-    .readTimeout(config.timeout)
+    : Option[Either[PromptError, Counting]] = None
 
 private[iris] object ProviderApi:
 
@@ -170,7 +161,7 @@ private[iris] object ProviderApi:
 /** A request counting a conversation's tokens, and how to read the count back. */
 private[iris] final case class Counting
   (
-    endpoint: Uri,
-    body: String,
+    path: List[String],
+    body: Json,
     tokens: Decoder[Int],
   )

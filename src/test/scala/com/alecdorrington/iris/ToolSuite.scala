@@ -1,6 +1,6 @@
 package com.alecdorrington.iris
 
-import com.alecdorrington.iris.Fixtures.{answer, config, json}
+import com.alecdorrington.iris.Fixtures.{answer, json, model, settings}
 import io.circe.{ACursor, Json}
 import munit.FunSuite
 
@@ -25,7 +25,8 @@ class ToolSuite extends FunSuite:
     ),
   )
 
-  private val offering = ModelRequest.Options(tools = List(weather))
+  private val offering =
+    settings(PromptRequest(Conversation(), tools = List(weather)))
 
   private val asked = MessagePart.ToolCall(
     "call_1",
@@ -62,11 +63,13 @@ class ToolSuite extends FunSuite:
       ),
     ).foreach: (api, declared, schema) =>
       val tool = declared(
-        json(api.body(
-          config,
-          Conversation().userSays("Hi"),
-          offering,
-        )).hcursor,
+        api
+          .body(
+            model,
+            Conversation().userSays("Hi"),
+            offering,
+          )
+          .hcursor,
       )
       assertEquals(
         tool.get[String]("name").toOption,
@@ -79,11 +82,17 @@ class ToolSuite extends FunSuite:
         api.provider,
       )
     assertEquals(
-      json(OpenAiApi.body(
-        config,
-        Conversation().userSays("Hi"),
-        offering,
-      )).hcursor.downField("tools").downN(0).get[String]("type").toOption,
+      OpenAiApi
+        .body(
+          model,
+          Conversation().userSays("Hi"),
+          offering,
+        )
+        .hcursor
+        .downField("tools")
+        .downN(0)
+        .get[String]("type")
+        .toOption,
       Some("function"),
     )
 
@@ -102,12 +111,20 @@ class ToolSuite extends FunSuite:
       "Tallies.",
       Schema[Map[String, Int]].json,
     )
-    val offered  = ModelRequest.Options(tools = List(bare, weather, tally))
-    val declared = json(GeminiApi.body(
-      config,
-      Conversation().userSays("Hi"),
-      offered,
-    )).hcursor.downField("tools").downN(0).downField("functionDeclarations")
+    val offered = settings(PromptRequest(
+      Conversation(),
+      tools = List(bare, weather, tally),
+    ))
+    val declared = GeminiApi
+      .body(
+        model,
+        Conversation().userSays("Hi"),
+        offered,
+      )
+      .hcursor
+      .downField("tools")
+      .downN(0)
+      .downField("functionDeclarations")
     assertEquals(
       declared.downN(0).get[String]("name").toOption,
       Some("ping"),
@@ -122,18 +139,24 @@ class ToolSuite extends FunSuite:
       Some(tally.parameters),
     )
     assertEquals(
-      json(AnthropicApi.body(
-        config,
-        Conversation().userSays("Hi"),
-        offered,
-      )).hcursor.downField("tools").downN(0).downField("input_schema").focus,
+      AnthropicApi
+        .body(
+          model,
+          Conversation().userSays("Hi"),
+          offered,
+        )
+        .hcursor
+        .downField("tools")
+        .downN(0)
+        .downField("input_schema")
+        .focus,
       Some(bare.parameters),
     )
 
   test(
     "anthropic sends a call and its result as blocks, the call's nulls kept",
   ):
-    val body     = json(AnthropicApi.body(config, exchange, offering))
+    val body     = AnthropicApi.body(model, exchange, offering)
     val messages = body.hcursor.downField("messages")
     val call     = messages.downN(1).downField("content").downN(0)
     val result   = messages.downN(2).downField("content").downN(0)
@@ -159,7 +182,7 @@ class ToolSuite extends FunSuite:
     )
 
   test("openai sends a call's nulls as they are, and a result as a message"):
-    val body     = json(OpenAiApi.body(config, exchange, offering))
+    val body     = OpenAiApi.body(model, exchange, offering)
     val messages = body.hcursor.downField("messages")
     val call     = messages.downN(1)
     assertEquals(
@@ -186,7 +209,7 @@ class ToolSuite extends FunSuite:
     )
 
   test("gemini sends a call and its result as parts, the call's nulls kept"):
-    val body     = json(GeminiApi.body(config, exchange, offering))
+    val body     = GeminiApi.body(model, exchange, offering)
     val contents = body.hcursor.downField("contents")
     val call     = contents
       .downN(1)
@@ -273,17 +296,20 @@ class ToolSuite extends FunSuite:
   test("gemini is sent each call as it gave it, and each result by its id"):
     val signed = asked.copy(signature = Some("c2lnbmVk"))
     val named  = asked.copy(id = "weather")
-    val sent   = json(GeminiApi.body(
-      config,
-      Conversation()
-        .userSays("What is the weather?")
-        .modelSays(signed, named)
-        .toolSays(
-          answered,
-          MessagePart.ToolResult("weather", "weather", "Sunny."),
-        ),
-      offering,
-    )).hcursor.downField("contents")
+    val sent   = GeminiApi
+      .body(
+        model,
+        Conversation()
+          .userSays("What is the weather?")
+          .modelSays(signed, named)
+          .toolSays(
+            answered,
+            MessagePart.ToolResult("weather", "weather", "Sunny."),
+          ),
+        offering,
+      )
+      .hcursor
+      .downField("contents")
     // A call named for want of an id is sent with none, as is its result.
     assertEquals(
       sent.downN(1).get[List[Json]]("parts").toOption,
@@ -318,19 +344,18 @@ class ToolSuite extends FunSuite:
     "gemini counts the contents it would send, its system message the user's",
   ):
     val briefed  = exchange.withInstructions("Be brief.")
-    val contents =
-      (body: String) => json(body).hcursor.get[List[Json]]("contents")
-    val system = Json.obj(
+    val contents = (body: Json) => body.hcursor.get[List[Json]]("contents")
+    val system   = Json.obj(
       "role"  -> Json.fromString("user"),
       "parts" -> Json.arr(Json.obj("text" -> Json.fromString("Be brief."))),
     )
     assertEquals(
       contents(GeminiApi.countBody(briefed)),
-      contents(GeminiApi.body(config, briefed, offering)).map(system :: _),
+      contents(GeminiApi.body(model, briefed, offering)).map(system :: _),
     )
 
   test("a model's reply can be appended and answered"):
-    val reply = ModelResponse(
+    val reply = PromptResponse(
       "Let me look.",
       StopReason.ToolCall,
       toolCalls = List(asked),
@@ -345,7 +370,7 @@ class ToolSuite extends FunSuite:
     assertEquals(next.messages(2).parts, List(answered))
 
   test("a model's reply saying nothing but its calls is appended as those"):
-    val reply = ModelResponse(
+    val reply = PromptResponse(
       "",
       StopReason.ToolCall,
       toolCalls = List(asked),

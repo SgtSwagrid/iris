@@ -6,7 +6,7 @@ import io.circe.{Decoder, Json}
 import io.circe.parser.parse
 import io.circe.syntax.*
 import scala.concurrent.duration.FiniteDuration
-import sttp.model.{Header, Uri}
+import sttp.model.Header
 
 /**
   * The [[ProviderApi]] of the [OpenAI Chat Completions
@@ -16,24 +16,13 @@ private[iris] object OpenAiApi extends ProviderApi:
 
   override val provider: ModelProvider = ModelProvider.OpenAi
 
-  override def endpoint
-    (
-      config: ModelConfig,
-      options: ModelRequest.Options,
-      streamed: Boolean,
-    )
-    : Either[ModelError, Uri] = JsonHttp.endpoint(
-    provider,
-    config.origin,
-    "v1",
-    "chat",
-    "completions",
-  )
+  override def path(model: Model, streamed: Boolean): List[String] =
+    List("v1", "chat", "completions")
 
-  override def credentials(config: ModelConfig): Seq[Header] =
-    Seq(Header.authorization("Bearer", config.apiKey))
+  override def credentials(key: String): Seq[Header] =
+    Seq(Header.authorization("Bearer", key))
 
-  override val wholeResponse: Decoder[Either[ModelError, ModelResponse]] =
+  override val wholeResponse: Decoder[Either[ApiError, PromptResponse]] =
     Decoder[Response].map(_.toReply)
 
   /**
@@ -179,11 +168,11 @@ private[iris] object OpenAiApi extends ProviderApi:
   /** Refuses an empty conversation, and one carrying media other than pictures. */
   override def refuseUnsendable
     (
-      config: ModelConfig,
+      model: Model,
       conversation: Conversation,
-      options: ModelRequest.Options,
+      settings: Settings,
     )
-    : Either[ModelError, Unit] = JsonHttp
+    : Either[PromptError, Unit] = JsonHttp
     .refuseUnanswerable(provider, conversation)
     .flatMap(_ =>
       JsonHttp.refuseUnsupportedMedia(provider, conversation, media),
@@ -204,27 +193,27 @@ private[iris] object OpenAiApi extends ProviderApi:
 
   override def body
     (
-      config: ModelConfig,
+      model: Model,
       conversation: Conversation,
-      options: ModelRequest.Options,
-      streamed: Boolean,
+      settings: Settings,
     )
-    : String =
+    : Json =
     val messages = conversation.instructions.map(text("system", _)).toList ++
       conversation.messages.flatMap(message)
-    JsonHttp.body(
-      "model"                 -> config.model.id.asJson,
-      "max_completion_tokens" -> config.limit(options).asJson,
-      "temperature"           -> options.temperature.asJson,
-      "top_p"                 -> options.topP.asJson,
-      "stop"                  -> JsonHttp.unlessEmpty(options.stopSequences),
-      "tools"                 -> JsonHttp.unlessEmpty(options.tools.map(tool)),
-      "reasoning_effort"      ->
-        options.effort.map(reasoning(config.model, _)).asJson,
-      "stream" -> Option.when(streamed)(true).asJson,
+    JsonHttp.objectOf(
+      "model"                 -> model.id.asJson,
+      "max_completion_tokens" -> settings.maxTokens.asJson,
+      "temperature"           -> settings.temperature.asJson,
+      "top_p"                 -> settings.topP.asJson,
+      "stop"                  -> JsonHttp.unlessEmpty(settings.stopSequences),
+      "tools"                 -> JsonHttp.unlessEmpty(settings.tools.map(tool)),
+      "reasoning_effort" -> settings.effort.map(reasoning(model, _)).asJson,
+      "stream"           -> Option.when(settings.streamed)(true).asJson,
       // Usage is withheld from a stream unless asked for.
       "stream_options" ->
-        Option.when(streamed)(Json.obj("include_usage" -> true.asJson)).asJson,
+        Option
+          .when(settings.streamed)(Json.obj("include_usage" -> true.asJson))
+          .asJson,
       "messages" -> messages.asJson,
     )
 
@@ -484,14 +473,14 @@ private[iris] object OpenAiApi extends ProviderApi:
     )
     derives Decoder:
 
-    def toReply: Either[ModelError, ModelResponse] = choices
+    def toReply: Either[ApiError, PromptResponse] = choices
       .headOption
-      .toRight(ModelError.Malformed(
+      .toRight(ApiError.Malformed(
         ModelProvider.OpenAi.displayName,
         "no choices",
       ))
       .map: choice =>
-        ModelResponse(
+        PromptResponse(
           text = choice.message.content.getOrElse(""),
           stopReason = stopReason(choice.finishReason),
           usage = usage.fold(Usage())(_.toUsage),

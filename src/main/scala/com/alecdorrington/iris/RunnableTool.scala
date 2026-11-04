@@ -5,10 +5,10 @@ import cats.syntax.all.*
 import io.circe.parser.parse
 
 /**
-  * A tool the model may ask to have run, with what running it does: given to
-  * [[ModelClient.ask]], it is offered to the model and run wherever the model
-  * asks for it, the model then told its output and asked to go on. What the
-  * tool does, and whether it may, is the host's, as `run` decides.
+  * A tool the model may ask to have run, with what running it does: given to an
+  * [[AgentService]], it is offered to the model and run wherever the model asks
+  * for it, the model then told its output and asked to go on. What the tool
+  * does, and whether it may, is the host's, as `run` decides.
   *
   * @tparam F
   *   The effect type.
@@ -74,9 +74,8 @@ object RunnableTool:
 /** The tools an ask runs, where the model asks for those alone. */
 private[iris] final case class Toolbox[F[_]](tools: List[RunnableTool[F]]):
 
-  /** The options, offering these tools beside those offered already. */
-  def offered(options: ModelRequest.Options): ModelRequest.Options = options
-    .copy(tools = options.tools ++ tools.map(_.tool))
+  /** The tools offered, these beside those offered already. */
+  def offered(others: List[Tool]): List[Tool] = others ++ tools.map(_.tool)
 
   /** Whether the calls are some, and every one of a tool in this box. */
   def runs(calls: List[MessagePart.ToolCall]): Boolean = calls.nonEmpty &&

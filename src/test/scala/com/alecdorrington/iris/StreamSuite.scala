@@ -1,7 +1,7 @@
 package com.alecdorrington.iris
 
 import cats.effect.SyncIO
-import com.alecdorrington.iris.Fixtures.{config, json}
+import com.alecdorrington.iris.Fixtures.{model, settings}
 import fs2.{Pipe, Stream}
 import io.circe.Json
 import munit.FunSuite
@@ -251,22 +251,20 @@ data: {"type":"content_block_stop","index":0}
   )
 
   test("a streaming request asks to be streamed, and openai for its usage"):
-    val anthropic = json(AnthropicApi.body(
-      config,
+    val anthropic = AnthropicApi.body(
+      model,
       Conversation().userSays("Hi"),
-      ModelRequest.Options(),
-      true,
-    ))
+      settings(PromptRequest(Conversation().userSays("Hi"))),
+    )
     assertEquals(
       anthropic.hcursor.get[Boolean]("stream").toOption,
       Some(true),
     )
-    val openAi = json(OpenAiApi.body(
-      config,
+    val openAi = OpenAiApi.body(
+      model,
       Conversation().userSays("Hi"),
-      ModelRequest.Options(),
-      true,
-    ))
+      settings(PromptRequest(Conversation().userSays("Hi"))),
+    )
     assertEquals(
       openAi.hcursor.get[Boolean]("stream").toOption,
       Some(true),

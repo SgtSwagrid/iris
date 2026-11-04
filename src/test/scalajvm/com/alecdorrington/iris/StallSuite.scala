@@ -2,7 +2,7 @@ package com.alecdorrington.iris
 
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
-import com.alecdorrington.iris.Fixtures.config
+import com.alecdorrington.iris.Fixtures.{access, config, model}
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets.UTF_8
@@ -20,7 +20,7 @@ class StallSuite extends FunSuite:
     */
   private def serving
     (reply: String, stalls: Boolean)
-    (test: ModelConfig => Unit)
+    (test: ApiConfig => Unit)
     : Unit =
     val over    = CountDownLatch(1)
     val threads = Executors.newCachedThreadPool()
@@ -38,7 +38,7 @@ class StallSuite extends FunSuite:
     server.setExecutor(threads)
     server.start()
     try
-      test(config.copy(
+      test(access.copy(
         baseUrl = Some(s"http://127.0.0.1:${ server.getAddress.getPort }"),
         timeout = 1.second,
       ))
@@ -48,12 +48,12 @@ class StallSuite extends FunSuite:
       threads.shutdownNow()
       ()
 
-  private def asked(configured: ModelConfig) = ModelClient
-    .resource[IO](configured)
-    .use(_.ask[String](Conversation.userSays("Hello")).attempt)
+  private def asked(configured: ApiConfig) = model
+    .prompt[IO](configured, config)
+    .use(_.query.send[String](Conversation.userSays("Hello")).attempt)
     .unsafeRunTimed(30.seconds)
 
-  private val timedOut = ModelError.TimedOut("Anthropic", 1.second)
+  private val timedOut = ApiError.TimedOut("Anthropic", 1.second)
 
   test("a reply that arrives whole is read as before"):
     serving(
@@ -77,20 +77,17 @@ class StallSuite extends FunSuite:
       stalls = false,
     )(configured =>
       assertEquals(
-        ModelClient
-          .resource[IO](configured)
-          .use(
-            _.stream(ModelRequest(Conversation.userSays("Hello")))
-              .compile
-              .toList,
-          )
+        model
+          .prompt[IO](configured, config)
+          .use(_.stream(Conversation.userSays("Hello")).compile.toList)
           .unsafeRunTimed(30.seconds),
         // Claude Haiku 4.5's $1 and $5 per million tokens.
-        Some(List(Delta.End(
+        Some(List(PromptEvent.Ended(PromptResponse(
+          "",
           StopReason.Completed,
           Usage(uncachedTokens = 3, visibleTokens = 2),
           Some(Usd(BigDecimal("0.000013"))),
-        ))),
+        )))),
       ),
     )
 
@@ -112,17 +109,12 @@ class StallSuite extends FunSuite:
       stalls = true,
     )(configured =>
       assertEquals(
-        ModelClient
-          .resource[IO](configured)
-          .use(
-            _.stream(ModelRequest(Conversation.userSays("Hello")))
-              .attempt
-              .compile
-              .toList,
-          )
+        model
+          .prompt[IO](configured, config)
+          .use(_.stream(Conversation.userSays("Hello")).attempt.compile.toList)
           .unsafeRunTimed(30.seconds),
         Some(List(
-          Right(Delta.Text("Hel")),
+          Right(PromptEvent.Written(PromptEvent.Part.Text, "Hel")),
           Left(timedOut),
         )),
       ),

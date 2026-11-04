@@ -1,10 +1,11 @@
 package com.alecdorrington.iris
 
 /**
-  * A piece of a reply arriving through [[ModelClient.stream]]: a run of
-  * [[Text]] and [[ToolCall]]s, followed by one [[End]].
+  * A piece of a response as a provider's reader reads it: a run of [[Text]] and
+  * [[ToolCall]]s, followed by one [[End]], which a [[PromptService]] gathers
+  * into [[PromptEvent]]s, pricing the response.
   */
-enum Delta:
+private[iris] enum Delta:
 
   /**
     * More of the reply's text, to append to what came before.
@@ -30,16 +31,17 @@ enum Delta:
     *
     * @param usage
     *   The token counts of the whole reply.
-    *
-    * @param cost
-    *   What the reply cost, as [[ModelResponse.cost]] says.
     */
-  case End
-    (
-      stopReason: StopReason,
-      usage: Usage,
-      cost: Option[Usd] = None,
-    )
+  case End(stopReason: StopReason, usage: Usage)
+
+private[iris] object Delta:
+
+  /** The deltas of a whole response, as it would have arrived. */
+  def of(response: PromptResponse): List[Delta] = List.concat(
+    Option.when(response.text.nonEmpty)(Text(response.text)),
+    response.toolCalls.map(ToolCall(_)),
+    List(End(response.stopReason, response.usage)),
+  )
 
 /**
   * A tool call whose arguments arrive in fragments of JSON, as Anthropic and

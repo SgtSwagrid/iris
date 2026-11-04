@@ -2,7 +2,7 @@ package com.alecdorrington.iris
 
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
-import com.alecdorrington.iris.Fixtures.config
+import com.alecdorrington.iris.Fixtures.{access, config, model}
 import munit.FunSuite
 import scala.concurrent.Future
 import scala.concurrent.duration.*
@@ -34,13 +34,16 @@ class CollectionSuite extends FunSuite:
     )
     Server(Some(begun))
       .flatMap(served =>
-        ModelClient
-          .resource[IO](config.copy(baseUrl = Some(served.address)))
+        model
+          .prompt[IO](
+            access.copy(baseUrl = Some(served.address)),
+            config,
+          )
           .map(served -> _),
       )
-      .use((served, client) =>
-        client
-          .stream(ModelRequest(Conversation.userSays("Count.")))
+      .use((served, prompt) =>
+        prompt
+          .stream(Conversation.userSays("Count."))
           .evalTap(_ => collected)
           .take(1)
           .compile

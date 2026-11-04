@@ -14,44 +14,63 @@ Keep it concise and actionable.
 This is Iris, a Scala 3 library giving one provider-agnostic interface to the APIs of large language models, with
 adapters for Anthropic, OpenAI and Google Gemini, built on Cats Effect, sttp and Circe. It is still a prototype.
 
-It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js. `ModelClient` is the public interface: callers `ask` a `Conversation`
-for a value of any type with a `Schema`, `String` included, as a uniform `ValidatedResponse[F, A]`: its `value` as soon
-as all but its streams is read, and its `responses`, an `F[List[ModelResponse]]` of every response the ask took
-(retries, tool and `emit` rounds), once the last ends (the user chose one `ask` with the responses lazy over a second,
-streamed ask). The `ValidatedResponse` is their summary, totalling them (`usage`, `cost`); no made-up `ModelResponse`
-sums them (the user's choice). A `ModelResponse` is one response as the provider gave it: what `send` and `warmCache`
-give, and what `ModelError.UnreadableResponse` keeps. A `ModelRequest` is a conversation and its `ModelRequest.Options`, which
-`send`, `stream`, `countTokens` and `warmCache` take, one parameter, so that a wrapper's overrides never break when a
-request gains a field; `ask` takes the conversation and options apart. `send` is the protected request every
-ask of a type holding no stream makes (`Schema.gradual` false), and `stream` (text and tool calls as they arrive,
-through an `SseClient` where the backend can stream) the one every other makes; `JsonClient` implements both, and
-wrappers override them (`ModelClient.Forwarding`, `mapK`). `stream` defaults to `send`'s response whole, so a client
-over a backend that cannot stream (`ModelClient(config, backend: Backend[F])`, as the SyncIO tests build), or one a
-host writes with `send` alone, still answers a type holding a stream, all at once. `ask` needs `Async`, as it reads a
-streamed response in a fiber of its own (unscoped, by the user's choice: read to its end once the value is given,
-unless `ValidatedResponse.cancel`, which the user asked for, cancels that fiber);
-tests in `SyncIO` ask through `Fixtures.askWhole`, which is `WholeAsker.ask` over `send`. Each `ModelProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`, `GeminiApi`, sharing
-`JsonHttp`), which tells the one `JsonClient` and the one `SseClient` all they need to know of it: its endpoints,
-request bodies, credentials, the conversations it refuses, how its replies read, and how it counts tokens. Anything
-provider-specific goes there, never in the clients. `ModelConfig` holds a model (and so its provider), key, token limit and an optional base URL, and
-`ModelConfig.fromEnv` reads them from `LLM_*` and the providers' `*_API_KEY` variables (`ModelConfig.from` through a
-lookup of the host's), with the token limit when `LLM_MAX_TOKENS` is unset a parameter, for hosts whose replies run
-longer.
+It is one module in `com.alecdorrington.iris`, cross-built for the JVM and Scala.js, built as four public layers (the
+user's design, 2026-11-04, written up at https://claude.ai/artifact/NPwB9TdKkKwjNzpgVJ57Bb), each a service made from
+the one below with a request, a response, a configuration and errors of its own:
+- `api` (`ApiService`, `ApiRequest`, `ApiConfig`, `ApiError`): one exchange of a provider's own JSON, made by
+  `ModelProvider.api`. `HttpApi` implements it over HTTP for every provider, as its `ProviderApi` says (credentials,
+  origin, refusals, Gemini's `alt=sse`), streamed requests through `Streaming`'s exchanges; `Retrying` (`retrying`) is its
+  middleware, applied by `ModelProvider.api` but over a backend that cannot stream.
+- `prompt` (`PromptService`, `PromptRequest`, `PromptResponse`, `PromptEvent`, `PromptConfig`, `PromptError`): one
+  exchange of text, made by `model.prompt`. `ProviderPrompt` implements it over an `ApiService`, writing bodies and
+  reading responses as the model's `ProviderApi` says, through the internal `Delta`, which it gathers into
+  `PromptEvent`s, pricing the response at its end. `metered` and `Budget.limits` (`limitedBy`) are its middleware.
+  `TokenCounter` (`model.counter(api)`) stands apart, as counting is no prompt.
+- `query` (`QueryService`, `QueryRequest`, `QueryResponse`, `QueryConfig`, `QueryError`): a value of any type with a
+  `Schema`, made by `prompt.query`.
+- `agent` (`AgentService`, `AgentRequest`, `AgentResponse`, `AgentConfig`): a value with tools run, made by
+  `query.agent(tools*)`. For now `Querying` runs both, a query being an agent with no tools: `Agency` asks through
+  its query's `prompt` and `config` with its own `Toolbox`, and groups the responses into rounds after.
+Every service has one abstract method: `send` for `query` and `agent`, and `stream` for `api` and `prompt`, whose
+responses hold no type to carry a stream, where `send` is `stream` gathered, forcing `streamed = false`. A request
+holds the one below's (`agentRequest.query.prompt.conversation`), and every `send` takes `into[ThatLayersRequest]`
+with conversions in the request's companion from text, a conversation and lower requests. A middleware is a function
+from a service to one of its layer (`PromptService` and `ApiService` being single-abstract-method traits, a lambda is
+one). Configuration (`XConfig`) is what a service is built with, every field defaulted, and a request's `Option`s
+override it; nothing is nested as `Options`. Every layer's limit on requests to the one below is `maxIterations`
+(`ApiConfig`'s tries, `QueryConfig`'s attempts), and each response lists them as `iterations`. Callers query for a
+value of any type with a `Schema`, `String` included, as a uniform `QueryResponse[F, A]`: its `value` as soon as all
+but its streams is read, and its `iterations`, an `F[List[PromptResponse]]` of every response the query took
+(attempts, tool and `emit` rounds), once the last ends; the response is their summary, totalling them (`usage`,
+`cost`). A query of a type holding no stream sends whole (`Schema.gradual` false); every other streams. A service
+over a backend that cannot stream answers a streamed request whole, reading its SSE body at once, so it still answers
+a type holding a stream, all at once. A query needs `Async`, as it reads a streamed response in a fiber of its own
+(unscoped, by the user's choice: read to its end once the value is given, unless `QueryResponse.cancel`, which the
+user asked for, cancels that fiber); tests in `SyncIO` ask through `Fixtures.askWhole`, which is `WholeAsker.ask`
+over a prompt service's `send`. Each `ModelProvider` has one `ProviderApi` object (`AnthropicApi`, `OpenAiApi`,
+`GeminiApi`, sharing `JsonHttp`), which tells `HttpApi` and `ProviderPrompt` all they need to know of it: its paths,
+request bodies, credentials, the conversations it refuses, how its responses read, and how it counts tokens.
+Anything provider-specific goes there, never in the services. `Model.fromEnv`, `ApiConfig.fromEnv` and
+`PromptConfig.fromEnv` read `LLM_*` and the providers' `*_API_KEY` variables (each `from` through a lookup of the
+host's), `PromptService.fromEnv` all three, with the token limit when `LLM_MAX_TOKENS` is unset a parameter, for
+hosts whose responses run longer. A key not configured is read from the provider's variable when its `ApiService`
+is made, and a request with none fails with `ApiError.Misconfigured`.
 
 - Names are plain and of one sense (the user's 0.5.0 naming pass): never a name as readily taken for a verb as for
-  what it names, as `Reply` and `Answer` were (`ModelRequest`, with its prefix, reads only as a thing), nor "assistant" (a message's owners are the user, the model and the tools, each provider naming them as
-  its API does). Public types take the `Model` prefix (`ModelClient`, `ModelRequest`, `ModelResponse`, `ModelError`),
-  never `Llm`, and never a name sttp has too (`Response`, `RequestOptions`), as hosts import `sttp.client4.*` beside
-  Iris: hence `ModelRequest.Options`. A conversation's messages are said by `userSays`, `modelSays` and `toolSays`. `Message.Model` hides the
+  what it names, as `Reply` and `Answer` were (`PromptRequest`, with its prefix, reads only as a thing), nor "assistant" (a message's owners are the user, the model and the tools, each provider naming them as
+  its API does). Public types take their layer's name (`ApiService`, `PromptRequest`, `QueryResponse`, `AgentConfig`;
+  the layers were named `api`, `prompt`, `query` and `agent` by the user, who rejected `model`, read as a data model,
+  and `wire`, `text`, `structured`), never `Llm`, and never a name sttp has too (`Response`, `RequestOptions`), as hosts
+  import `sttp.client4.*` beside Iris. A conversation's messages are said by `userSays`, `modelSays` and `toolSays`. `Message.Model` hides the
   `Model` type under `import Message.*`, so owners are written `Message.Model` and `Message.User`.
 - Clients are stateless: no session identity reaches the provider, and a conversation's whole history travels with
   each `Conversation`. Keep it that way.
 - Every `ProviderApi` must normalise what it returns: the reply text, a `StopReason` (unknown labels kept as `Other`) and
-  token usage in `ModelResponse`. An unsuccessful response is a refusal for now, `ModelError.RateLimited` (`429`)
+  token usage in `PromptResponse`. An unsuccessful response is a refusal for now, `ApiError.RateLimited` (`429`)
   or `Overloaded` (`503`, Anthropic's `529`), or a failure for now, `Transient` (`408`, `409`, `500`, `502`,
   `504`, as the providers' SDKs retry them, a review's request), each with the wait the provider asked for, or
-  else `ModelError.Unsuccessful` (status and body), as `Refusal.of` says; an unreadable one is `ModelError.Malformed`;
-  a request no answer comes to within `ModelConfig.timeout` is `ModelError.TimedOut`, such as one whose reply
+  else `ApiError.Unsuccessful` (status and body), as `Refusal.of` says; an unreadable one is `ApiError.Malformed`;
+  a request no answer comes to within `ApiConfig.timeout` is `ApiError.TimedOut`, such as one whose reply
   takes too long to write; other transport failures are sttp's own. Each `ProviderApi` reads its own wait
   (`retryAfter`: `retry-after` in whole seconds for all; OpenAI's `retry-after-ms` first; else the reset of a
   limit whose remaining header is `0`, Anthropic's an RFC 3339 time, read by hand through `ProviderApi.utc`
@@ -64,8 +83,8 @@ longer.
   `error` event is read as a refusal of its type's status (`overloaded_error` as `529`, `api_error` as `500`); OpenAI's and Gemini's
   streams are not read for errors yet. Waits are clamped (`Refusal.nanos`) so that adding them never
   overflows.
-- The JDK's client counts a request's read timeout only until its reply begins, so `resource` wraps the backend it
-  makes in `Deadlined`, which gives each exchange that long whole, body included, and `SseClient.bounded` gives each
+- The JDK's client counts a request's read timeout only until its reply begins, so `ModelProvider.api` wraps the backend
+  it makes in `Deadlined`, which gives each exchange that long whole, body included, and `Streaming.bounded` gives each
   next part of a stream that long. Neither may wait for the read it gives up on, which cannot be cancelled: sttp
   reads a body in `F.blocking`, and fs2's reactive-streams subscriber waits for a stream's next part in `F.async_`.
   So `Deadlined` uses `timeoutAndForget`, never `timeout` or `timeoutTo`, and `bounded` reads the stream on a fiber
@@ -74,12 +93,12 @@ longer.
   stall may hold a blocking thread (a reply) or two fibers (a stream, unless its exchange is aborted, below) for as
   long as the backend lives, and a reply arriving after its request was given up on is read and dropped; both are
   the price of never hanging the caller.
-- A streamed reply given up on (`ValidatedResponse.cancel`, a stream dropped early, a timeout or a failure) must close
+- A streamed reply given up on (`QueryResponse.cancel`, a stream dropped early, a timeout or a failure) must close
   its connection at once, or the provider goes on writing, and charging for, a reply nobody reads, as Code Switch saw
   of a cancelled one. sttp's backends do not: `FetchFs2Backend` cancels a body's reader only once it is read to its
   end or fails, never when dropped, and aborts its own `AbortController` only until the reply begins; and both it
   (`fromFuture` of `reader.read()`) and the JDK's (fs2's reactive-streams subscriber, in `async_`) wait for each part
-  uninterruptibly, so a cancel waits for the next part, and for good where the reply is silent. So `SseClient`
+  uninterruptibly, so a cancel waits for the next part, and for good where the reply is silent. So `Streaming`
   streams each reply through an `Exchange` of its own, a backend and an `abort`, which `Stream.bracket` aborts once
   the stream ends, however it ends (after the body's end it does nothing, so a connection read to its end is reused),
   and which `Async.cancelable` aborts where the request is cancelled before its reply begins. `Platform.backends`
@@ -91,54 +110,55 @@ longer.
   `Test / jsEnv` in `build.sbt`); on the JVM, one JDK client for every backend (built as sttp builds its
   own, and shut down on release with `shutdownNow`, which sttp's own never did: `close` would wait for requests given
   up on, which may never end; only from Java 21, so it is called only there), each reply's through an `Abortable` wrapper, whose `AbortableBody` cancels the body's subscription, closing
-  its connection, and ends the body with an error, freeing the read. A host's backend (`ModelClient(config,
+  its connection, and ends the body with an error, freeing the read. A host's backend (`ModelProvider.api(config,
   backend)`) aborts nothing of Iris's (`Exchange.abort` is `unit`). `AbortSuite` checks each way of giving up against
   a local server on each platform (the JDK's sockets, Node's `http`), which notes when the client closes its
   connection, while it writes nothing.
-  `ModelClient.apply` takes the host's backend as it is, and stays on `MonadThrow`, as the shared tests run in
+  `ModelProvider.api` over a plain `Backend` takes it as it is, and needs only `Sync`, as the shared tests run in
   `SyncIO`.
-- Models are `Model` cases, never strings: each names the provider serving it (`ModelConfig.provider` is its model's)
+- Models are `Model` cases, never strings: each names the provider serving it (a prompt service's is its model's)
   and its API `id`, which `Model.parse` reads back. A model Iris does not list is a `Model.Other`,
   made only by `Model.of(provider, id)` (so that a listed id is always its listed case, and a blank one none, and
   Gemini's `models/` is dropped) and read as `provider:id`, so that a bare name must still be a listed one; list a new model as a case of its own. What one provider's models differ in
   (Anthropic's sampling and prefill, OpenAI's highest reasoning effort) is kept in its `ProviderApi` (`AnthropicApi`,
-  `OpenAiApi`), as sets of the older cases that differ from the newest, so that `Other` is taken to be as new as the newest. A client prompts its configuration's model alone: no option names another,
+  `OpenAiApi`), as sets of the older cases that differ from the newest, so that `Other` is taken to be as new as the newest. A prompt service prompts its own model alone: no setting names another,
   so a request can never reach a provider that does not serve its model. `ModelProvider.defaultModel` must stay a `def`: as a
   constructor parameter, the two enums would each read the other while it is still being made, and see `null`.
 - A set but unrecognised `LLM_PROVIDER` or `LLM_MODEL` means unconfigured (`None`), never a fall back to key inference.
-- The library does no throttling or logging of its own; those are the host's to wrap around a client. It retries
-  only two things: `ask` asks again after a reply it cannot read, and a client made by `resource`, `fromEnv` or
-  the streaming `apply` (`ModelClient.streaming`) sends again a request refused or failed for now
-  (`RateLimited`, `Overloaded`, `Transient`), as `ModelConfig.retries` (`Retries`: attempts, backoff, patience) says, through `Retrying`, the
-  innermost `Forwarding`, so a host's `Budget` or meter sees one request. Alec agreed (2026-11-03, for Code
+- The library does no throttling or logging of its own; those are the host's middleware. It retries only two
+  things: a query asks again after a response it cannot read, and an `ApiService` made by `ModelProvider.api` (but
+  over a backend that cannot stream) sends again a request refused or failed for now (`RateLimited`, `Overloaded`,
+  `Transient`), as its `ApiConfig` (`maxIterations`, `backoff`, `patience`) says, through `Retrying`, the api
+  layer's middleware, so that a host's `Budget` or meter on the prompt layer sees one request. Alec agreed (2026-11-03, for Code
   Switch's many tabs) that backing off from providers' limits belongs in Iris, as the providers' own SDKs do it.
   It waits as asked plus up to `backoff` at random, else `backoff` doubling, less up to half at random, and
-  never past `patience` in all, then gives the last refusal, with the wait asked for, for the host's user. A
-  stream is sent again only while it has emitted nothing (a `Ref` set by its first chunk; `Stream.handleErrorWith`
-  closes the failed attempt's scope, aborting its exchange). `ModelClient.apply` over a plain `Backend` stays on
-  `MonadThrow`, so cannot wait, and sends each request once. Its tests (`RetrySuite`) run in virtual time through
+  never past `patience` in all, then gives the last refusal, with the wait asked for, for the host's user. Every
+  request is a stream there, a whole one of one element, so a request is sent again only while it has emitted
+  nothing (a `Ref` set by its first chunk; `Stream.handleErrorWith` closes the failed attempt's scope, aborting its
+  exchange). Events that only open a stream (`ProviderApi.opening`: Anthropic's `message_start` and
+  `ping`) are held back until another comes (`HttpApi.held`), so that a refusal right after them, before any text, is
+  still sent again, and a streamed `error` event fails the api's stream (`ProviderApi.failure`), below `Retrying`. An `ApiService` over a plain `Backend` needs only `Sync`, so cannot wait, and sends each request once. Its tests (`RetrySuite`) run in virtual time through
   cats-effect's `TestControl` (`cats-effect-testkit`, a test dependency), whose `realTime` starts at 1970, and
   pass `Retrying` a fixed draw. A transport failure or `TimedOut` is not sent again, as a request given up on
   may have been answered, and charged for.
-  `ModelClient.metered` (the user approved it for Code Switch's spending total) runs a host's function on each
-  request's `Usage` and `cost` as its reply comes: once per attempt of an ask, before it is read, once for
-  `warmCache`, and once for each `stream`, at its `Delta.End` (one stopped before its end reports nothing). It is the
-  one `Forwarding` overriding every method that spends, so a method that spends added later must be metered there.
-  The one policy Iris offers is opt-in: a `Budget` (the user asked for USD limits per session), a `Ref` of what was
-  spent shared by every client it `limits`, each a `ModelClient.Forwarding` refusing requests over `metered`, which
-  charges them (never `mapK`, which wraps each pull of a stream and so can hold no check across one). It refuses a
-  request, or a stream before it starts, once the limit is spent (`ModelError.OverBudget`), then charges each reply's
+  `PromptService.metered` (the user approved it for Code Switch's spending total) runs a host's function on each
+  response's `Usage` and `cost` at its `PromptEvent.Ended`: once per attempt and round of a query or an agent,
+  before it is read, and once for `warmCache`, `send` and `warmCache` being `stream` gathered (one stopped before its
+  end reports nothing). The one policy Iris offers is opt-in: a `Budget` (the user asked for USD limits per session),
+  a `Ref` of what was spent shared by every prompt service it `limits`, each refusing requests over `metered`, which
+  charges them. It refuses a
+  request, or a stream before it starts, once the limit is spent (`PromptError.OverBudget`), then charges each reply's
   `cost`, so requests in flight, a running stream among them, may take it past the limit (the user chose this soft
-  limit, which in-flight requests may overshoot, never reset); a reply with no cost fails (`ModelError.Unpriced`)
+  limit, which in-flight requests may overshoot, never reset); a reply with no cost fails (`PromptError.Unpriced`)
   after the provider has charged for it, which is documented, not prevented (the user chose this over a flag
-  saying whether a client can price, by which `limits` would refuse up front). `countTokens` costs nothing and is never refused. Each tool
-  round and `emit` round of an ask is a request of its own, through `send` or `stream`, so is metered and checked:
-  a `Budget` is what bounds the tool loop below, which nothing else caps. Clients themselves stay stateless.
-  It runs a tool only where the host hands `ask` one with its implementation (`RunnableTool`), which the user
-  chose, as handing it over says it may run: `ask` then runs any the model asks for alone (`Toolbox.runs`), tells
+  saying whether a service can price, by which `limits` would refuse up front). Counting tokens is no prompt, so
+  is never refused. Each tool round and `emit` round of an agent is a prompt of its own, so is metered and
+  checked: a `Budget` is what bounds the tool loop below, which nothing else caps. Services themselves stay
+  stateless. Iris runs a tool only where the host hands an agent one with its implementation (`RunnableTool`), which
+  the user chose, as handing it over says it may run: the agent then runs any the model asks for alone (`Toolbox.runs`), tells
   it their outputs and asks it to go on (`WholeAsker.onwards`, `Verdict.Run`), not counting those rounds against
   `attempts`. Nothing caps the rounds: the user chose to bound a runaway loop by what it spends, through a
-  metered client wrapping `send` and `stream`, over a count of rounds, which says little of cost. `ModelRequest.Options.tools` still offers tools for the host to run, reported in `ModelResponse.toolCalls`; a
+  metered prompt service, over a count of rounds, which says little of cost. `PromptRequest.tools` still offers tools for the host to run, reported in `PromptResponse.toolCalls`; a
   reply asking for any of those ends the ask with no value. Where tools are run and the answer is itself a
   stream (`Emit.element`), its elements come through a tool of Iris's own, `emit`, one call each (wrapped under
   `element`, any `$defs` hoisted), so the model can call tools between them: measured on Haiku 4.5, it batches
@@ -146,7 +166,7 @@ longer.
   second tool, `done` (the user chose a tool of its own over a flag on `emit`), and that reply ends the stream
   with no request after it (`Round.ends`), unless it also asks for another tool or has an element refused,
   when `done` is told it was not taken (`Emit.unfinished`) and the stream goes on; the last of
-  `ValidatedResponse.responses` is then that reply as given, its stop reason `ToolCall`. A reply calling `done`
+  the last of its `iterations` is then that reply as given, its stop reason `ToolCall`. A reply calling `done`
   with no element emitted has its text read as a whole ask's is (`WholeAsker.read`), so that elements written as
   JSON instead are kept. Measured on Haiku 4.5 and 5.5 (2026-10-31, 16 runs), `done` came with the last emit
   every time, never early, sparing the request each stream otherwise ends with to hear the model stop. `emit` takes one element per call, by the user's choice: a call reaches Iris only
@@ -175,7 +195,7 @@ longer.
   name stands in, and is never sent as one (`GeminiApi.issued`), on the call or its `functionResponse`. Gemini puts a
   `thoughtSignature` on the part beside a `functionCall` (the first of calls made together), which its thinking
   models need back on that part (else `MISSING_THOUGHT_SIGNATURE`), so it is kept, opaque, as `MessagePart.ToolCall.signature`,
-  which other providers ignore. A signature on text is not kept, as `ModelResponse.text` joins the parts, and Google requires
+  which other providers ignore. A signature on text is not kept, as `PromptResponse.text` joins the parts, and Google requires
   one back only with a call.
 - A `MessagePart.CacheBreakpoint` ends a prefix worth caching and says nothing to the model. Anthropic is told of one by
   `cache_control` on the block before it (in its message, else the previous message's last, else the system message),
@@ -183,11 +203,10 @@ longer.
   breakpoints closing a conversation (its last parts, which only an ask's rounds and `warmCache` write), marking its last
   block only where the others leave room (`AnthropicApi.placed`). So an ask's own never crowd out the host's nor get
   a conversation refused: where the host's mark four, rounds go unmarked, the host's choice winning. OpenAI and Gemini cache
-  prefixes unasked and are sent nothing, so their APIs drop them (`Message.withoutBreakpoints`). `ModelClient.warmCache` sends
-  `Conversation.cachePrefix` with the least reply the provider allows (`ProviderApi.leastMaxTokens`: Anthropic `max_tokens: 0`,
-  others 1); a wrapper around a
-  client must forward `warmCache`, not inherit the default, which `ModelClient.Forwarding` (override only what changes) and
-  `mapK` (one transformation for every request) both do. `cachePrefix` always ends with the user saying something:
+  prefixes unasked and are sent nothing, so their APIs drop them (`Message.withoutBreakpoints`). `PromptService.warmCache` sends
+  `Conversation.cachePrefix` asking for no tokens, which `ProviderPrompt` raises to the least the provider allows
+  (`ProviderApi.leastMaxTokens`: Anthropic `max_tokens: 0`, others 1), an ordinary request, so middleware sees it
+  as any other. `cachePrefix` always ends with the user saying something:
   breakpoints left alone in the last message move back to what came before, and a prefix ending at the system message
   or the model's turn is followed by a user message of `.`.
 - `Usage` is seven counts, none including another, so that each can be priced alone (rates per count are planned):
@@ -201,11 +220,11 @@ longer.
   rates, but Iris uses Chat Completions without `prompt_cache_options`, so one write count is enough); Gemini's
   prompt holds its cache, and `thoughtsTokenCount` lies outside `candidatesTokenCount`.
   Gemini leaves out every count of `0` (protobuf's JSON), so a count left out is `0`, never unknown, and a reply
-  with no usage at all has `Usage()`: `ModelResponse.usage` and `Delta.End.usage` are never optional (the user chose zeros
+  with no usage at all has `Usage()`: `PromptResponse.usage` and `PromptEvent.Ended.usage` are never optional (the user chose zeros
   over `None`). `inputTokens`, `cachedTokens` and `outputTokens` are totals of the counts, the whole prompt, the part
   of it read from the cache, and the whole reply. Streams count too: Anthropic's start counts the request and its
   stop the reply (taking what it leaves out from the start), and OpenAI's usage comes in a chunk of its own after
-  `finish_reason`, so its `Delta.End` comes when the stream does.
+  `finish_reason`, so its `PromptEvent.Ended` comes when the stream does.
 - Each `ProviderApi` lists its models' `Rates` (`rates(model, at)`), `Usd` per million tokens on the standard tier,
   copied by hand from its pricing page (no provider serves prices by API, so they are listed rather than fetched
   from a third party's catalogue), with any change the provider has announced from its day (`ProviderApi.utc`,
@@ -218,8 +237,8 @@ longer.
   pricing it apart, thinking as output), and a long-prompt tier is `Rates.Above`, which prices the whole request
   once its `inputTokens` exceed it (Claude Haiku 5.5 over 100K, GPT-5.6 and later over 272K, Gemini 2.5 Pro over
   200K). Figures go through `ProviderApi.usd` and derived ones are worked out in `BigDecimal`, never `Double`.
-  `JsonClient` and `SseClient` price each reply as it comes, by the effect's `Clock`, at `ModelConfig.rates`, else
-  those listed, so `ModelResponse.cost` and `Delta.End.cost` are per request, summed over an ask only where every attempt
+  `ProviderPrompt` prices each response as it ends, by the effect's `Clock`, at `PromptConfig.rates`, else
+  those listed, so `PromptResponse.cost` is per request, summed over a query or an agent only where every response
   has one, and `None` for an `Other` model with no rates configured. Iris prices nothing it does not send: batch,
   priority or fast mode, data residency, server tools. `/update-iris` keeps the rates current.
   Money is a `Usd` (an `amount: BigDecimal`), never a bare number, and Iris converts no currency, as every provider
@@ -232,17 +251,17 @@ longer.
   OpenAI separates after taking tool calls and results out of a message, as they then no longer lie between its
   texts. Callers never write a separator of their own between parts.
   `JsonHttp.plain` joins parts already separated, and `Message.text` joins text parts with the same blank line.
-- `ModelRequest.Options.effort` (`Effort`, `Low` to `Max`) is sent as Anthropic's `output_config.effort`, OpenAI's
+- `PromptRequest.effort` (`Effort`, `Low` to `Max`) is sent as Anthropic's `output_config.effort`, OpenAI's
   `reasoning_effort` (`Max` as `max`, or as `high` on the models in `OpenAiApi.cappedAtHigh`, such as `gpt-5`) and Gemini's `generationConfig.thinkingConfig.thinkingBudget`
   (fixed amounts within every thinking Gemini model's range). Iris never chooses one, and a model that cannot take one
   refuses the request; retrying at a lower effort is the host's to do.
-- `ModelClient.ask[A : Schema]` reads every type one way, `String` included, and always gives a
-  `ValidatedResponse[F, A]`: `value: Option[A]`, `None` where the model asked for a tool, and `responses`, every
-  response the ask took, the last the one the value was read from. Tool calls count only under `ToolCall`,
+- `QueryService.send[A : Schema]` reads every type one way, `String` included, and always gives a
+  `QueryResponse[F, A]`: `value: Option[A]`, `None` where the model asked for a tool, and `iterations`, every
+  response the query took, the last the one the value was read from. Tool calls count only under `ToolCall`,
   `Completed` or `StopSequence` (`WholeAsker.calledTools`), never under a refusal or the token limit. Never read one type differently from another, as
   0.2's `Answer` type class once did, nor give some types a different result: the user wants every ask
-  uniform. The provider's own response is a `ModelResponse`, which `send` and `warmCache` give. `ask` is built on `send` alone,
-  provider-agnostic, and passes `WholeAsker.ask` the client's `send` as a function, as `send` is protected: the schema is asked for in words closing the
+  uniform. The provider's own response is a `PromptResponse`, which a prompt's `send` and `warmCache` give. A query is built on
+  its prompt service alone, provider-agnostic, passing `WholeAsker.ask` its `send` as a function: the schema is asked for in words closing the
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
   native structured output. It stays after every breakpoint of the host's, so is never cached with the host's
   prefix (only within an ask, by a round's, above), by the user's choice on the
@@ -252,7 +271,7 @@ longer.
   review's cost, but it would lose a continuing conversation's cached prefix (the schema is not kept in its
   history), make `warmCache` take the type, and shifted Haiku's reviews somewhat. Revisit only on new evidence.
   An unreadable reply is answered with every decoding failure (decoders accumulate)
-  and asked again, `attempts` requests in all, then `ModelError.UnreadableResponse`, carrying every response. A reply asking
+  and asked again, `attempts` requests in all, then `QueryError.Unreadable`, carrying every response. A reply asking
   for a tool, by its stop reason or its calls (OpenAI says `stop` for a forced call), is given at once with no
   answer. One stopped at `MaxTokens` or an `Other` reason, or blank, fails at once, before any reading, as what
   parses of a cut reply may be cut (`4` of `42`): an identical conversation is never resent. A stop sequence is read, and
@@ -260,7 +279,7 @@ longer.
   complete. A conversation `Conversation.unanswerable` refuses (no messages, a silent one, or none of the user's) is sent
   uninstructed, so `JsonHttp.refuseUnanswerable` refuses it with the provider's name before any request; a conversation
   ending with the model's message gets the schema prompt in a user message after it, so the model answers afresh
-  (the user chose this over continuing a prefill). `ValidatedResponse.usage` totals every response's. `UnreadableResponse`'s message carries neither the responses nor `detail`, which is what
+  (the user chose this over continuing a prefill). `QueryResponse.usage` totals every response's. `UnreadableResponse`'s message carries neither the responses nor `detail`, which is what
   the model was told, circe's own failures, which quote the reply's values, so hosts may log it. JSON is read
   from the whole reply, then its last fence, and nowhere else (the user chose this over finding JSON amid prose),
   so a fence inside a JSON string is never taken.
@@ -298,7 +317,7 @@ longer.
 - Media types are `MediaType` cases, as models are `Model` cases: `MediaType.Listed` (the pictures and PDFs
   more than one provider takes) and `MediaType.Other`, made only by `MediaType.of` (lower case, parameters
   dropped), so that a listed name is always its listed case. Anthropic and OpenAI each list the media they take
-  (`media`) and refuse any other with `ModelError.Unsupported` through `JsonHttp.refuseUnsupportedMedia`; Gemini takes many
+  (`media`) and refuse any other with `PromptError.Unsupported` through `JsonHttp.refuseUnsupportedMedia`; Gemini takes many
   more (audio, video) and is sent any, judging for itself. OpenAI's chat completions also take PDFs as `file`
   parts, which Iris does not send yet (unverified: whether `file_data` needs a `data:` prefix and a
   `filename`).
@@ -343,13 +362,13 @@ longer.
   place of it (the user wants the model to read both), joined as paragraphs, then any `described` words. `imap`/`emap` are inline so as to read the target type's. Test derivation from
   outside the package (`SchemaSuite` is in `com.alecdorrington.example`), as inline code reaches private
   helpers only through accessors.
-- Unset optional fields are omitted one level deep, by `JsonHttp.objectOf`/`body`. Never deep-drop nulls: inside a
+- Unset optional fields are omitted one level deep, by `JsonHttp.objectOf`. Never deep-drop nulls: inside a
   tool's schema or a tool call's arguments, a null is a value.
-- `SseClient` speaks the same `ProviderApi` as `JsonClient`, with the same request bodies (`streamed`). Each
+- A streamed request has the same body as a whole one but for `stream: true` (`Settings.streamed`). Each
   `ProviderApi.deltas` reads the whole stream of events, remembering across them what it must (`zipWithScan1`):
   Gemini's whether a tool was asked for, as it may say so before it says it stopped, Anthropic's the counts it
   started with, and OpenAI's how it stopped until its usage comes.
-- An ask of a type holding an `fs2.Stream` (`StreamingAsker`) gives its `ValidatedResponse` as soon as all of `A` but its streams is
+- An ask of a type holding an `fs2.Stream` (`StreamingAsker`) gives its `QueryResponse` as soon as all of `A` but its streams is
   read; each stream (not within a list or map, which are read whole)
   is then fed as its elements close. The user chose live streams in the value over snapshots of a partial value,
   knowing the costs: `Schema[Stream[F, A]]`'s encoder throws (a stream cannot be said without being run), nothing is
@@ -371,7 +390,7 @@ longer.
   (circe parses each value once whole, and the schema's own decoder reads it, so every value is decoded by the
   same code as a whole reply), standing in for each open stream with a placeholder `Json` found by identity
   through a `DynamicVariable` while decoding. A type with no stream is not read early, but at the end through
-  `WholeAsker.verdict`, as `ask` reads it. `StreamingAsker` drives it in a background fiber, keeping each stream's elements
+  `WholeAsker.verdict`, as a whole query reads it. `StreamingAsker` drives it in a background fiber, keeping each stream's elements
   and end in a `SignallingRef` (never a `Channel`, which serves one reader), so a stream reads alike however often,
   as `Stream.emits` from a whole reply does.
 - What differs between the platforms is in `Platform` alone, one per platform (`src/main/scalajvm`,
@@ -383,8 +402,8 @@ longer.
   never `IO.unsafeRunSync`, which JavaScript lacks, or, where they need concurrency (`StreamingAskerSuite`), return
   `IO`'s `unsafeToFuture` with a timeout, which munit awaits on both; tests of one platform alone go in
   `src/test/scalajs` or `src/test/scalajvm`.
-- `ModelConfig.toString` redacts the API key, so hosts may log a configuration. Keep any new secret out of `toString`
-  and out of `ModelError` messages likewise.
+- `ApiConfig.toString` redacts the API key, so hosts may log a configuration. Keep any new secret out of `toString`
+  and out of every error's message likewise.
 
 See [README.md](README.md) for usage.
 
