@@ -15,21 +15,16 @@ class ConfigSuite extends FunSuite:
       "8192.0" -> None,
       ""       -> None,
     ).foreach((written, limit) =>
-      assertEquals(
-        ModelConfig.positive(written),
-        limit,
-        written,
-      ),
+      assertEquals(Model.positive(written), limit, written),
     )
 
   test("configurations never reveal their api key"):
-    val secret = ModelConfig(
-      Model.ClaudeHaiku4_5,
-      "sk-do-not-print",
-      512,
+    val secret = ApiConfig(
+      key = Some("sk-do-not-print"),
+      baseUrl = Some("https://proxy.test"),
     )
     assert(!secret.toString.contains("sk-do-not-print"))
-    assert(secret.toString.contains("anthropic:claude-haiku-4-5"))
+    assert(secret.toString.contains("https://proxy.test"))
 
   test("a timeout is read as a positive number of seconds, else none at all"):
     List(
@@ -39,7 +34,7 @@ class ConfigSuite extends FunSuite:
       "-5"    -> None,
     ).foreach((written, timeout) =>
       assertEquals(
-        ModelConfig.seconds(written),
+        ApiConfig.from(Map("LLM_TIMEOUT" -> written).get).map(_.timeout),
         timeout,
         written,
       ),
@@ -60,7 +55,7 @@ class ConfigSuite extends FunSuite:
       ),
     )
 
-  test("a configuration is read through any lookup, its provider its model's"):
+  test("a model is read through any lookup, its provider its model's"):
     val mini = Map(
       "OPENAI_API_KEY" -> "key",
       "LLM_MODEL"      -> "gpt-5-mini",
@@ -81,29 +76,38 @@ class ConfigSuite extends FunSuite:
       ) -> Model.Gpt5,
     ).foreach: (variables, model) =>
       assertEquals(
-        ModelConfig
-          .from(variables.get)
-          .map(config => (config.provider, config.model)),
+        Model.from(variables.get).map(model => (model.provider, model)),
         Some((ModelProvider.OpenAi, model)),
         variables,
       )
     assertEquals(
-      ModelConfig.from(mini.get).map(_.timeout),
-      Some(30.seconds),
+      ApiConfig.from(mini.get).map(config => (config.baseUrl, config.timeout)),
+      Some((None, 30.seconds)),
+    )
+    assertEquals(
+      ApiConfig
+        .from(Map("LLM_BASE_URL" -> "https://proxy.test").get)
+        .map(config => (config.baseUrl, config.timeout)),
+      Some((Some("https://proxy.test"), ApiConfig.defaultTimeout)),
     )
 
   test("an unset token limit is the host's default, else Iris's own"):
     val keyed = Map("ANTHROPIC_API_KEY" -> "key")
     assertEquals(
-      ModelConfig.from(keyed.get).map(_.maxTokens),
-      Some(ModelConfig.defaultMaxTokens),
+      PromptConfig.from(keyed.get).map(_.maxTokens),
+      Some(PromptConfig.defaultMaxTokens),
     )
     assertEquals(
-      ModelConfig.from(keyed.get, defaultMaxTokens = 16_000).map(_.maxTokens),
+      PromptConfig.from(keyed.get, defaultMaxTokens = 16_000).map(_.maxTokens),
       Some(16_000),
     )
+    // A limit set to no limit at all configures nothing.
     assertEquals(
-      ModelConfig
+      PromptConfig.from((keyed + ("LLM_MAX_TOKENS" -> "0")).get),
+      None,
+    )
+    assertEquals(
+      PromptConfig
         .from(
           (keyed + ("LLM_MAX_TOKENS" -> "500")).get,
           defaultMaxTokens = 16_000,
@@ -133,7 +137,7 @@ class ConfigSuite extends FunSuite:
       ),
     ).foreach(variables =>
       assertEquals(
-        ModelConfig.from(variables.get),
+        Model.from(variables.get),
         None,
         variables,
       ),

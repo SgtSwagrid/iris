@@ -3,8 +3,9 @@ package com.alecdorrington.iris
 import cats.effect.{IO, Ref}
 import cats.effect.testkit.TestControl
 import cats.effect.unsafe.implicits.global
-import com.alecdorrington.iris.Fixtures.{config, Sending}
+import com.alecdorrington.iris.Fixtures.{access, config}
 import fs2.Stream
+import io.circe.Json
 import munit.FunSuite
 import scala.concurrent.Future
 import scala.concurrent.duration.*
@@ -22,7 +23,7 @@ class RetrySuite extends FunSuite:
 
   private val conversation = Conversation.userSays("Hello")
 
-  private val anthropic = config.copy(retries = Retries(patience = 10.minutes))
+  private val patient = access.copy(patience = 10.minutes)
 
   private val replies = Map(
     ModelProvider.Anthropic ->
@@ -69,24 +70,27 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 
 """
 
+  /** A model's API, and its prompt service over it. */
+  private final case class Services(model: Model, api: ApiService[IO]):
+
+    val prompt: PromptService[IO] = model.prompt(api, config)
+
   /**
-    * Runs a test in virtual time, against a client of the configuration
+    * Runs a test in virtual time, against a model's API, of the configuration,
     * answering each request with the next of the responses, the last again once
-    * they run out, drawing `draw` for each wait, or at random as any client
+    * they run out, drawing `draw` for each wait, or at random as any service
     * does where none is given; the test is given when each request was sent.
     */
   private def answering
     (
-      configured: ModelConfig,
+      configured: ApiConfig,
       responses: Response[StubBody]*,
     )
-    (draw: Option[Double] = Some(0))
     (
-      test: (
-        ModelClient[IO],
-        IO[List[FiniteDuration]],
-      ) => IO[Unit],
+      draw: Option[Double] = Some(0),
+      model: Model = Fixtures.model,
     )
+    (test: (Services, IO[List[FiniteDuration]]) => IO[Unit])
     : Future[Unit] = TestControl
     .executeEmbed(
       Ref
@@ -106,39 +110,45 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
                   ),
                 ),
             )
-          val client = draw.fold(ModelClient[IO](configured, backend))(draw =>
+          val api = draw.fold(model.provider.api(configured, backend))(draw =>
             Retrying(
-              ModelClient[IO](
-                configured.copy(retries = Retries.none),
-                backend,
-              ),
-              configured.retries,
+              model
+                .provider
+                .api(
+                  configured.copy(maxIterations = 1),
+                  backend,
+                ),
+              configured,
               IO.pure(draw),
             ),
           )
-          test(client, sent.get),
+          test(Services(model, api), sent.get),
     )
     .unsafeToFuture()
 
-  private def sent(client: ModelClient[IO]): IO[Either[Throwable, String]] =
-    Sending(client).sent(conversation).map(_.text).attempt
+  private def sent(services: Services): IO[Either[Throwable, String]] = services
+    .prompt
+    .send(conversation)
+    .map(_.text)
+    .attempt
 
   private def streamedText
-    (client: ModelClient[IO])
-    : IO[List[Either[Throwable, Delta]]] = client
-    .stream(ModelRequest(conversation))
+    (services: Services)
+    : IO[List[Either[Throwable, PromptEvent]]] = services
+    .prompt
+    .stream(conversation)
     .attempt
     .compile
     .toList
 
   test("a request refused for now is sent again once the asked wait is over"):
     answering(
-      anthropic,
+      patient,
       refused(429, Seq(Header("retry-after", "30"))),
       ok(replies(ModelProvider.Anthropic)),
-    )()((client, times) =>
+    )()((services, times) =>
       for
-        result <- sent(client)
+        result <- sent(services)
         times  <- times
       yield
         assertEquals(result, Right("Hi"))
@@ -280,13 +290,11 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 
   asked.foreach: (row, provider, refusal, wait) =>
     test(s"a refusal is waited out as long as asked: $row"):
-      answering(
-        anthropic.copy(model = provider.defaultModel),
-        refusal,
-        ok(replies(provider)),
-      )()((client, times) =>
+      answering(patient, refusal, ok(replies(provider)))(model =
+        provider.defaultModel,
+      )((services, times) =>
         for
-          result <- sent(client)
+          result <- sent(services)
           times  <- times
         yield
           assertEquals(result, Right("Hi"))
@@ -296,22 +304,22 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
   test(
     "with no wait asked for, each is twice the last, until the attempts end",
   ):
-    answering(config, refused(429))()((client, times) =>
+    answering(access, refused(429))()((services, times) =>
       for
-        result <- sent(client)
+        result <- sent(services)
         times  <- times
       yield
         assertEquals(
           result,
-          Left(ModelError.RateLimited("Anthropic", None, "slow down")),
+          Left(ApiError.RateLimited("Anthropic", None, "slow down")),
         )
         assertEquals(times, List(0, 1, 3, 7).map(_.seconds)),
     )
 
   test("a wait is drawn a little longer than asked, or shorter than doubled"):
-    val limited = ModelError.RateLimited("Anthropic", Some(30.seconds), "")
-    val unasked = ModelError.Overloaded("Anthropic", None, "")
-    val retries = Retries()
+    val limited = ApiError.RateLimited("Anthropic", Some(30.seconds), "")
+    val unasked = ApiError.Overloaded("Anthropic", None, "")
+    val retries = ApiConfig()
     val waited  = Duration.Zero
     val drawn   = (error: Throwable, tried: Int, draw: Double) =>
       retries.delay(error, tried, waited, draw)
@@ -324,14 +332,14 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
     assertEquals(drawn(unasked, 1, 1), Some(0.5.seconds))
     assertEquals(drawn(unasked, 3, 0.5), Some(3.seconds))
 
-  test("a client over a streaming backend waits out refusals, drawing waits"):
+  test("a service over a streaming backend waits out refusals, drawing waits"):
     answering(
-      config,
+      access,
       refused(429, Seq(Header("retry-after", "2"))),
       ok(replies(ModelProvider.Anthropic)),
-    )(draw = None)((client, times) =>
+    )(draw = None)((services, times) =>
       for
-        result <- sent(client)
+        result <- sent(services)
         times  <- times
       yield
         assertEquals(result, Right("Hi"))
@@ -341,18 +349,18 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
         ),
     )
 
-  test("a client told not to retry gives each refusal at once"):
+  test("a service told not to retry gives each refusal at once"):
     answering(
-      config.copy(retries = Retries.none),
+      access.copy(maxIterations = 1),
       refused(429, Seq(Header("retry-after", "2"))),
-    )(draw = None)((client, times) =>
+    )(draw = None)((services, times) =>
       for
-        result <- sent(client)
+        result <- sent(services)
         times  <- times
       yield
         assertEquals(
           result,
-          Left(ModelError.RateLimited(
+          Left(ApiError.RateLimited(
             "Anthropic",
             Some(2.seconds),
             "slow down",
@@ -363,17 +371,17 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 
   test("a wait asked for longer than the patience is not waited"):
     answering(
-      config,
+      access,
       refused(429, Seq(Header("retry-after", "90"))),
-    )()((client, times) =>
+    )()((services, times) =>
       for
-        result <- sent(client)
+        result <- sent(services)
         times  <- times
       yield
         // The wait asked for, which a host may tell its user.
         assertEquals(
           result,
-          Left(ModelError.RateLimited(
+          Left(ApiError.RateLimited(
             "Anthropic",
             Some(90.seconds),
             "slow down",
@@ -384,11 +392,11 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 
   test("waiting stops where the next wait would pass the patience"):
     answering(
-      config.copy(retries = Retries(attempts = 10)),
+      access.copy(maxIterations = 10),
       refused(429, Seq(Header("retry-after", "25"))),
-    )()((client, times) =>
+    )()((services, times) =>
       for
-        result <- sent(client)
+        result <- sent(services)
         times  <- times
       yield
         assert(result.isLeft, result)
@@ -468,12 +476,12 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
   transient.foreach: (status, provider, header) =>
     test(s"a failure for now is sent again, as the SDKs send it: $status"):
       answering(
-        anthropic.copy(model = provider.defaultModel),
+        patient,
         refused(status, header.toList),
         ok(replies(provider)),
-      )()((client, times) =>
+      )(model = provider.defaultModel)((services, times) =>
         for
-          result <- sent(client)
+          result <- sent(services)
           times  <- times
         yield
           assertEquals(result, Right("Hi"))
@@ -487,14 +495,14 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
       )
 
   test("a failure for now that goes on is given once the attempts end"):
-    answering(config, refused(502))()((client, times) =>
+    answering(access, refused(502))()((services, times) =>
       for
-        result <- sent(client)
+        result <- sent(services)
         times  <- times
       yield
         assertEquals(
           result,
-          Left(ModelError.Transient(
+          Left(ApiError.Transient(
             "Anthropic",
             StatusCode.BadGateway,
             None,
@@ -506,16 +514,16 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 
   test("any failure the provider says to retry is sent again"):
     answering(
-      anthropic,
+      patient,
       refused(
         400,
         Seq(Header("x-should-retry", "true")),
         "try again",
       ),
       ok(replies(ModelProvider.Anthropic)),
-    )()((client, times) =>
+    )()((services, times) =>
       for
-        result <- sent(client)
+        result <- sent(services)
         times  <- times
       yield
         assertEquals(result, Right("Hi"))
@@ -525,16 +533,16 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
   test("the provider's word to retry outweighs what its body says"):
     // A day's quota spent, though the provider says to retry it.
     answering(
-      anthropic.copy(model = ModelProvider.Gemini.defaultModel),
+      patient,
       refused(
         429,
         Seq(Header("x-should-retry", "true")),
         gemini429("GenerateRequestsPerDayPerProjectPerModel-FreeTier"),
       ),
       ok(replies(ModelProvider.Gemini)),
-    )()((client, times) =>
+    )(model = ModelProvider.Gemini.defaultModel)((services, times) =>
       for
-        result <- sent(client)
+        result <- sent(services)
         times  <- times
       yield
         assertEquals(result, Right("Hi"))
@@ -545,51 +553,49 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
     val failed =
       """{"type":"error","error":{"type":"api_error","message":"Internal"}}"""
     answering(
-      anthropic,
+      patient,
       streamed(s"data: $failed\n\n"),
       streamed(hi),
-    )()((client, times) =>
+    )()((services, times) =>
       for
-        deltas <- streamedText(client)
+        events <- streamedText(services)
         times  <- times
       yield
         assertEquals(
-          deltas.headOption,
-          Some(Right(Delta.Text("Hi"))),
+          events.headOption,
+          Some(Right(PromptEvent.Written(PromptEvent.Part.Text, "Hi"))),
         )
         assertEquals(times, List(0, 1).map(_.seconds)),
     )
 
   lasting.foreach: (row, provider, refusal) =>
     test(s"a refusal that waiting cannot lift is given at once: $row"):
-      answering(
-        anthropic.copy(model = provider.defaultModel),
-        refusal,
-      )()((client, times) =>
-        for
-          result <- sent(client)
-          times  <- times
-        yield
-          assert(
-            result.left.exists(_.isInstanceOf[ModelError.Unsuccessful]),
-            result,
-          )
-          assertEquals(times, List(Duration.Zero)),
+      answering(patient, refusal)(model = provider.defaultModel)(
+        (services, times) =>
+          for
+            result <- sent(services)
+            times  <- times
+          yield
+            assert(
+              result.left.exists(_.isInstanceOf[ApiError.Unsuccessful]),
+              result,
+            )
+            assertEquals(times, List(Duration.Zero)),
       )
 
   test("a reply cut off at the token limit is never asked for again"):
     answering(
-      config,
+      access,
       ok(
         """{"content":[{"type":"text","text":"[1, 2"}],"stop_reason":"max_tokens"}""",
       ),
-    )()((client, times) =>
+    )()((services, times) =>
       for
-        result <- client.ask[List[Int]](conversation).attempt
+        result <- services.prompt.query.send[List[Int]](conversation).attempt
         times  <- times
       yield
         assert(
-          result.left.exists(_.isInstanceOf[ModelError.UnreadableResponse]),
+          result.left.exists(_.isInstanceOf[QueryError.Unreadable]),
           result,
         )
         assertEquals(times, List(Duration.Zero)),
@@ -597,13 +603,14 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 
   test("counting is sent again as asking is"):
     answering(
-      anthropic,
+      patient,
       refused(429, Seq(Header("retry-after", "5"))),
       ok("""{"input_tokens":42}"""),
-    )()((client, times) =>
+    )()((services, times) =>
       for
-        counted <- client.countTokens(ModelRequest(conversation))
-        times   <- times
+        counted <-
+          services.model.counter(services.api).get.countTokens(conversation)
+        times <- times
       yield
         assertEquals(counted, 42)
         assertEquals(times, List(0, 5).map(_.seconds)),
@@ -611,14 +618,16 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 
   test("warming is sent again as asking is"):
     answering(
-      anthropic,
+      patient,
       refused(529),
       ok(replies(ModelProvider.Anthropic)),
-    )()((client, times) =>
+    )()((services, times) =>
       for
-        warmed <- client.warmCache(ModelRequest(
-          Conversation.userSays("Hello", MessagePart.CacheBreakpoint),
-        ))
+        warmed <- services
+          .prompt
+          .warmCache(
+            Conversation.userSays("Hello", MessagePart.CacheBreakpoint),
+          )
         times <- times
       yield
         assertEquals(warmed.text, "Hi")
@@ -627,12 +636,12 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 
   test("a request waiting out a refusal is cancelled at once, sent no more"):
     answering(
-      anthropic,
+      patient,
       refused(429, Seq(Header("retry-after", "30"))),
-    )()((client, times) =>
+    )()((services, times) =>
       for
-        sending   <- sent(client).start
-        streaming <- streamedText(client).start
+        sending   <- sent(services).start
+        streaming <- streamedText(services).start
         _         <- IO.sleep(1.second)
         _         <- sending.cancel
         _         <- streaming.cancel
@@ -651,30 +660,53 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 
   test("a stream refused before its reply begins is streamed again"):
     answering(
-      anthropic,
+      patient,
       refused(429, Seq(Header("retry-after", "4"))),
       streamed(
         s"data: {\"type\":\"message_start\",\"message\":{}}\n\ndata: $overloaded\n\n",
       ),
       streamed(hi),
-    )()((client, times) =>
+    )()((services, times) =>
       for
-        deltas <- streamedText(client)
+        events <- streamedText(services)
         times  <- times
       yield
         assertEquals(
-          deltas.map(_.map {
-            case end: Delta.End => end.stopReason
-            case delta          => delta
+          events.map(_.map {
+            case PromptEvent.Ended(response) => response.stopReason
+            case event                       => event
           }),
           List(
-            Right(Delta.Text("Hi")),
+            Right(PromptEvent.Written(PromptEvent.Part.Text, "Hi")),
             Right(StopReason.Completed),
           ),
         )
-        // Refused by its status, then by an event before any of its text,
-        // after which the wait named none, so is backed off, the second time.
+        // Refused by its status, then by an event before any of its text, after
+        // which the wait named none, so is backed off, the second time.
         assertEquals(times, List(0, 4, 6).map(_.seconds)),
+    )
+
+  test(
+    "a streamed refusal fails the api's stream, as a refusal by status does",
+  ):
+    answering(
+      access.copy(maxIterations = 1),
+      streamed(s"data: $overloaded\n\n"),
+    )()((services, _) =>
+      services
+        .api
+        .stream(ApiRequest(
+          List("v1", "messages"),
+          Json.obj(),
+          streamed = true,
+        ))
+        .attempt
+        .compile
+        .toList
+        .map(assertEquals(
+          _,
+          List(Left(ApiError.Overloaded("Anthropic", None, overloaded))),
+        )),
     )
 
   test("a stream refused once its reply has begun fails, never streamed again"):
@@ -683,18 +715,18 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 
 """
     answering(
-      anthropic,
+      patient,
       streamed(s"${ begun }data: $overloaded\n\n"),
-    )()((client, times) =>
+    )()((services, times) =>
       for
-        deltas <- streamedText(client)
+        events <- streamedText(services)
         times  <- times
       yield
         assertEquals(
-          deltas,
+          events,
           List(
-            Right(Delta.Text("Hel")),
-            Left(ModelError.Overloaded("Anthropic", None, overloaded)),
+            Right(PromptEvent.Written(PromptEvent.Part.Text, "Hel")),
+            Left(ApiError.Overloaded("Anthropic", None, overloaded)),
           ),
         )
         assertEquals(times, List(Duration.Zero)),

@@ -17,12 +17,12 @@ private[iris] object Refusal:
 
   /**
     * The error an unsuccessful status is, with the wait the provider asked for:
-    * [[ModelError.RateLimited]] for `429`, [[ModelError.Overloaded]] for `503`
-    * or Anthropic's `529`, and [[ModelError.Transient]] for any other the
-    * providers' SDKs retry ([[transient]]); but [[ModelError.Unsuccessful]] for
-    * any whose body says waiting cannot lift it, and for any other status. The
-    * provider's `x-should-retry` header outweighs both, as its SDKs heed it:
-    * `true` makes any status one to send again, `false` none.
+    * [[ApiError.RateLimited]] for `429`, [[ApiError.Overloaded]] for `503` or
+    * Anthropic's `529`, and [[ApiError.Transient]] for any other the providers'
+    * SDKs retry ([[transient]]); but [[ApiError.Unsuccessful]] for any whose
+    * body says waiting cannot lift it, and for any other status. The provider's
+    * `x-should-retry` header outweighs both, as its SDKs heed it: `true` makes
+    * any status one to send again, `false` none.
     *
     * @param shouldRetry
     *   What the provider's `x-should-retry` header says, if it says.
@@ -35,16 +35,16 @@ private[iris] object Refusal:
       retryAfter: => Option[FiniteDuration],
       shouldRetry: Option[Boolean],
     )
-    : ModelError =
+    : ApiError =
     val provider = api.provider.displayName
     val retried  = shouldRetry.getOrElse(
       !api.lasting(detail) && (limiting(status) || transient(status)),
     )
     status.code match
-      case _ if !retried => ModelError.Unsuccessful(provider, status, detail)
-      case 429           => ModelError.RateLimited(provider, retryAfter, detail)
-      case 503 | 529     => ModelError.Overloaded(provider, retryAfter, detail)
-      case _ => ModelError.Transient(provider, status, retryAfter, detail)
+      case _ if !retried => ApiError.Unsuccessful(provider, status, detail)
+      case 429           => ApiError.RateLimited(provider, retryAfter, detail)
+      case 503 | 529     => ApiError.Overloaded(provider, retryAfter, detail)
+      case _ => ApiError.Transient(provider, status, retryAfter, detail)
 
   /** Whether a status refuses a request for now: `429`, `503` or `529`. */
   private def limiting(status: StatusCode): Boolean = Set(429, 503, 529)

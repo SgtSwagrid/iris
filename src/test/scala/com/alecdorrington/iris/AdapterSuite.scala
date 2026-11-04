@@ -1,14 +1,20 @@
 package com.alecdorrington.iris
 
-import com.alecdorrington.iris.Fixtures.{answer, config, json}
+import cats.effect.{Ref, SyncIO}
+import com.alecdorrington.iris.Fixtures.{
+  access, answer, model, prompting, settings,
+}
 import io.circe.Json
 import munit.FunSuite
+import sttp.client4.impl.cats.CatsMonadError
+import sttp.client4.testing.{BackendStub, ResponseStub}
 
 class AdapterSuite extends FunSuite:
 
-  private val gemini = config.copy(model = Model.Gemini2_5Flash)
+  private val gemini = Model.Gemini2_5Flash
 
-  private val options = ModelRequest.Options()
+  /** A request's settings where it sets none, and is not streamed. */
+  private val unset = settings(PromptRequest(Conversation(), streamed = false))
 
   /** An Anthropic model Iris does not list. */
   private val unlisted = Model.of(ModelProvider.Anthropic, "claude-new").get
@@ -27,14 +33,15 @@ class AdapterSuite extends FunSuite:
     .map(_.flatMap(_.hcursor.get[String]("role").toOption))
 
   test("each provider is sent the history, system and options in its own form"):
-    val anthropic = json(AnthropicApi.body(
-      config,
+    val anthropic = AnthropicApi.body(
+      model,
       conversation,
-      ModelRequest.Options(
+      settings(PromptRequest(
+        conversation,
         temperature = Some(0.5),
-        stopSequences = List("END"),
-      ),
-    ))
+        stopSequences = Some(List("END")),
+      )),
+    )
     assertEquals(
       anthropic.hcursor.get[String]("model").toOption,
       Some("claude-haiku-4-5"),
@@ -60,11 +67,11 @@ class AdapterSuite extends FunSuite:
       Some(List("user", "assistant", "user")),
     )
     // A token limit named for a request outranks the configured one.
-    val openAi = json(OpenAiApi.body(
-      config,
+    val openAi = OpenAiApi.body(
+      model,
       conversation,
-      ModelRequest.Options(maxTokens = Some(64)),
-    ))
+      settings(PromptRequest(conversation, maxTokens = Some(64))),
+    )
     assertEquals(
       openAi.hcursor.get[Int]("max_completion_tokens").toOption,
       Some(64),
@@ -73,7 +80,7 @@ class AdapterSuite extends FunSuite:
       roles(openAi, "messages"),
       Some(List("system", "user", "assistant", "user")),
     )
-    val google = json(GeminiApi.body(gemini, conversation, options))
+    val google = GeminiApi.body(gemini, conversation, unset)
     assertEquals(
       roles(google, "contents"),
       Some(List("user", "model", "user")),
@@ -88,9 +95,55 @@ class AdapterSuite extends FunSuite:
       Some(512),
     )
 
-  test("unset options are omitted from every provider's request"):
-    val anthropic = json(AnthropicApi.body(config, conversation, options))
+  test("a configuration's settings are sent where a request sets none"):
+    val configured = PromptConfig(
+      maxTokens = 100,
+      temperature = Some(0.2),
+      stopSequences = List("STOP"),
+      effort = Some(Effort.Low),
+    )
+    val body = AnthropicApi
+      .body(
+        model,
+        conversation,
+        configured.settings(PromptRequest(conversation)),
+      )
       .hcursor
+    assertEquals(
+      (
+        body.get[Int]("max_tokens").toOption,
+        body.get[Double]("temperature").toOption,
+        body.get[List[String]]("stop_sequences").toOption,
+        body.downField("output_config").get[String]("effort").toOption,
+      ),
+      (Some(100), Some(0.2), Some(List("STOP")), Some("low")),
+    )
+    // A request's own outrank them, an empty list of stop sequences too.
+    val own = AnthropicApi
+      .body(
+        model,
+        conversation,
+        configured.settings(PromptRequest(
+          conversation,
+          maxTokens = Some(64),
+          temperature = Some(0.9),
+          stopSequences = Some(Nil),
+          effort = Some(Effort.High),
+        )),
+      )
+      .hcursor
+    assertEquals(
+      (
+        own.get[Int]("max_tokens").toOption,
+        own.get[Double]("temperature").toOption,
+        own.downField("stop_sequences").failed,
+        own.downField("output_config").get[String]("effort").toOption,
+      ),
+      (Some(64), Some(0.9), true, Some("high")),
+    )
+
+  test("unset options are omitted from every provider's request"):
+    val anthropic = AnthropicApi.body(model, conversation, unset).hcursor
     List(
       "temperature",
       "top_p",
@@ -104,7 +157,7 @@ class AdapterSuite extends FunSuite:
         field,
       ),
     )
-    val openAi = json(OpenAiApi.body(config, conversation, options)).hcursor
+    val openAi = OpenAiApi.body(model, conversation, unset).hcursor
     List(
       "temperature",
       "top_p",
@@ -114,7 +167,7 @@ class AdapterSuite extends FunSuite:
       "stream",
       "stream_options",
     ).foreach(field => assert(openAi.downField(field).failed, field))
-    val google = json(GeminiApi.body(gemini, conversation, options)).hcursor
+    val google = GeminiApi.body(gemini, conversation, unset).hcursor
     assert(google.downField("tools").failed)
     val generation = google.downField("generationConfig")
     assert(generation.downField("maxOutputTokens").succeeded)
@@ -131,18 +184,17 @@ class AdapterSuite extends FunSuite:
     )
 
   test("anthropic sends sampling options only to the models that accept them"):
-    val sampled =
-      ModelRequest.Options(temperature = Some(0.5), topP = Some(0.9))
+    val sampled = settings(PromptRequest(
+      conversation,
+      temperature = Some(0.5),
+      topP = Some(0.9),
+    ))
     List(
       Model.ClaudeHaiku4_5 -> true,
       Model.ClaudeSonnet5  -> false,
       unlisted             -> false,
     ).foreach: (model, samples) =>
-      val body = json(AnthropicApi.body(
-        config.copy(model = model),
-        conversation,
-        sampled,
-      )).hcursor
+      val body = AnthropicApi.body(model, conversation, sampled).hcursor
       assertEquals(
         body.get[String]("model").toOption,
         Some(model.id),
@@ -157,9 +209,13 @@ class AdapterSuite extends FunSuite:
       )
 
   test("an effort is sent as each provider asks for one"):
-    val thoughtful = ModelRequest.Options(effort = Some(Effort.Medium))
+    val thoughtful = settings(PromptRequest(
+      conversation,
+      effort = Some(Effort.Medium),
+    ))
     assertEquals(
-      json(AnthropicApi.body(config, conversation, thoughtful))
+      AnthropicApi
+        .body(model, conversation, thoughtful)
         .hcursor
         .downField("output_config")
         .get[String]("effort")
@@ -167,14 +223,16 @@ class AdapterSuite extends FunSuite:
       Some("medium"),
     )
     assertEquals(
-      json(OpenAiApi.body(config, conversation, thoughtful))
+      OpenAiApi
+        .body(model, conversation, thoughtful)
         .hcursor
         .get[String]("reasoning_effort")
         .toOption,
       Some("medium"),
     )
     assertEquals(
-      json(GeminiApi.body(gemini, conversation, thoughtful))
+      GeminiApi
+        .body(gemini, conversation, thoughtful)
         .hcursor
         .downField("generationConfig")
         .downField("thinkingConfig")
@@ -184,11 +242,15 @@ class AdapterSuite extends FunSuite:
     )
 
   /** The reasoning effort OpenAI is asked of a model for the most effort. */
-  private def most(model: Model): Option[String] = json(OpenAiApi.body(
-    config.copy(model = model),
-    conversation,
-    ModelRequest.Options(effort = Some(Effort.Max)),
-  )).hcursor.get[String]("reasoning_effort").toOption
+  private def most(model: Model): Option[String] = OpenAiApi
+    .body(
+      model,
+      conversation,
+      settings(PromptRequest(conversation, effort = Some(Effort.Max))),
+    )
+    .hcursor
+    .get[String]("reasoning_effort")
+    .toOption
 
   test(
     "openai is asked for its most effort, or high of a model going no higher",
@@ -232,20 +294,21 @@ class AdapterSuite extends FunSuite:
     val apart = "BOOK 1: notes.txt\n\nChapter one."
     assertEquals(
       said(
-        json(AnthropicApi.body(config, named, options)),
+        AnthropicApi.body(model, named, unset),
         "messages",
       ),
       Some(apart),
     )
     assertEquals(
       said(
-        json(OpenAiApi.body(config, named, options)),
+        OpenAiApi.body(model, named, unset),
         "messages",
       ),
       Some(apart),
     )
     assertEquals(
-      json(GeminiApi.body(config, named, options))
+      GeminiApi
+        .body(model, named, unset)
         .hcursor
         .downField("contents")
         .downN(0)
@@ -301,7 +364,8 @@ class AdapterSuite extends FunSuite:
         MessagePart.Text("Done."),
       )
     assertEquals(
-      json(OpenAiApi.body(config, asked, options))
+      OpenAiApi
+        .body(model, asked, unset)
         .hcursor
         .downField("messages")
         .downN(1)
@@ -313,11 +377,11 @@ class AdapterSuite extends FunSuite:
   /** The parts of the first message of a body, under the fields named. */
   private def parts
     (
-      body: String,
+      body: Json,
       messages: String,
       content: String,
     )
-    : List[Json] = json(body)
+    : List[Json] = body
     .hcursor
     .downField(messages)
     .downN(0)
@@ -330,7 +394,7 @@ class AdapterSuite extends FunSuite:
   test("each provider is sent a picture its own way, after texts kept apart"):
     val apart     = List("Look.", "\n\nWhat is this?")
     val anthropic = parts(
-      AnthropicApi.body(config, looking, options),
+      AnthropicApi.body(model, looking, unset),
       "messages",
       "content",
     )
@@ -352,7 +416,7 @@ class AdapterSuite extends FunSuite:
       Some("image/png"),
     )
     val openAi = parts(
-      OpenAiApi.body(config, looking, options),
+      OpenAiApi.body(model, looking, unset),
       "messages",
       "content",
     )
@@ -366,7 +430,7 @@ class AdapterSuite extends FunSuite:
       Some("data:image/png;base64,aGVsbG8="),
     )
     val google = parts(
-      GeminiApi.body(config, looking, options),
+      GeminiApi.body(model, looking, unset),
       "contents",
       "parts",
     )
@@ -385,35 +449,35 @@ class AdapterSuite extends FunSuite:
   ):
     assertEquals(
       parts(
-        AnthropicApi.body(config, paper, options),
+        AnthropicApi.body(model, paper, unset),
         "messages",
         "content",
       ).map(_.hcursor.get[String]("type").toOption),
       List(Some("document")),
     )
     assertEquals(
-      OpenAiApi.refuseUnsendable(config, paper, options),
-      Left(ModelError.Unsupported(
+      OpenAiApi.refuseUnsendable(Model.Gpt5, paper, unset),
+      Left(PromptError.Unsupported(
         "OpenAI",
         "sending application/pdf in a conversation",
       )),
     )
-    assert(OpenAiApi.refuseUnsendable(config, looking, options).isRight)
+    assert(OpenAiApi.refuseUnsendable(Model.Gpt5, looking, unset).isRight)
 
   test("only gemini is sent media iris does not list, which it judges itself"):
     assertEquals(
-      AnthropicApi.refuseUnsendable(config, recording, options),
-      Left(ModelError.Unsupported(
+      AnthropicApi.refuseUnsendable(model, recording, unset),
+      Left(PromptError.Unsupported(
         "Anthropic",
         "sending audio/mp3 in a conversation",
       )),
     )
-    assert(AnthropicApi.refuseUnsendable(config, paper, options).isRight)
-    assert(OpenAiApi.refuseUnsendable(config, recording, options).isLeft)
-    assert(GeminiApi.refuseUnsendable(config, recording, options).isRight)
+    assert(AnthropicApi.refuseUnsendable(model, paper, unset).isRight)
+    assert(OpenAiApi.refuseUnsendable(Model.Gpt5, recording, unset).isLeft)
+    assert(GeminiApi.refuseUnsendable(gemini, recording, unset).isRight)
     assertEquals(
       parts(
-        GeminiApi.body(config, recording, options),
+        GeminiApi.body(gemini, recording, unset),
         "contents",
         "parts",
       ).map(
@@ -423,7 +487,7 @@ class AdapterSuite extends FunSuite:
     )
 
   test("counting asks for no reply, so needs no limit"):
-    val body = json(AnthropicApi.countBody(config, conversation))
+    val body = AnthropicApi.countBody(model, conversation)
     assertEquals(
       body.hcursor.get[String]("model").toOption,
       Some("claude-haiku-4-5"),
@@ -446,7 +510,7 @@ class AdapterSuite extends FunSuite:
                     "cache_creation_input_tokens":20,
                     "cache_read_input_tokens":30,
                     "output_tokens_details":{"thinking_tokens":10}}}""",
-        ModelResponse(
+        PromptResponse(
           "Hello!",
           StopReason.Completed,
           Usage(
@@ -466,7 +530,7 @@ class AdapterSuite extends FunSuite:
            "usage":{"prompt_tokens":40,"completion_tokens":12,
                     "prompt_tokens_details":{"cached_tokens":32},
                     "completion_tokens_details":{"reasoning_tokens":10}}}""",
-        ModelResponse(
+        PromptResponse(
           "Hello!",
           StopReason.MaxTokens,
           Usage(
@@ -486,7 +550,7 @@ class AdapterSuite extends FunSuite:
            "usageMetadata":{"promptTokenCount":40,"candidatesTokenCount":2,
                             "cachedContentTokenCount":32,
                             "thoughtsTokenCount":10}}""",
-        ModelResponse(
+        PromptResponse(
           "Hello!",
           StopReason.Completed,
           Usage(
@@ -532,7 +596,7 @@ class AdapterSuite extends FunSuite:
     ).foreach: (api, body, why) =>
       assertEquals(
         answer(api, body),
-        Left(ModelError.Malformed(api.provider.displayName, why)),
+        Left(ApiError.Malformed(api.provider.displayName, why)),
         why,
       )
 
@@ -561,7 +625,7 @@ class AdapterSuite extends FunSuite:
         OpenAiApi,
         """{"choices":[{"message":{"content":"Hi"},"finish_reason":"stop"}]}""",
       ),
-      Right(ModelResponse("Hi", StopReason.Completed, Usage())),
+      Right(PromptResponse("Hi", StopReason.Completed, Usage())),
     )
 
   test("gemini's audio is counted apart, read afresh or from the cache"):
@@ -639,38 +703,70 @@ class AdapterSuite extends FunSuite:
         row,
       )
 
+  /**
+    * Where a model's request is sent, whole or streamed, beneath the configured
+    * origin, if anywhere.
+    */
+  private def addressed
+    (
+      model: Model,
+      streamed: Boolean,
+      origin: Option[String] = None,
+    )
+    : Option[String] = (for
+    uris <- Ref.of[SyncIO, List[String]](Nil)
+    _    <- prompting(
+      BackendStub(CatsMonadError[SyncIO]())
+        .whenAnyRequest
+        .thenRespondF(request =>
+          uris.update(_ :+ request.uri.toString).as(ResponseStub.adjust("{}")),
+        ),
+      model,
+      access = access.copy(baseUrl = origin),
+    ).stream(PromptRequest(
+        Conversation.userSays("Hi"),
+        streamed = streamed,
+      ))
+      .compile
+      .drain
+      .attempt
+    sent <- uris.get
+  yield sent.headOption).unsafeRunSync()
+
   test(
     "gemini addresses each method of the model it is given, beneath an origin",
   ):
     val origin = "https://generativelanguage.googleapis.com"
     assertEquals(
-      GeminiApi.endpoint(gemini, Model.Gemini2_5Flash).map(_.toString),
-      Right(s"$origin/v1beta/models/gemini-2.5-flash:generateContent"),
+      addressed(Model.Gemini2_5Flash, streamed = false),
+      Some(s"$origin/v1beta/models/gemini-2.5-flash:generateContent"),
     )
     assertEquals(
-      GeminiApi.streaming(gemini, Model.Gemini2_5Flash).map(_.toString),
-      Right(
+      addressed(Model.Gemini2_5Flash, streamed = true),
+      Some(
         s"$origin/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
       ),
     )
     assertEquals(
-      GeminiApi
-        .endpoint(
-          gemini.copy(baseUrl = Some("https://proxy.test")),
-          Model.Gemini2_5Flash,
-        )
-        .map(_.toString),
-      Right("https://proxy.test/v1beta/models/gemini-2.5-flash:generateContent"),
+      addressed(
+        Model.Gemini2_5Flash,
+        streamed = false,
+        Some("https://proxy.test"),
+      ),
+      Some("https://proxy.test/v1beta/models/gemini-2.5-flash:generateContent"),
     )
 
   test("a model name cannot escape the path segment it names"):
-    val endpoint = GeminiApi.endpoint(
-      gemini,
+    val endpoint = addressed(
       Model
         .of(
           ModelProvider.Gemini,
           "../v1/elsewhere",
         )
         .get,
+      streamed = false,
     )
-    assert(endpoint.exists(uri => !uri.toString.contains("/v1/elsewhere")))
+    assert(
+      endpoint.exists(uri => !uri.contains("/v1/elsewhere")),
+      endpoint,
+    )

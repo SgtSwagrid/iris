@@ -26,21 +26,21 @@ private[iris] object WholeAsker:
     */
   def ask[F[_] : MonadThrow, A : Schema as A]
     (
-      send: Conversation => F[ModelResponse],
+      send: Conversation => F[PromptResponse],
       conversation: Conversation,
       attempts: Int,
       tools: Toolbox[F] = Toolbox[F](Nil),
     )
-    : F[ValidatedResponse[F, A]] =
+    : F[QueryResponse[F, A]] =
     val start = opening(conversation, schemaPrompt(A))
     // Sends the conversation, after the replies so far, `tried` of them read.
     def attempt
       (
         conversation: Conversation,
-        replies: Vector[ModelResponse],
+        replies: Vector[PromptResponse],
         tried: Int,
       )
-      : F[ValidatedResponse[F, A]] =
+      : F[QueryResponse[F, A]] =
       send(cached(start, conversation)).flatMap(reply =>
         verdict(
           A,
@@ -50,7 +50,7 @@ private[iris] object WholeAsker:
           tried + 1,
           tools,
         ) match
-          case Verdict.Answered(value, responses) => ValidatedResponse(
+          case Verdict.Answered(value, responses) => QueryResponse(
               value,
               responses.pure[F],
               MonadThrow[F].unit,
@@ -76,7 +76,7 @@ private[iris] object WholeAsker:
   def onwards
     (
       conversation: Conversation,
-      reply: ModelResponse,
+      reply: PromptResponse,
       results: List[MessagePart.ToolResult],
     )
     : Conversation = conversation.modelSays(reply).toolSays(results*)
@@ -147,7 +147,7 @@ private[iris] object WholeAsker:
     (
       schema: Schema[A],
       conversation: Conversation,
-      replies: Vector[ModelResponse],
+      replies: Vector[PromptResponse],
       attempts: Int,
       tried: Int,
       tools: Toolbox[?],
@@ -173,7 +173,7 @@ private[iris] object WholeAsker:
     case Answered
       (
         value: Option[A],
-        responses: List[ModelResponse],
+        responses: List[PromptResponse],
       )
 
     /** The tools asked for, to run before asking the model to go on. */
@@ -183,15 +183,15 @@ private[iris] object WholeAsker:
     case Again(conversation: Conversation)
 
     /** The failure, where asking again could not help. */
-    case Failed(error: ModelError)
+    case Failed(error: QueryError)
 
   /** Why the replies asked for could not be read, as the last could not. */
   def unreadable
     (
-      replies: Vector[ModelResponse],
+      replies: Vector[PromptResponse],
       detail: String,
     )
-    : ModelError = ModelError.UnreadableResponse(detail, replies.toList)
+    : QueryError = QueryError.Unreadable(detail, replies.toList)
 
   /**
     * Whether a reply asks for tools, by its calls or why it stopped, as OpenAI
@@ -199,14 +199,14 @@ private[iris] object WholeAsker:
     * where it stopped as it would for them: one cut off at the token limit may
     * be cut short, and one the provider stopped, as on a refusal, is no call.
     */
-  def calledTools(reply: ModelResponse): Boolean =
+  def calledTools(reply: PromptResponse): Boolean =
     reply.stopReason == StopReason.ToolCall ||
     reply.toolCalls.nonEmpty &&
     (reply.stopReason == StopReason.Completed ||
     reply.stopReason == StopReason.StopSequence)
 
   /** The answer a reply holds, or why it holds none. */
-  def read[A](schema: Schema[A], reply: ModelResponse): Either[String, A] =
+  def read[A](schema: Schema[A], reply: PromptResponse): Either[String, A] =
     parsed(reply.text).flatMap(decoded(schema, _))
 
   /**
@@ -216,7 +216,7 @@ private[iris] object WholeAsker:
     * said nothing. A reply ended by a stop sequence is read, and if it cannot
     * be, asked for again, told so, as only Anthropic reports one.
     */
-  def hopeless(reply: ModelResponse): Option[String] = reply.stopReason match
+  def hopeless(reply: PromptResponse): Option[String] = reply.stopReason match
     case StopReason.MaxTokens =>
       Some("It was cut off at the token limit before it was complete.")
     case StopReason.Other(reason)     => Some(s"It stopped, as `$reason`.")
@@ -224,7 +224,7 @@ private[iris] object WholeAsker:
     case _                            => None
 
   /** Why a reply could not be read, said to have ended at a stop sequence. */
-  private def stopped(reply: ModelResponse, why: String): String =
+  private def stopped(reply: PromptResponse, why: String): String =
     if reply.stopReason == StopReason.StopSequence then
       s"It stopped at a stop sequence. $why"
     else why
@@ -253,7 +253,7 @@ private[iris] object WholeAsker:
   private def corrected
     (
       conversation: Conversation,
-      reply: ModelResponse,
+      reply: PromptResponse,
       why: String,
     )
     : Conversation = conversation

@@ -1,10 +1,9 @@
 package com.alecdorrington.iris
 
-import cats.~>
-import cats.arrow.FunctionK
 import cats.effect.SyncIO
-import com.alecdorrington.iris.Fixtures.{config, json}
-import io.circe.Json
+import com.alecdorrington.iris.Fixtures.{json, model, prompting, settings}
+import fs2.Stream
+import io.circe.{ACursor, Json}
 import munit.FunSuite
 import sttp.client4.StringBody
 import sttp.client4.impl.cats.CatsMonadError
@@ -13,7 +12,8 @@ import sttp.model.StatusCode
 
 class CacheSuite extends FunSuite:
 
-  private val options = ModelRequest.Options()
+  private val options =
+    settings(PromptRequest(Conversation(), streamed = false))
 
   private val conversation = Conversation()
     .withInstructions("Be brief.")
@@ -44,7 +44,7 @@ class CacheSuite extends FunSuite:
 
   /** The system message, and each message's content, Anthropic is sent. */
   private def sent(conversation: Conversation): (Option[Json], List[Json]) =
-    val body = json(AnthropicApi.body(config, conversation, options)).hcursor
+    val body = AnthropicApi.body(model, conversation, options).hcursor
     (
       body.downField("system").focus,
       body
@@ -90,12 +90,12 @@ class CacheSuite extends FunSuite:
       assertEquals(sent(asked), (system, messages), asked)
 
   test("a cached block is sent alike whatever follows it"):
-    val warmed = json(AnthropicApi.body(
-      config,
+    val warmed = AnthropicApi.body(
+      model,
       conversation.cachePrefix,
       options,
-    ))
-    val asked = json(AnthropicApi.body(config, conversation, options))
+    )
+    val asked = AnthropicApi.body(model, conversation, options)
     assertEquals(
       content(warmed, 0).hcursor.downN(0).focus,
       content(asked, 0).hcursor.downN(0).focus,
@@ -162,12 +162,12 @@ class CacheSuite extends FunSuite:
     assert(AnthropicApi.refuseExcessBreakpoints(closed(most + 1)).isLeft)
 
   test("openai and gemini are sent no breakpoints"):
-    val openAi = json(OpenAiApi.body(config, conversation, options))
+    val openAi = OpenAiApi.body(model, conversation, options)
     assertEquals(
       content(openAi, 1),
       Json.fromString("A long document.\n\nA question about it."),
     )
-    val gemini = json(GeminiApi.body(config, conversation, options))
+    val gemini = GeminiApi.body(model, conversation, options)
     assertEquals(
       gemini.hcursor.downField("contents").downN(0).downField("parts").focus,
       Some(Json.arr(
@@ -257,21 +257,20 @@ class CacheSuite extends FunSuite:
       assert(!prefix.messages.map(_.text).mkString.contains("How are you?"))
       assertEquals(
         content(
-          json(AnthropicApi.body(config, prefix, options)),
+          AnthropicApi.body(model, prefix, options),
           1,
         ),
         content(
-          json(AnthropicApi.body(config, whole, options)),
+          AnthropicApi.body(model, whole, options),
           1,
         ),
       )
 
   /** A client answering `body` to the requests it accepts, refusing others. */
   private def expecting
-    (config: ModelConfig, body: String)
+    (model: Model, body: String)
     (accepts: Json => Boolean)
-    : ModelClient[SyncIO] = ModelClient[SyncIO](
-    config,
+    : PromptService[SyncIO] = prompting(
     BackendStub(CatsMonadError[SyncIO]())
       .whenRequestMatches(request =>
         request.body match
@@ -281,7 +280,14 @@ class CacheSuite extends FunSuite:
       .thenRespond(ResponseStub.adjust(body, StatusCode.Ok))
       .whenAnyRequest
       .thenRespond(ResponseStub.adjust("unexpected", StatusCode.BadRequest)),
+    model,
   )
+
+  /** The token limit a body asks for, where the path through it leads. */
+  private def limit(body: Json, path: List[String]): Option[Int] = path
+    .foldLeft(body.hcursor: ACursor)(_.downField(_))
+    .as[Int]
+    .toOption
 
   private def prefixOnly(body: Json): Boolean =
     val sent = body.noSpaces
@@ -291,72 +297,81 @@ class CacheSuite extends FunSuite:
     List(
       // Anthropic writes its cache without replying when allowed no tokens.
       (
-        config,
+        model,
         """{"content":[],"stop_reason":"max_tokens",
            "usage":{"input_tokens":0,"output_tokens":0,
                     "cache_creation_input_tokens":900}}""",
-        "max_tokens",
+        List("max_tokens"),
         0,
         Usage(cacheWriteTokens = 900),
       ),
       (
-        config.copy(model = Model.Gpt5),
+        Model.Gpt5,
         """{"choices":[{"message":{"content":""},"finish_reason":"length"}],
            "usage":{"prompt_tokens":900,"completion_tokens":1}}""",
-        "max_completion_tokens",
+        List("max_completion_tokens"),
         1,
         Usage(uncachedTokens = 900, visibleTokens = 1),
       ),
-    ).foreach: (configured, reply, limit, least, usage) =>
-      val warming = expecting(configured, reply)(body =>
-        body.hcursor.get[Int](limit).toOption.contains(least) &&
-        prefixOnly(body),
+      (
+        Model.Gemini2_5Flash,
+        """{"candidates":[{"content":{"parts":[{"text":""}]},
+           "finishReason":"MAX_TOKENS"}],
+           "usageMetadata":{"promptTokenCount":900,"candidatesTokenCount":1}}""",
+        List("generationConfig", "maxOutputTokens"),
+        1,
+        Usage(uncachedTokens = 900, visibleTokens = 1),
+      ),
+    ).foreach: (model, reply, path, least, usage) =>
+      val warming = expecting(model, reply)(body =>
+        limit(body, path).contains(least) && prefixOnly(body),
       )
       // The reply is passed back, with what writing the cache cost.
       assertEquals(
-        warming
-          .warmCache(ModelRequest(conversation))
-          .attempt
-          .unsafeRunSync()
-          .map(_.usage),
+        warming.warmCache(conversation).attempt.unsafeRunSync().map(_.usage),
         Right(usage),
-        configured.provider,
+        model.provider,
       )
 
-  test("a wrapped client warms as the client it wraps does"):
+  test("a request allowed no tokens is allowed the fewest its provider takes"):
+    List(
+      (
+        model,
+        """{"content":[],"stop_reason":"max_tokens"}""",
+        List("max_tokens"),
+        0,
+      ),
+      (
+        Model.Gpt5,
+        """{"choices":[{"message":{"content":""},"finish_reason":"length"}]}""",
+        List("max_completion_tokens"),
+        1,
+      ),
+    ).foreach: (model, reply, path, least) =>
+      assert(
+        expecting(model, reply)(limit(_, path).contains(least))
+          .send(PromptRequest(conversation, maxTokens = Some(0)))
+          .attempt
+          .unsafeRunSync()
+          .isRight,
+        model,
+      )
+
+  test("a wrapped service warms as the service it wraps does"):
     val warming = expecting(
-      config,
+      model,
       """{"content":[],"stop_reason":"max_tokens"}""",
-    )(body =>
-      body.hcursor.get[Int]("max_tokens").toOption.contains(0) &&
-      prefixOnly(body),
+    )(body => limit(body, List("max_tokens")).contains(0) && prefixOnly(body))
+    val forwarding: PromptService[SyncIO] = warming.stream(_)
+    val refusing: PromptService[SyncIO]   =
+      _ => Stream.raiseError[SyncIO](Exception("Refused."))
+    List(
+      forwarding,
+      warming.metered((_, _) => SyncIO.unit),
+    ).foreach(wrapped =>
+      assert(wrapped.warmCache(conversation).attempt.unsafeRunSync().isRight),
     )
-    val refusing = new (SyncIO ~> SyncIO):
-      override def apply[A](request: SyncIO[A]): SyncIO[A] =
-        SyncIO.raiseError(Exception("Refused."))
-    assert(
-      new ModelClient.Forwarding(warming) {}
-        .warmCache(ModelRequest(conversation))
-        .attempt
-        .unsafeRunSync()
-        .isRight,
-    )
-    assert(
-      warming
-        .mapK(FunctionK.id)
-        .warmCache(ModelRequest(conversation))
-        .attempt
-        .unsafeRunSync()
-        .isRight,
-    )
-    assert(
-      warming
-        .mapK(refusing)
-        .warmCache(ModelRequest(conversation))
-        .attempt
-        .unsafeRunSync()
-        .isLeft,
-    )
+    assert(refusing.warmCache(conversation).attempt.unsafeRunSync().isLeft)
 
   /** A conversation whose leading breakpoint caches the system message alone. */
   private val briefed = Conversation()
@@ -398,7 +413,7 @@ class CacheSuite extends FunSuite:
 
   test("a breakpoint opening the first message warms the system message"):
     val anthropic = expecting(
-      config,
+      model,
       """{"content":[],"stop_reason":"max_tokens"}""",
     )(body =>
       briefOnly(body, "messages", "content") &&
@@ -409,30 +424,28 @@ class CacheSuite extends FunSuite:
         .contains(Json.arr(marked("A long document."))),
     )
     val openAi = expecting(
-      config.copy(model = Model.Gpt5),
+      Model.Gpt5,
       """{"choices":[{"message":{"content":""},"finish_reason":"length"}]}""",
     )(body =>
       briefOnly(body, "messages", "content") &&
       body.hcursor.downField("messages").downN(1).succeeded,
     )
     val gemini = expecting(
-      config.copy(model = Model.Gemini2_5Flash),
+      Model.Gemini2_5Flash,
       """{"candidates":[{"content":{"parts":[{"text":""}]},
          "finishReason":"MAX_TOKENS"}]}""",
     )(briefOnly(_, "contents", "parts"))
     List(anthropic, openAi, gemini).foreach: client =>
-      assert(
-        client.warmCache(ModelRequest(briefed)).attempt.unsafeRunSync().isRight,
-      )
+      assert(client.warmCache(briefed).attempt.unsafeRunSync().isRight)
 
   test("a conversation with nothing marked has nothing to warm"):
     val warming = expecting(
-      config,
+      model,
       """{"content":[],"stop_reason":"max_tokens"}""",
     )(_ => true)
     assert(
       warming
-        .warmCache(ModelRequest(Conversation().userSays("Hi")))
+        .warmCache(Conversation().userSays("Hi"))
         .attempt
         .unsafeRunSync()
         .isLeft,

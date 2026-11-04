@@ -5,25 +5,31 @@ import munit.FunSuite
 
 class AccessSuite extends FunSuite:
 
-  /** A client to compile against, never made. */
-  def client: com.alecdorrington.iris.ModelClient[cats.effect.SyncIO] =
-    throw AssertionError("A client was made.")
+  /** A prompt service to compile against, never made. */
+  def prompt: com.alecdorrington.iris.PromptService[cats.effect.SyncIO] =
+    throw AssertionError("A service was made.")
 
-  test("a caller asks, and cannot send"):
+  test("a wrapper cannot change how send gathers what stream gives"):
     val errors = compileErrors(
-      "client.send(com.alecdorrington.iris.ModelRequest(com.alecdorrington.iris.Conversation()))",
+      """new com.alecdorrington.iris.PromptService[cats.effect.SyncIO]:
+        override def stream
+          (request: scala.Conversion.into[com.alecdorrington.iris.PromptRequest])
+          : fs2.Stream[cats.effect.SyncIO, com.alecdorrington.iris.PromptEvent] =
+          prompt.stream(request)
+        override def send
+          (request: scala.Conversion.into[com.alecdorrington.iris.PromptRequest])
+          (using
+            fs2.Compiler[cats.effect.SyncIO, cats.effect.SyncIO],
+            cats.MonadThrow[cats.effect.SyncIO],
+          )
+          : cats.effect.SyncIO[com.alecdorrington.iris.PromptResponse] =
+          prompt.send(request)""",
     )
-    assert(
-      errors.contains("cannot be accessed"),
-      errors,
-    )
+    assert(errors.contains("final"), errors)
 
-  test("a wrapper overrides send, passing it on through super"):
+  test("a wrapper writes stream alone, passing each request on"):
     val errors = compileErrors(
-      """new com.alecdorrington.iris.ModelClient.Forwarding(client):
-        override protected def send
-          (request: com.alecdorrington.iris.ModelRequest)
-          : cats.effect.SyncIO[com.alecdorrington.iris.ModelResponse] =
-          super.send(request)""",
+      """val wrapped: com.alecdorrington.iris.PromptService[cats.effect.SyncIO] =
+        request => prompt.stream(request)""",
     )
     assertEquals(errors, "")

@@ -18,10 +18,10 @@ private[iris] object JsonHttp:
       origin: String,
       path: String*,
     )
-    : Either[ModelError, Uri] = Uri
+    : Either[ApiError, Uri] = Uri
     .parse(origin)
     .bimap(
-      ModelError.Misconfigured(provider.displayName, _),
+      ApiError.Misconfigured(provider.displayName, _),
       _.addPath(path),
     )
 
@@ -34,9 +34,9 @@ private[iris] object JsonHttp:
       provider: ModelProvider,
       conversation: Conversation,
     )
-    : Either[ModelError, Unit] = conversation
+    : Either[PromptError, Unit] = conversation
     .unanswerable
-    .map(ModelError.Unsendable(provider.displayName, _))
+    .map(PromptError.Unsendable(provider.displayName, _))
     .toLeft(())
 
   /** Refuses a conversation holding media of a kind the provider does not take. */
@@ -46,12 +46,12 @@ private[iris] object JsonHttp:
       conversation: Conversation,
       taken: Set[MediaType],
     )
-    : Either[ModelError, Unit] = conversation
+    : Either[PromptError, Unit] = conversation
     .messages
     .flatMap(_.parts)
     .collectFirst:
       case MessagePart.Media(mediaType, _) if !taken.contains(mediaType) =>
-        ModelError.Unsupported(
+        PromptError.Unsupported(
           provider.displayName,
           s"sending ${ mediaType.name } in a conversation",
         )
@@ -66,13 +66,13 @@ private[iris] object JsonHttp:
       provider: ModelProvider,
       conversation: Conversation,
     )
-    : Either[ModelError, Unit] = conversation
+    : Either[PromptError, Unit] = conversation
     .messages
     .flatMap(_.parts)
     .collectFirst:
       case MessagePart.ToolCall(_, tool, arguments, _)
         if decode[JsonObject](arguments).isLeft =>
-        ModelError.Unsendable(
+        PromptError.Unsendable(
           provider.displayName,
           s"the arguments of its call of `$tool` are no JSON object",
         )
@@ -84,12 +84,16 @@ private[iris] object JsonHttp:
   /**
     * The turns of messages, each of a role, those in a row of one role run
     * together into one, as the tools' results and the user's next words are
-    * where the tools have no role of their own.
+    * where the tools have no role of their own. The tools' results open a turn
+    * holding them, as Anthropic requires, whichever message came first.
     */
   def turns(messages: List[Turn]): List[Turn] = messages
     .foldLeft(Vector.empty[Turn]):
       case (earlier :+ ((role, parts)), (next, more)) if role == next =>
-        earlier :+ (role -> (parts ++ more))
+        val (results, others) = (parts ++ more).partition:
+          case _: MessagePart.ToolResult => true
+          case _                         => false
+        earlier :+ (role -> (results ++ others))
       case (earlier, turn) => earlier :+ turn
     .toList
 
@@ -98,8 +102,6 @@ private[iris] object JsonHttp:
     * field, as in a tool's schema, are values and are kept.
     */
   def objectOf(fields: (String, Json)*): Json = Json.obj(fields*).dropNullValues
-
-  def body(fields: (String, Json)*): String = objectOf(fields*).noSpaces
 
   def unlessEmpty[A : Encoder](items: List[A]): Json = Option
     .when(items.nonEmpty)(items)
@@ -133,7 +135,7 @@ private[iris] object JsonHttp:
       detail: String,
       now: FiniteDuration,
     )
-    : ModelError = Refusal.of(
+    : ApiError = Refusal.of(
     api,
     response.code,
     detail,
@@ -141,22 +143,9 @@ private[iris] object JsonHttp:
     response.header("x-should-retry").flatMap(Refusal.shouldRetry),
   )
 
-  /**
-    * Decodes a response's body, failing on an unsuccessful or unreadable one,
-    * read at a moment since 1970.
-    */
-  def parse[R : Decoder]
-    (
-      api: ProviderApi,
-      response: Response[Either[String, String]],
-      now: FiniteDuration,
+  /** The error a request is that no answer came to within its timeout. */
+  def timedOut(api: ProviderApi, config: ApiConfig): ApiError = ApiError
+    .TimedOut(
+      api.provider.displayName,
+      config.timeout,
     )
-    : Either[ModelError, R] = response
-    .body
-    .leftMap(unsuccessful(api, response, _, now))
-    .flatMap: body =>
-      decode[R](body).leftMap: error =>
-        ModelError.Malformed(
-          api.provider.displayName,
-          error.getMessage,
-        )

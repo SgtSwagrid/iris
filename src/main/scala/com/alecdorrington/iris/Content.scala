@@ -31,7 +31,7 @@ import scala.util.NotGiven
   *   The type of the value.
   */
 @implicitNotFound(
-  "${A} cannot be said to the model here: say a String, a part of a kind this message holds, or a value with a Schema, a circe Encoder or a Content of its own. Text is never said as part of a union, such as the String | Double of a list of text and numbers: say each value where its own type is known.",
+  "${A} cannot be said to the model here: say a String, or a value with a Schema, a circe Encoder or a Content of its own; a part is given as itself only to a message holding its kind. Text is never said as part of a union, such as the String | Double of a list of text and numbers: say each value where its own type is known.",
 )
 trait Content[A]:
 

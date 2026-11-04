@@ -2,7 +2,7 @@ package com.alecdorrington.iris
 
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
-import com.alecdorrington.iris.Fixtures.config
+import com.alecdorrington.iris.Fixtures.{access, config, model}
 import fs2.Stream
 import munit.FunSuite
 import scala.concurrent.Future
@@ -38,25 +38,28 @@ class AbortSuite extends FunSuite:
   private val begun = "data: {\"type\":\"content_block_delta\"," +
     "\"delta\":{\"type\":\"text_delta\",\"text\":\"[\\\"a\\\",\"}}\n\n"
 
-  private val request = ModelRequest(Conversation.userSays("Count."))
+  private val request = Conversation.userSays("Count.")
 
   /**
     * Runs `test` against a server answering with `reply` and then nothing, or
-    * not at all, and a client of Iris's own, configured with `timeout`.
+    * not at all, and a prompt service of Iris's own, configured with `timeout`.
     */
   private def serving
     (
       reply: Option[String],
       timeout: FiniteDuration = 30.seconds,
     )
-    (test: (Served, ModelClient[IO]) => IO[Unit])
+    (test: (Served, PromptService[IO]) => IO[Unit])
     : Future[Unit] = Server(reply)
     .flatMap(served =>
-      ModelClient
-        .resource[IO](config.copy(
-          baseUrl = Some(served.address),
-          timeout = timeout,
-        ))
+      model
+        .prompt[IO](
+          access.copy(
+            baseUrl = Some(served.address),
+            timeout = timeout,
+          ),
+          config,
+        )
         .map(served -> _),
     )
     .use(test.tupled)
@@ -74,25 +77,29 @@ class AbortSuite extends FunSuite:
   test(
     "a stream dropped early closes its connection, though its reply goes on",
   ):
-    serving(Some(begun))((served, client) =>
-      client
+    serving(Some(begun))((served, prompt) =>
+      prompt
         .stream(request)
         .take(1)
         .compile
         .toList
-        .map(assertEquals(_, List(Delta.Text("[\"a\",")))) *> closed(served),
+        .map(assertEquals(
+          _,
+          List(PromptEvent.Written(PromptEvent.Part.Text, "[\"a\",")),
+        )) *> closed(served),
     )
 
   test("a cancelled answer closes its connection, though its reply goes on"):
-    serving(Some(begun))((served, client) =>
-      client
-        .ask[Stream[IO, String]](Conversation.userSays("Count."))
+    serving(Some(begun))((served, prompt) =>
+      prompt
+        .query
+        .send[Stream[IO, String]](Conversation.userSays("Count."))
         .flatMap(_.cancel) *> closed(served),
     )
 
   test("a stream cancelled before its reply begins closes its connection"):
-    serving(None)((served, client) =>
-      client
+    serving(None)((served, prompt) =>
+      prompt
         .stream(request)
         .compile
         .drain
@@ -105,8 +112,8 @@ class AbortSuite extends FunSuite:
     )
 
   test("a stream that stalls closes its connection once it times out"):
-    serving(Some(begun), timeout = 1.second)((served, client) =>
-      client
+    serving(Some(begun), timeout = 1.second)((served, prompt) =>
+      prompt
         .stream(request)
         .attempt
         .compile
@@ -114,8 +121,8 @@ class AbortSuite extends FunSuite:
         .map(assertEquals(
           _,
           List(
-            Right(Delta.Text("[\"a\",")),
-            Left(ModelError.TimedOut("Anthropic", 1.second)),
+            Right(PromptEvent.Written(PromptEvent.Part.Text, "[\"a\",")),
+            Left(ApiError.TimedOut("Anthropic", 1.second)),
           ),
         )) *> closed(served),
     )

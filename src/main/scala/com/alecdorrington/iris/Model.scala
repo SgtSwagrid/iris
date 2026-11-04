@@ -1,5 +1,7 @@
 package com.alecdorrington.iris
 
+import cats.effect.{Async, Resource, Sync}
+
 /**
   * A model Iris can prompt. Each belongs to the one provider which serves it,
   * so a model is never sent to a provider that does not have it. The models
@@ -17,6 +19,80 @@ sealed trait Model:
 
   /** The model's name after its provider's, as `anthropic:claude-opus-5-5`. */
   def name: String = s"${ provider.id }:$id"
+
+  /**
+    * Makes this model's prompt service, with an API service of its own, made by
+    * [[ModelProvider.api]], whose key is the provider's own variable's unless
+    * the API's configuration gives one.
+    *
+    * {{{
+    * Model.ClaudeHaiku5_5.prompt[IO]().use(_.send("Hello!"))
+    * }}}
+    *
+    * @tparam F
+    *   The effect type.
+    *
+    * @param api
+    *   How the provider's API is reached.
+    *
+    * @param config
+    *   The settings every request takes, unless it sets its own.
+    *
+    * @return
+    *   A resource holding the service and its HTTP client.
+    */
+  def prompt[F[_] : Async]
+    (
+      api: ApiConfig = ApiConfig(),
+      config: PromptConfig = PromptConfig(),
+    )
+    : Resource[F, PromptService[F]] = provider
+    .api[F](api)
+    .map(prompt(_, config))
+
+  /**
+    * Makes this model's prompt service over an API service, which several
+    * models of its provider may share.
+    *
+    * @tparam F
+    *   The effect type.
+    *
+    * @param api
+    *   The API service of this model's provider.
+    *
+    * @param config
+    *   The settings every request takes, unless it sets its own.
+    *
+    * @return
+    *   The service.
+    */
+  def prompt[F[_] : Sync]
+    (api: ApiService[F], config: PromptConfig)
+    : PromptService[F] = ProviderPrompt(
+    api,
+    ProviderApi.of(provider),
+    this,
+    config,
+  )
+
+  /**
+    * Makes this model's token counter over an API service, where its provider
+    * can count, as Anthropic and Gemini can, and OpenAI cannot.
+    *
+    * @tparam F
+    *   The effect type.
+    *
+    * @param api
+    *   The API service of this model's provider.
+    *
+    * @return
+    *   The counter, or `None` where the provider cannot count.
+    */
+  def counter[F[_] : Sync](api: ApiService[F]): Option[TokenCounter[F]] =
+    val spoken = ProviderApi.of(provider)
+    Option.when(spoken.counting(this, Conversation()).isDefined)(
+      ProviderCounter(api, spoken, this),
+    )
 
 object Model:
 
@@ -251,3 +327,50 @@ object Model:
   /** The model Iris lists under the given name, in any case. */
   private def listedAs(id: String): Option[Model] =
     listed.find(_.id.equalsIgnoreCase(id.trim))
+
+  /**
+    * Reads the model from the environment: by `LLM_MODEL`, as [[parse]] reads
+    * it, else the default model of the provider `LLM_PROVIDER` names, else that
+    * of the first provider whose key is set.
+    *
+    * @return
+    *   The model, or `None` where none is configured, or a variable is set but
+    *   unrecognised, as a set but unknown provider or model is never taken to
+    *   mean another.
+    */
+  def fromEnv(): Option[Model] = from(env)
+
+  /**
+    * Reads the model from variables, as [[fromEnv]] does.
+    *
+    * @param variable
+    *   Looks up a variable by name.
+    *
+    * @return
+    *   The model, or `None` where none is configured.
+    */
+  def from(variable: String => Option[String]): Option[Model] =
+    val named = variable("LLM_MODEL")
+    for
+      provider <- variable("LLM_PROVIDER").fold(
+        named.fold(
+          ModelProvider.values.find(_.key(variable).isDefined),
+        )(parse(_).map(_.provider)),
+      )(ModelProvider.parse)
+      model <- named.fold(Some(provider.defaultModel))(parse(_).filter(
+        _.provider == provider,
+      ))
+      _ <- provider.key(variable)
+    yield model
+
+  /** An environment variable, where it is set and not blank. */
+  private[iris] def env(name: String): Option[String] = sys
+    .env
+    .get(name)
+    .filter(_.nonEmpty)
+
+  /** A positive whole number, as a variable may give one. */
+  private[iris] def positive(value: String): Option[Int] = value
+    .trim
+    .toIntOption
+    .filter(_ > 0)

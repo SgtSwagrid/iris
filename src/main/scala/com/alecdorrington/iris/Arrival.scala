@@ -2,7 +2,8 @@ package com.alecdorrington.iris
 
 /**
   * How a value of a type is read while its JSON is still arriving, as
-  * [[ModelClient.ask]] reads it: once whole, as a stream, or from its members.
+  * [[QueryService.send]] reads it: once whole, as a stream, or from its
+  * members.
   */
 private[iris] enum Arrival:
 

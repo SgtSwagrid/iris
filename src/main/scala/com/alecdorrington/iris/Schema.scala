@@ -16,7 +16,7 @@ import scala.util.NotGiven
   * How a type's values travel to and from the model as JSON: how a value is
   * written, how one is read back, and the [JSON
   * Schema](https://json-schema.org) the model is told they conform to.
-  * [[ModelClient.ask]] asks for a type with one, and [[Content]] says one.
+  * [[QueryService.send]] asks for a type with one, and [[Content]] says one.
   *
   * Strings, numbers, Booleans, options, lists, vectors, sequences, sets, maps
   * keyed by strings, tuples, eithers, unions and literal types have one, and so
@@ -44,7 +44,7 @@ import scala.util.NotGiven
   * `{"Int":1}`, which a value's class must tell, but for a union of literal
   * types alone, which is one of their values. A tuple is an array of its
   * elements, and an fs2 `Stream` an array of its values, which
-  * [[ModelClient.ask]] delivers as the model writes them, but which cannot be
+  * [[QueryService.send]] delivers as the model writes them, but which cannot be
   * said as JSON. A recursive type refers to itself through definitions in the
   * schema, each type told apart by its full name and type arguments, so that
   * `Tree[Int]` and `Tree[String]` are each defined.
@@ -297,14 +297,14 @@ object Schema extends DerivedSchemas:
   )
 
   /**
-    * A stream of values, as an array of them. [[ModelClient.ask]] hands it over
-    * as soon as its array begins, each value then read as soon as the model has
-    * written it; a stream read from a reply already whole holds its values from
-    * the start. A stream cannot be said as JSON, as it would have to be run:
-    * say a list of its values instead.
+    * A stream of values, as an array of them. [[QueryService.send]] hands it
+    * over as soon as its array begins, each value then read as soon as the
+    * model has written it; a stream read from a reply already whole holds its
+    * values from the start. A stream cannot be said as JSON, as it would have
+    * to be run: say a list of its values instead.
     *
     * @tparam F
-    *   The effect type, which [[ModelClient.ask]] must share.
+    *   The effect type, which [[QueryService.send]] must share.
     *
     * @tparam A
     *   The type of the values.
