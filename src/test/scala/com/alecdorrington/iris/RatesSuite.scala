@@ -129,6 +129,35 @@ class RatesSuite extends FunSuite:
       Some(usd("1.5")),
     )
 
+  test("a retired model is priced as the one answering for it from its day"):
+    def rates
+      (
+        model: Model,
+        year: Int,
+        month: Int,
+        day: Int,
+      ) = Rates.listed(model, ProviderApi.utc(year, month, day))
+    assertEquals(
+      rates(Model.Gemini2_5Pro, 2026, 11, 30).map(_.uncached),
+      Some(usd("1.25")),
+    )
+    assertEquals(
+      rates(Model.Gemini2_5Pro, 2026, 12, 1),
+      rates(Model.Gemini3_8Flash, 2026, 12, 1),
+    )
+    assertEquals(
+      rates(Model.Gemini2_5Pro, 2027, 1, 1),
+      rates(Model.Gemini3_8Flash, 2027, 1, 1),
+    )
+    assertEquals(
+      rates(Model.Gemini2_5Flash, 2026, 11, 30).map(_.uncachedAudio),
+      Some(usd("1")),
+    )
+    assertEquals(
+      rates(Model.Gemini2_5Flash, 2026, 12, 1),
+      rates(Model.Gemini3_5FlashLite, 2026, 12, 1),
+    )
+
   test("a day begins at its midnight in utc, counted from 1970"):
     List(
       (1970, 1, 1)  -> 0L,
