@@ -81,7 +81,9 @@ private[iris] object GeminiApi extends ProviderApi:
     * As https://ai.google.dev/gemini-api/docs/pricing gives them. Google names
     * no time zone for its price changes, so they are taken to come at midnight
     * UTC, nor says whether cached tokens count towards Gemini 2.5 Pro's 200K,
-    * so they are taken to, as [[Rates.Above]] says.
+    * so they are taken to, as [[Rates.Above]] says. From December 1, 2026,
+    * Google answers Gemini 2.5 Pro with Gemini 3.8 Flash and Gemini 2.5 Flash
+    * with Gemini 3.5 Flash-Lite, billing each at its replacement's rates.
     */
   override def rates(model: Model, at: FiniteDuration): Option[Rates] =
     model match
@@ -99,15 +101,19 @@ private[iris] object GeminiApi extends ProviderApi:
         Some(priced(0.30, 0.03, 0.30, 0.03, 2.50))
       case Model.Gemini3_1FlashLite =>
         Some(priced(0.25, 0.025, 0.50, 0.05, 1.50))
-      case Model.Gemini2_5Pro => Some(
-          priced(1.25, 0.125, 1.25, 0.125, 10.00).copy(above =
+      case Model.Gemini2_5Pro =>
+        if at < ProviderApi.utc(2026, 12, 1) then
+          Some(priced(1.25, 0.125, 1.25, 0.125, 10.00).copy(above =
             Some(Rates.Above(
               200_000,
               priced(2.50, 0.25, 2.50, 0.25, 15.00),
             )),
-          ),
-        )
-      case Model.Gemini2_5Flash => Some(priced(0.30, 0.03, 1.00, 0.10, 2.50))
+          ))
+        else rates(Model.Gemini3_8Flash, at)
+      case Model.Gemini2_5Flash =>
+        if at < ProviderApi.utc(2026, 12, 1) then
+          Some(priced(0.30, 0.03, 1.00, 0.10, 2.50))
+        else rates(Model.Gemini3_5FlashLite, at)
       case Model.Gemini2_5FlashLite =>
         Some(priced(0.10, 0.01, 0.30, 0.03, 0.40))
       case _ => None
