@@ -1,7 +1,7 @@
 package com.alecdorrington.iris
 
 import cats.syntax.all.*
-import io.circe.{Decoder, Encoder, Json}
+import io.circe.{Decoder, Encoder, Json, JsonObject}
 import io.circe.parser.decode
 import io.circe.syntax.*
 import scala.concurrent.duration.FiniteDuration
@@ -25,31 +25,73 @@ private[iris] object JsonHttp:
       _.addPath(path),
     )
 
-  /** Refuses a chat no provider would answer, as [[Chat.unanswerable]] says. */
+  /**
+    * Refuses a conversation no provider would answer, as
+    * [[Conversation.unanswerable]] says.
+    */
   def refuseUnanswerable
-    (provider: ModelProvider, chat: Chat)
-    : Either[ModelError, Unit] = chat
+    (
+      provider: ModelProvider,
+      conversation: Conversation,
+    )
+    : Either[ModelError, Unit] = conversation
     .unanswerable
     .map(ModelError.Unsendable(provider.displayName, _))
     .toLeft(())
 
-  /** Refuses a chat holding media of a kind the provider does not take. */
+  /** Refuses a conversation holding media of a kind the provider does not take. */
   def refuseUnsupportedMedia
     (
       provider: ModelProvider,
-      chat: Chat,
+      conversation: Conversation,
       taken: Set[MediaType],
     )
-    : Either[ModelError, Unit] = chat
+    : Either[ModelError, Unit] = conversation
     .messages
     .flatMap(_.parts)
     .collectFirst:
       case MessagePart.Media(mediaType, _) if !taken.contains(mediaType) =>
         ModelError.Unsupported(
           provider.displayName,
-          s"sending ${ mediaType.name } in a chat",
+          s"sending ${ mediaType.name } in a conversation",
         )
     .toLeft(())
+
+  /**
+    * Refuses a conversation holding a tool call whose arguments are no JSON
+    * object, as a provider taking them as one could not be sent it.
+    */
+  def refuseUnreadableArguments
+    (
+      provider: ModelProvider,
+      conversation: Conversation,
+    )
+    : Either[ModelError, Unit] = conversation
+    .messages
+    .flatMap(_.parts)
+    .collectFirst:
+      case MessagePart.ToolCall(_, tool, arguments, _)
+        if decode[JsonObject](arguments).isLeft =>
+        ModelError.Unsendable(
+          provider.displayName,
+          s"the arguments of its call of `$tool` are no JSON object",
+        )
+    .toLeft(())
+
+  /** A provider's role, and the parts of a turn in it. */
+  type Turn = (String, List[MessagePart])
+
+  /**
+    * The turns of messages, each of a role, those in a row of one role run
+    * together into one, as the tools' results and the user's next words are
+    * where the tools have no role of their own.
+    */
+  def turns(messages: List[Turn]): List[Turn] = messages
+    .foldLeft(Vector.empty[Turn]):
+      case (earlier :+ ((role, parts)), (next, more)) if role == next =>
+        earlier :+ (role -> (parts ++ more))
+      case (earlier, turn) => earlier :+ turn
+    .toList
 
   /**
     * A JSON object of the fields, leaving out null ones. Nulls nested inside a

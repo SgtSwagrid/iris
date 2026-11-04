@@ -27,7 +27,7 @@ import scala.util.NotGiven
   * {{{
   * case class Person(name: String, age: Int, nickname: Option[String] = None)
   *
-  * client.ask[Person](Chat.userSays("Who wrote Middlemarch?"))
+  * client.ask[Person](Conversation.userSays("Who wrote Middlemarch?"))
   * }}}
   *
   * `derives Schema` derives one once, beside its type, rather than wherever it

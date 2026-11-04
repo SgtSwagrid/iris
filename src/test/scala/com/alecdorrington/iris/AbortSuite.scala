@@ -38,7 +38,7 @@ class AbortSuite extends FunSuite:
   private val begun = "data: {\"type\":\"content_block_delta\"," +
     "\"delta\":{\"type\":\"text_delta\",\"text\":\"[\\\"a\\\",\"}}\n\n"
 
-  private val request = ModelRequest(Chat.userSays("Count."))
+  private val request = ModelRequest(Conversation.userSays("Count."))
 
   /**
     * Runs `test` against a server answering with `reply` and then nothing, or
@@ -86,7 +86,7 @@ class AbortSuite extends FunSuite:
   test("a cancelled answer closes its connection, though its reply goes on"):
     serving(Some(begun))((served, client) =>
       client
-        .ask[Stream[IO, String]](Chat.userSays("Count."))
+        .ask[Stream[IO, String]](Conversation.userSays("Count."))
         .flatMap(_.cancel) *> closed(served),
     )
 

@@ -30,18 +30,19 @@ class ToolSuite extends FunSuite:
   private val asked = MessagePart.ToolCall(
     "call_1",
     "weather",
-    Json.obj("city" -> Json.fromString("Zug")),
+    Json.obj("city" -> Json.fromString("Zug")).noSpaces,
   )
 
   /** A call whose arguments hold a null, which is a value there. */
-  private val unplaced = asked.copy(arguments = Json.obj("city" -> Json.Null))
+  private val unplaced =
+    asked.copy(arguments = Json.obj("city" -> Json.Null).noSpaces)
 
   private val answered = MessagePart.ToolResult("call_1", "weather", "Snowing.")
 
-  private val exchange = Chat()
+  private val exchange = Conversation()
     .userSays("What is the weather?")
     .modelSays(unplaced)
-    .userSays(answered)
+    .toolSays(answered)
 
   test("each provider is offered a tool where it looks, its schema as it is"):
     List[(ProviderApi, ACursor => ACursor, String)](
@@ -61,7 +62,11 @@ class ToolSuite extends FunSuite:
       ),
     ).foreach: (api, declared, schema) =>
       val tool = declared(
-        json(api.body(config, Chat().userSays("Hi"), offering)).hcursor,
+        json(api.body(
+          config,
+          Conversation().userSays("Hi"),
+          offering,
+        )).hcursor,
       )
       assertEquals(
         tool.get[String]("name").toOption,
@@ -74,12 +79,11 @@ class ToolSuite extends FunSuite:
         api.provider,
       )
     assertEquals(
-      json(OpenAiApi.body(config, Chat().userSays("Hi"), offering))
-        .hcursor
-        .downField("tools")
-        .downN(0)
-        .get[String]("type")
-        .toOption,
+      json(OpenAiApi.body(
+        config,
+        Conversation().userSays("Hi"),
+        offering,
+      )).hcursor.downField("tools").downN(0).get[String]("type").toOption,
       Some("function"),
     )
 
@@ -99,11 +103,11 @@ class ToolSuite extends FunSuite:
       Schema[Map[String, Int]].json,
     )
     val offered  = ModelRequest.Options(tools = List(bare, weather, tally))
-    val declared = json(GeminiApi.body(config, Chat().userSays("Hi"), offered))
-      .hcursor
-      .downField("tools")
-      .downN(0)
-      .downField("functionDeclarations")
+    val declared = json(GeminiApi.body(
+      config,
+      Conversation().userSays("Hi"),
+      offered,
+    )).hcursor.downField("tools").downN(0).downField("functionDeclarations")
     assertEquals(
       declared.downN(0).get[String]("name").toOption,
       Some("ping"),
@@ -118,12 +122,11 @@ class ToolSuite extends FunSuite:
       Some(tally.parameters),
     )
     assertEquals(
-      json(AnthropicApi.body(config, Chat().userSays("Hi"), offered))
-        .hcursor
-        .downField("tools")
-        .downN(0)
-        .downField("input_schema")
-        .focus,
+      json(AnthropicApi.body(
+        config,
+        Conversation().userSays("Hi"),
+        offered,
+      )).hcursor.downField("tools").downN(0).downField("input_schema").focus,
       Some(bare.parameters),
     )
 
@@ -144,7 +147,7 @@ class ToolSuite extends FunSuite:
     )
     assertEquals(
       call.downField("input").focus,
-      Some(unplaced.arguments),
+      Some(json(unplaced.arguments)),
     )
     assertEquals(
       result.get[String]("type").toOption,
@@ -196,7 +199,7 @@ class ToolSuite extends FunSuite:
     )
     assertEquals(
       call.downField("args").focus,
-      Some(unplaced.arguments),
+      Some(json(unplaced.arguments)),
     )
     assertEquals(
       contents
@@ -262,7 +265,7 @@ class ToolSuite extends FunSuite:
         asked.copy(id = "a1", signature = Some("c2lnbmVk")),
         asked.copy(
           id = "b2",
-          arguments = Json.obj("city" -> Json.fromString("Bern")),
+          arguments = Json.obj("city" -> Json.fromString("Bern")).noSpaces,
         ),
       )),
     )
@@ -272,10 +275,10 @@ class ToolSuite extends FunSuite:
     val named  = asked.copy(id = "weather")
     val sent   = json(GeminiApi.body(
       config,
-      Chat()
+      Conversation()
         .userSays("What is the weather?")
         .modelSays(signed, named)
-        .userSays(
+        .toolSays(
           answered,
           MessagePart.ToolResult("weather", "weather", "Sunny."),
         ),
@@ -289,14 +292,14 @@ class ToolSuite extends FunSuite:
           "functionCall" -> Json.obj(
             "id"   -> Json.fromString("call_1"),
             "name" -> Json.fromString("weather"),
-            "args" -> asked.arguments,
+            "args" -> json(asked.arguments),
           ),
           "thoughtSignature" -> Json.fromString("c2lnbmVk"),
         ),
         Json.obj(
           "functionCall" -> Json.obj(
             "name" -> Json.fromString("weather"),
-            "args" -> asked.arguments,
+            "args" -> json(asked.arguments),
           ),
         ),
       )),
@@ -332,9 +335,12 @@ class ToolSuite extends FunSuite:
       StopReason.ToolCall,
       toolCalls = List(asked),
     )
-    val next = Chat().userSays("Weather?").modelSays(reply).userSays(answered)
+    val next = Conversation()
+      .userSays("Weather?")
+      .modelSays(reply)
+      .toolSays(answered)
     assertEquals(next.messages.size, 3)
-    assertEquals(next.messages(1).role, Role.Model)
+    assert(next.messages(1).isInstanceOf[Message.Model])
     assertEquals(next.messages(1).parts.last, asked)
     assertEquals(next.messages(2).parts, List(answered))
 
@@ -345,6 +351,6 @@ class ToolSuite extends FunSuite:
       toolCalls = List(asked),
     )
     assertEquals(
-      Chat().userSays("Weather?").modelSays(reply).messages.last.parts,
+      Conversation().userSays("Weather?").modelSays(reply).messages.last.parts,
       List(asked),
     )

@@ -11,7 +11,7 @@ import sttp.model.{Header, StatusCode}
 
 class ClientSuite extends FunSuite:
 
-  private val prompt = Chat.userSays("Hello")
+  private val prompt = Conversation.userSays("Hello")
 
   private def client
     (
@@ -61,9 +61,7 @@ class ClientSuite extends FunSuite:
         .unsafeRunSync(),
       List(
         Delta.Text("Hi"),
-        Delta.ToolCall(
-          MessagePart.ToolCall("call_1", "look", io.circe.Json.obj()),
-        ),
+        Delta.ToolCall(MessagePart.ToolCall("call_1", "look", "{}")),
         // Priced as it came, at Claude Haiku 4.5's rates, though it reports none.
         Delta.End(
           StopReason.ToolCall,
@@ -133,7 +131,9 @@ class ClientSuite extends FunSuite:
           case _                                        => false,
     )
 
-  test("a chat is counted before it is sent, where its provider can count"):
+  test(
+    "a conversation is counted before it is sent, where its provider can count",
+  ):
     List(
       (Model.ClaudeHaiku4_5, """{"input_tokens":42}""", Right(42)),
       (Model.Gemini2_5Flash, """{"totalTokens":17}""", Right(17)),

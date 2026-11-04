@@ -143,16 +143,16 @@ private[iris] object GeminiApi extends ProviderApi:
   override def counting
     (
       config: ModelConfig,
-      chat: Chat,
+      conversation: Conversation,
       options: ModelRequest.Options,
     )
     : Either[ModelError, Counting] =
     for
-      _        <- JsonHttp.refuseUnanswerable(provider, chat)
+      _        <- JsonHttp.refuseUnanswerable(provider, conversation)
       endpoint <- calling(config, config.model, "countTokens")
     yield Counting(
       endpoint,
-      countBody(chat),
+      countBody(conversation),
       Decoder[CountResponse].map(_.totalTokens),
     )
 
@@ -180,34 +180,47 @@ private[iris] object GeminiApi extends ProviderApi:
     )
 
   /**
-    * Serialises a chat to count. Counting takes no `system_instruction`, so a
-    * system message is counted as a user message.
+    * Serialises a conversation to count. Counting takes no
+    * `system_instruction`, so a system message is counted as a user message of
+    * its own.
     */
-  def countBody(chat: Chat): String = JsonHttp.body(
+  def countBody(conversation: Conversation): String = JsonHttp.body(
     "contents" ->
-      (chat.instructions.map(Message(Role.User, _)).toList ++ chat.messages)
-        .map(content)
-        .asJson,
+      (conversation
+        .instructions
+        .map(text => content("user", List(MessagePart.Text(text))))
+        .toList ++ contents(conversation.messages)).asJson,
   )
+
+  /** Refuses an empty conversation, and a call whose arguments are no object. */
+  override def refuseUnsendable
+    (
+      config: ModelConfig,
+      conversation: Conversation,
+      options: ModelRequest.Options,
+    )
+    : Either[ModelError, Unit] = JsonHttp
+    .refuseUnanswerable(provider, conversation)
+    .flatMap(_ => JsonHttp.refuseUnreadableArguments(provider, conversation))
 
   final case class CountResponse(totalTokens: Int) derives Decoder
 
-  /** Serialises a chat alike whether streamed. */
+  /** Serialises a conversation alike whether streamed. */
   override def body
     (
       config: ModelConfig,
-      chat: Chat,
+      conversation: Conversation,
       options: ModelRequest.Options,
       streamed: Boolean,
     )
     : String = JsonHttp.body(
     "system_instruction" ->
-      chat
+      conversation
         .instructions
         .map(text => Json.obj("parts" -> Json.arr(part(text))))
         .asJson,
     "tools"            -> tools(options),
-    "contents"         -> chat.messages.map(content).asJson,
+    "contents"         -> contents(conversation.messages).asJson,
     "generationConfig" -> JsonHttp.objectOf(
       "maxOutputTokens" -> config.limit(options).asJson,
       "temperature"     -> options.temperature.asJson,
@@ -227,11 +240,20 @@ private[iris] object GeminiApi extends ProviderApi:
     case Effort.High   => 16_384
     case Effort.Max    => 24_576
 
-  /** Serialises a message, dropping breakpoints, as Gemini caches by itself. */
-  private def content(message: Message): Json = Json.obj(
-    "role"  -> role(message.role).asJson,
-    "parts" ->
-      Message.separated(message.withoutBreakpoints.parts).map(part).asJson,
+  /**
+    * Serialises messages, dropping breakpoints, as Gemini caches by itself, and
+    * running together those in a row of one role, as the tools' results and the
+    * user's next words both are the user's.
+    */
+  private def contents(messages: List[Message]): List[Json] = JsonHttp
+    .turns(
+      messages.map(message => role(message) -> message.withoutBreakpoints.parts),
+    )
+    .map(content)
+
+  private def content(role: String, parts: List[MessagePart]): Json = Json.obj(
+    "role"  -> role.asJson,
+    "parts" -> Message.separated(parts).map(part).asJson,
   )
 
   private def part(text: String): Json = Json.obj("text" -> text.asJson)
@@ -325,7 +347,7 @@ private[iris] object GeminiApi extends ProviderApi:
           "functionCall" -> JsonHttp.objectOf(
             "id"   -> issued(id, tool).asJson,
             "name" -> tool.asJson,
-            "args" -> arguments,
+            "args" -> parse(arguments).getOrElse(Json.obj()),
           ),
           "thoughtSignature" -> signature.asJson,
         )
@@ -346,9 +368,10 @@ private[iris] object GeminiApi extends ProviderApi:
   private def issued(id: String, tool: String): Option[String] =
     Option.when(id != tool)(id)
 
-  private def role(role: Role): String = role match
-    case Role.User  => "user"
-    case Role.Model => "model"
+  /** The role of a message's owner, the tools' results being the user's. */
+  private def role(message: Message): String = message match
+    case _: Message.Model                  => "model"
+    case _: Message.User | _: Message.Tool => "user"
 
   private val stopReason: Option[String] => StopReason =
     StopReason.normalise("STOP", "MAX_TOKENS")
@@ -384,7 +407,7 @@ private[iris] object GeminiApi extends ProviderApi:
       MessagePart.ToolCall(
         call.id.getOrElse(call.name),
         call.name,
-        call.args.getOrElse(Json.obj()),
+        call.args.getOrElse(Json.obj()).noSpaces,
         thoughtSignature,
       )
 

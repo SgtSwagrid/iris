@@ -162,16 +162,16 @@ private[iris] object AnthropicApi extends ProviderApi:
   override def counting
     (
       config: ModelConfig,
-      chat: Chat,
+      conversation: Conversation,
       options: ModelRequest.Options,
     )
     : Either[ModelError, Counting] =
     for
-      _        <- JsonHttp.refuseUnanswerable(provider, chat)
+      _        <- JsonHttp.refuseUnanswerable(provider, conversation)
       endpoint <- messagesEndpoint(config, "count_tokens")
     yield Counting(
       endpoint,
-      countBody(config, chat),
+      countBody(config, conversation),
       Decoder[CountResponse].map(_.inputTokens),
     )
 
@@ -184,19 +184,20 @@ private[iris] object AnthropicApi extends ProviderApi:
     ("v1" +: "messages" +: path)*,
   )
 
-  /** Refuses an empty chat, a refused prefill, or too many cache marks. */
+  /** Refuses an empty conversation, a refused prefill, or too many cache marks. */
   override def refuseUnsendable
     (
       config: ModelConfig,
-      chat: Chat,
+      conversation: Conversation,
       options: ModelRequest.Options,
     )
     : Either[ModelError, Unit] =
     for
-      _ <- JsonHttp.refuseUnanswerable(provider, chat)
-      _ <- refusePrefill(chat, config.model)
-      _ <- refuseExcessBreakpoints(chat)
-      _ <- JsonHttp.refuseUnsupportedMedia(provider, chat, media)
+      _ <- JsonHttp.refuseUnanswerable(provider, conversation)
+      _ <- refusePrefill(conversation, config.model)
+      _ <- refuseExcessBreakpoints(conversation)
+      _ <- JsonHttp.refuseUnsupportedMedia(provider, conversation, media)
+      _ <- JsonHttp.refuseUnreadableArguments(provider, conversation)
     yield ()
 
   /**
@@ -211,21 +212,22 @@ private[iris] object AnthropicApi extends ProviderApi:
   )
 
   /**
-    * The models that still continue a chat ending with the model's message. The
-    * others, unlisted ones included, refuse it.
+    * The models that still continue a conversation ending with the model's
+    * message. The others, unlisted ones included, refuse it.
     */
   private val prefilling: Set[Model] = Set(Model.ClaudeHaiku4_5)
 
-  def refusePrefill(chat: Chat, model: Model): Either[ModelError, Unit] = Either
-    .cond(
-      prefilling.contains(model) ||
-      !chat.messages.lastOption.exists(_.role == Role.Model),
-      (),
-      ModelError.Unsendable(
-        provider.displayName,
-        s"${ model.id } will not continue a message of its own",
-      ),
-    )
+  def refusePrefill
+    (conversation: Conversation, model: Model)
+    : Either[ModelError, Unit] = Either.cond(
+    prefilling.contains(model) ||
+    !conversation.messages.lastOption.exists(_.isInstanceOf[Message.Model]),
+    (),
+    ModelError.Unsendable(
+      provider.displayName,
+      s"${ model.id } will not continue a message of its own",
+    ),
+  )
 
   /** The media Anthropic takes inline: the pictures Iris lists, and PDFs. */
   val media: Set[MediaType] = Set(
@@ -239,11 +241,17 @@ private[iris] object AnthropicApi extends ProviderApi:
   val maxBreakpoints: Int = 4
 
   /**
-    * Refuses a chat whose breakpoints mark more blocks than Anthropic keeps,
-    * but for those closing it, which mark a block only where there is room.
+    * Refuses a conversation whose breakpoints mark more blocks than Anthropic
+    * keeps, but for those closing it, which mark a block only where there is
+    * room.
     */
-  def refuseExcessBreakpoints(chat: Chat): Either[ModelError, Unit] =
-    val count = marks(chat, laid(unclosed(chat)))
+  def refuseExcessBreakpoints
+    (conversation: Conversation)
+    : Either[ModelError, Unit] =
+    val count = marks(
+      conversation,
+      laid(unclosed(conversation)),
+    )
     Either.cond(
       count <= maxBreakpoints,
       (),
@@ -253,15 +261,28 @@ private[iris] object AnthropicApi extends ProviderApi:
       ),
     )
 
-  /** The blocks a chat's parts, as placed, mark; those in a row mark one. */
-  private def marks(chat: Chat, placed: Placed): Int =
+  /**
+    * The blocks a conversation's parts, as placed, mark; those in a row mark
+    * one.
+    */
+  private def marks
+    (
+      conversation: Conversation,
+      placed: Placed,
+    )
+    : Int =
     val (cached, blocks) = placed
-    val onSystem         = if cached && chat.instructions.nonEmpty then 1 else 0
+    val onSystem = if cached && conversation.instructions.nonEmpty then 1 else 0
     onSystem + blocks.flatten.count(_._2)
 
-  /** Serialises a chat to count, which takes no `max_tokens`. */
-  def countBody(config: ModelConfig, chat: Chat): String =
-    val (system, messages) = conversation(chat)
+  /** Serialises a conversation to count, which takes no `max_tokens`. */
+  def countBody
+    (
+      config: ModelConfig,
+      conversation: Conversation,
+    )
+    : String =
+    val (system, messages) = serialised(conversation)
     JsonHttp.body(
       "model"    -> config.model.id.asJson,
       "system"   -> system,
@@ -278,13 +299,13 @@ private[iris] object AnthropicApi extends ProviderApi:
   override def body
     (
       config: ModelConfig,
-      chat: Chat,
+      conversation: Conversation,
       options: ModelRequest.Options,
       streamed: Boolean,
     )
     : String =
     val samples            = sampling.contains(config.model)
-    val (system, messages) = conversation(chat)
+    val (system, messages) = serialised(conversation)
     JsonHttp.body(
       "model"          -> config.model.id.asJson,
       "max_tokens"     -> config.limit(options).asJson,
@@ -309,52 +330,48 @@ private[iris] object AnthropicApi extends ProviderApi:
   /** Whether a breakpoint marks the system message, and the messages' blocks. */
   private type Placed = (Boolean, Vector[Vector[Marked]])
 
-  private def conversation(chat: Chat): (Json, Json) =
-    val (cached, blocks) = placed(chat)
+  private def serialised(conversation: Conversation): (Json, Json) =
+    val (cached, blocks) = placed(conversation)
     (
-      chat.instructions.map(system(_, cached)).asJson,
-      chat
-        .messages
-        .zip(blocks)
-        .map((message, blocks) => this.message(message.role, blocks))
-        .asJson,
+      conversation.instructions.map(system(_, cached)).asJson,
+      turns(conversation).map(_._1).zip(blocks).map(message).asJson,
     )
 
+  /** The conversation's turns, the tools' results the user's. */
+  private def turns(conversation: Conversation): List[JsonHttp.Turn] = JsonHttp
+    .turns(conversation.messages.map(message => role(message) -> message.parts))
+
   /**
-    * Places a chat's parts. Breakpoints closing it, as an ask puts after each
-    * round of tools, mark its last block only where the others leave room, so
-    * that they never crowd out the host's own.
+    * Places a conversation's parts. Breakpoints closing it, as an ask puts
+    * after each round of tools, mark its last block only where the others leave
+    * room, so that they never crowd out the host's own.
     */
-  private def placed(chat: Chat): Placed =
-    val open = laid(unclosed(chat))
-    if closing(chat) && marks(chat, open) < maxBreakpoints then
+  private def placed(conversation: Conversation): Placed =
+    val open = laid(unclosed(conversation))
+    if closing(conversation) && marks(conversation, open) < maxBreakpoints then
       place(open, MessagePart.CacheBreakpoint)
     else open
 
-  private def laid(chat: Chat): Placed = chat
-    .messages
+  private def laid(conversation: Conversation): Placed = turns(conversation)
     .foldLeft((false, Vector.empty[Vector[Marked]])):
-      case ((cached, blocks), message) => Message
-          .separated(message.parts)
+      case ((cached, blocks), (_, parts)) => Message
+          .separated(parts)
           .foldLeft((cached, blocks :+ Vector.empty[Marked]))(place)
 
-  /** Whether breakpoints end the chat's last message. */
-  private def closing(chat: Chat): Boolean = chat
+  /** Whether breakpoints end the conversation's last message. */
+  private def closing(conversation: Conversation): Boolean = conversation
     .messages
     .lastOption
     .exists(_.parts.lastOption.contains(MessagePart.CacheBreakpoint))
 
-  /** The chat without the breakpoints ending it. */
-  private def unclosed(chat: Chat): Chat = chat.copy(messages =
-    chat
-      .messages
-      .lastOption
-      .fold(Nil)(last =>
-        chat.messages.init :+ last.copy(parts =
-          last.parts.reverse.dropWhile(_ == MessagePart.CacheBreakpoint).reverse,
-        ),
-      ),
-  )
+  /** The conversation without the breakpoints ending it. */
+  private def unclosed(conversation: Conversation): Conversation = conversation
+    .copy(messages =
+      conversation
+        .messages
+        .lastOption
+        .fold(Nil)(last => conversation.messages.init :+ last.unclosed),
+    )
 
   /**
     * Places one more part. A breakpoint marks the last block before it, in any
@@ -376,13 +393,16 @@ private[iris] object AnthropicApi extends ProviderApi:
     if cached then Json.arr(marked(MessagePart.Text(text) -> true))
     else text.asJson
 
-  /** A role's name in Anthropic's API. */
-  private def named(role: Role): String = role match
-    case Role.User  => "user"
-    case Role.Model => "assistant"
+  /**
+    * The role of a message's owner in Anthropic's API, where the tools' results
+    * are the user's, Anthropic running a user's message on from them.
+    */
+  private def role(message: Message): String = message match
+    case _: Message.Model                  => "assistant"
+    case _: Message.User | _: Message.Tool => "user"
 
-  private def message(role: Role, blocks: Vector[Marked]): Json = Json.obj(
-    "role"    -> named(role).asJson,
+  private def message(role: String, blocks: Vector[Marked]): Json = Json.obj(
+    "role"    -> role.asJson,
     "content" ->
       Option
         .unless(blocks.exists(_._2))(blocks.map(_._1))
@@ -416,7 +436,7 @@ private[iris] object AnthropicApi extends ProviderApi:
         "type"  -> "tool_use".asJson,
         "id"    -> id.asJson,
         "name"  -> tool.asJson,
-        "input" -> arguments,
+        "input" -> parse(arguments).getOrElse(Json.obj()),
       )
     case MessagePart.ToolResult(callId, _, output) => Json.obj(
         "type"        -> "tool_result".asJson,
@@ -479,7 +499,7 @@ private[iris] object AnthropicApi extends ProviderApi:
                   .toList
         case Some("content_block_stop") => index.fold(this -> Nil)(at =>
             copy(calls = calls - at) ->
-              calls.get(at).map(_.whole(provider)).toList,
+              calls.get(at).map(call => Right(call.whole)).toList,
           )
         case Some("error")         => this -> List(Left(streamedError(event)))
         case Some("message_delta") => this -> List(Right(Delta.End(
@@ -510,7 +530,11 @@ private[iris] object AnthropicApi extends ProviderApi:
         _    <- Option.when(kind == "tool_use")(())
         id   <- id
         name <- name
-      yield MessagePart.ToolCall(id, name, input.getOrElse(Json.obj()))
+      yield MessagePart.ToolCall(
+        id,
+        name,
+        input.getOrElse(Json.obj()).noSpaces,
+      )
 
     /** The call a block begins, whose arguments are still to come. */
     def calling: Option[Calling] =

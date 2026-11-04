@@ -40,7 +40,7 @@ class CollectionSuite extends FunSuite:
       )
       .use((served, client) =>
         client
-          .stream(ModelRequest(Chat.userSays("Count.")))
+          .stream(ModelRequest(Conversation.userSays("Count.")))
           .evalTap(_ => collected)
           .take(1)
           .compile

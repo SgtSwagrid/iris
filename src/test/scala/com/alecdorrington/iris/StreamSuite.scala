@@ -222,7 +222,7 @@ data: [DONE]
       ),
     )
 
-  test("a streamed tool call whose arguments are no JSON is malformed"):
+  test("a streamed tool call keeps its arguments as written, JSON or not"):
     val cut =
       """data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"weather","name":"weather","input":{}}}
 
@@ -240,23 +240,20 @@ data: {"type":"content_block_stop","index":0}
         .toList
         .attempt
         .unsafeRunSync(),
-      Left(ModelError.Malformed(
-        "Anthropic",
-        "the arguments of a call of `weather` are not JSON",
-      )),
+      Right(List(Delta.ToolCall(weather.copy(arguments = "{\"ci")))),
     )
 
   /** The call each provider is asked for, as it is read. */
   private val weather = MessagePart.ToolCall(
     "weather",
     "weather",
-    Json.obj("city" -> Json.fromString("Zug")),
+    Json.obj("city" -> Json.fromString("Zug")).noSpaces,
   )
 
   test("a streaming request asks to be streamed, and openai for its usage"):
     val anthropic = json(AnthropicApi.body(
       config,
-      Chat().userSays("Hi"),
+      Conversation().userSays("Hi"),
       ModelRequest.Options(),
       true,
     ))
@@ -266,7 +263,7 @@ data: {"type":"content_block_stop","index":0}
     )
     val openAi = json(OpenAiApi.body(
       config,
-      Chat().userSays("Hi"),
+      Conversation().userSays("Hi"),
       ModelRequest.Options(),
       true,
     ))

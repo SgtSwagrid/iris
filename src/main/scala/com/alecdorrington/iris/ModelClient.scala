@@ -13,8 +13,9 @@ import sttp.client4.{Backend, StreamBackend}
   * A provider-agnostic client for large language models, constructed with
   * [[ModelClient.resource]] or [[ModelClient.fromEnv]].
   *
-  * Clients are stateless: the whole conversation travels with each [[Chat]], so
-  * a conversation continues by appending to the chat and sending it again.
+  * Clients are stateless: the whole conversation travels with each
+  * [[Conversation]], so a conversation continues by appending to the
+  * conversation and sending it again.
   *
   * @tparam F
   *   The effect type.
@@ -22,25 +23,25 @@ import sttp.client4.{Backend, StreamBackend}
 trait ModelClient[F[_]]:
 
   /**
-    * Asks the model for its next response to a chat, with a value of a type
-    * read from it and validated against the type's schema: the one way a caller
-    * has a response, as [[countTokens]] and [[warmCache]] have none to read,
-    * alike for every type.
+    * Asks the model for its next response to a conversation, with a value of a
+    * type read from it and validated against the type's schema: the one way a
+    * caller has a response, as [[countTokens]] and [[warmCache]] have none to
+    * read, alike for every type.
     *
     * Every type is asked for alike, `String` as much as a case class of one's
-    * own: the model is told the type's JSON Schema, closing the chat's last
-    * user message, and its reply read as JSON conforming to it. A reply that
-    * cannot be read is followed by why, and the model asked again, until one
-    * can be or the attempts run out, but not where asking again could not help:
-    * a reply cut off at the token limit, which is never read, stopped for a
-    * reason of the provider's, such as a refusal, or saying nothing. A reply
-    * asking for a tool is given with no value. A chat in which the user says
-    * nothing fails with [[ModelError.Unsendable]] before any request.
+    * own: the model is told the type's JSON Schema, closing the conversation's
+    * last user message, and its reply read as JSON conforming to it. A reply
+    * that cannot be read is followed by why, and the model asked again, until
+    * one can be or the attempts run out, but not where asking again could not
+    * help: a reply cut off at the token limit, which is never read, stopped for
+    * a reason of the provider's, such as a refusal, or saying nothing. A reply
+    * asking for a tool is given with no value. A conversation in which the user
+    * says nothing fails with [[ModelError.Unsendable]] before any request.
     *
     * {{{
     * case class Person(name: String, age: Int)
     *
-    * client.ask[Person](Chat.userSays("Invent a person.")).map(_.value)
+    * client.ask[Person](Conversation.userSays("Invent a person.")).map(_.value)
     * }}}
     *
     * The answer is given as soon as everything in its value but its streams is
@@ -57,7 +58,7 @@ trait ModelClient[F[_]]:
     * {{{
     * case class Page(title: String, words: Stream[IO, Word])
     *
-    * client.ask[Page](chat).flatMap(answer =>
+    * client.ask[Page](conversation).flatMap(answer =>
     *   answer.value.traverse_(_.words.evalMap(show).compile.drain),
     * )
     * }}}
@@ -91,7 +92,7 @@ trait ModelClient[F[_]]:
     * @tparam A
     *   The type of the answer, whose streams are of this client's effect.
     *
-    * @param chat
+    * @param conversation
     *   The conversation so far, including any system message.
     *
     * @param options
@@ -124,9 +125,10 @@ trait ModelClient[F[_]]:
     *   without end. Each request after a round closes with a
     *   [[MessagePart.CacheBreakpoint]] of its own, so that it reads the rounds
     *   before it from the cache, writing only its own; Anthropic marks it only
-    *   where the chat's own breakpoints leave room. The first such request
-    *   writes all after the chat's last breakpoint, the whole prompt where it
-    *   has none, so end a fixed prefix with one to keep the writes to rounds.
+    *   where the conversation's own breakpoints leave room. The first such
+    *   request writes all after the conversation's last breakpoint, the whole
+    *   prompt where it has none, so end a fixed prefix with one to keep the
+    *   writes to rounds.
     *
     * @return
     *   An effect producing the answer, as soon as it can be given. It fails
@@ -135,7 +137,7 @@ trait ModelClient[F[_]]:
     */
   final def ask[A : Schema]
     (
-      chat: Chat,
+      conversation: Conversation,
       options: ModelRequest.Options = ModelRequest.Options(),
       attempts: Int = WholeAsker.attempts,
       tools: List[RunnableTool[F]] = Nil,
@@ -145,16 +147,17 @@ trait ModelClient[F[_]]:
     val toolbox = Toolbox(tools)
     if Schema[A].gradual then
       StreamingAsker.ask(
-        (chat, options) => stream(ModelRequest(chat, options)),
-        chat,
+        (conversation, options) => stream(ModelRequest(conversation, options)),
+        conversation,
         options,
         attempts,
         toolbox,
       )
     else
       WholeAsker.ask(
-        chat => send(ModelRequest(chat, toolbox.offered(options))),
-        chat,
+        conversation =>
+          send(ModelRequest(conversation, toolbox.offered(options))),
+        conversation,
         attempts,
         toolbox,
       )
@@ -166,7 +169,7 @@ trait ModelClient[F[_]]:
     * Callers ask through [[ask]].
     *
     * @param request
-    *   The chat, and the options to send it with.
+    *   The conversation, and the options to send it with.
     *
     * @return
     *   An effect producing the model's response.
@@ -181,7 +184,7 @@ trait ModelClient[F[_]]:
     * does.
     *
     * @param request
-    *   The chat, and the options to send it with.
+    *   The conversation, and the options to send it with.
     *
     * @return
     *   A stream of the response's text and tool calls, ending with a
@@ -208,8 +211,8 @@ trait ModelClient[F[_]]:
     * (OpenAI).
     *
     * @param request
-    *   The chat to count, and the options it would be sent with, which no count
-    *   depends on.
+    *   The conversation to count, and the options it would be sent with, which
+    *   no count depends on.
     *
     * @return
     *   An effect producing the number of input tokens.
@@ -217,23 +220,24 @@ trait ModelClient[F[_]]:
   def countTokens(request: ModelRequest): F[Int]
 
   /**
-    * Writes the [[Chat.cachePrefix]] of a request's chat into the provider's
-    * cache, with as short a response as the provider allows. Requests sharing
-    * the prefix and sent at once afterwards then all read it, where unwarmed
-    * each would write its own. Fails with [[ModelError.Unsendable]] when the
-    * chat has no [[MessagePart.CacheBreakpoint]].
+    * Writes the [[Conversation.cachePrefix]] of a request's conversation into
+    * the provider's cache, with as short a response as the provider allows.
+    * Requests sharing the prefix and sent at once afterwards then all read it,
+    * where unwarmed each would write its own. Fails with
+    * [[ModelError.Unsendable]] when the conversation has no
+    * [[MessagePart.CacheBreakpoint]].
     *
     * @param request
-    *   The chat whose prefix to cache, and the options the requests will be
-    *   sent with, through a client of the same model, as a cache is kept per
-    *   model.
+    *   The conversation whose prefix to cache, and the options the requests
+    *   will be sent with, through a client of the same model, as a cache is
+    *   kept per model.
     *
     * @return
     *   An effect producing the provider's empty response, whose usage says how
     *   much of the prefix was cached.
     */
   def warmCache(request: ModelRequest): F[ModelResponse] = send(ModelRequest(
-    request.chat.cachePrefix,
+    request.conversation.cachePrefix,
     request.options.copy(maxTokens = Some(1)),
   ))
 

@@ -11,7 +11,7 @@ class AccessSuite extends FunSuite:
 
   test("a caller asks, and cannot send"):
     val errors = compileErrors(
-      "client.send(com.alecdorrington.iris.ModelRequest(com.alecdorrington.iris.Chat()))",
+      "client.send(com.alecdorrington.iris.ModelRequest(com.alecdorrington.iris.Conversation()))",
     )
     assert(
       errors.contains("cannot be accessed"),

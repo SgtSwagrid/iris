@@ -20,7 +20,7 @@ import sttp.model.{Header, StatusCode}
   */
 class RetrySuite extends FunSuite:
 
-  private val chat = Chat.userSays("Hello")
+  private val conversation = Conversation.userSays("Hello")
 
   private val anthropic = config.copy(retries = Retries(patience = 10.minutes))
 
@@ -121,12 +121,12 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
     .unsafeToFuture()
 
   private def sent(client: ModelClient[IO]): IO[Either[Throwable, String]] =
-    Sending(client).sent(chat).map(_.text).attempt
+    Sending(client).sent(conversation).map(_.text).attempt
 
   private def streamedText
     (client: ModelClient[IO])
     : IO[List[Either[Throwable, Delta]]] = client
-    .stream(ModelRequest(chat))
+    .stream(ModelRequest(conversation))
     .attempt
     .compile
     .toList
@@ -585,7 +585,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
       ),
     )()((client, times) =>
       for
-        result <- client.ask[List[Int]](chat).attempt
+        result <- client.ask[List[Int]](conversation).attempt
         times  <- times
       yield
         assert(
@@ -602,7 +602,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
       ok("""{"input_tokens":42}"""),
     )()((client, times) =>
       for
-        counted <- client.countTokens(ModelRequest(chat))
+        counted <- client.countTokens(ModelRequest(conversation))
         times   <- times
       yield
         assertEquals(counted, 42)
@@ -617,7 +617,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
     )()((client, times) =>
       for
         warmed <- client.warmCache(ModelRequest(
-          Chat.userSays("Hello", MessagePart.CacheBreakpoint),
+          Conversation.userSays("Hello", MessagePart.CacheBreakpoint),
         ))
         times <- times
       yield

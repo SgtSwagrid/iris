@@ -68,12 +68,15 @@ class StreamingAskerSuite extends FunSuite:
   private def part(text: String, size: Int): Stream[IO, Delta] =
     Stream.emits(text.grouped(size).map(Delta.Text(_)).toList)
 
-  /** A client streaming each reply in turn, keeping each chat it was sent. */
+  /**
+    * A client streaming each reply in turn, keeping each conversation it was
+    * sent.
+    */
   private def streamer
     (replies: Stream[IO, Delta]*)
-    : IO[(ModelClient[IO], IO[List[Chat]])] = (
+    : IO[(ModelClient[IO], IO[List[Conversation]])] = (
     Ref.of[IO, List[Stream[IO, Delta]]](replies.toList),
-    Ref.of[IO, List[Chat]](Nil),
+    Ref.of[IO, List[Conversation]](Nil),
   ).mapN((left, sent) =>
     val scripted = new ModelClient[IO]:
       // A type holding no stream is asked whole: the next reply, gathered.
@@ -96,7 +99,7 @@ class StreamingAskerSuite extends FunSuite:
 
       override def stream(request: ModelRequest): Stream[IO, Delta] = Stream
         .eval(
-          sent.update(_ :+ request.chat) *>
+          sent.update(_ :+ request.conversation) *>
             left.modify(all => (all.tail, all.head)),
         )
         .flatten
@@ -114,7 +117,7 @@ class StreamingAskerSuite extends FunSuite:
     (read: A => IO[B])
     : IO[B] = streamer(reply).flatMap((llm, _) =>
     llm
-      .ask[A](Chat.userSays("Translate."))
+      .ask[A](Conversation.userSays("Translate."))
       .flatMap(answering =>
         answering.value.liftTo[IO](Exception("No value.")).flatMap(read),
       ),
@@ -132,7 +135,7 @@ class StreamingAskerSuite extends FunSuite:
           written("""{"text":"b","gloss":"be"}]}""", 8)
         (llm, _) <- streamer(reply)
         read     <- llm
-          .ask[Page](Chat.userSays("Translate."))
+          .ask[Page](Conversation.userSays("Translate."))
           .flatMap: answering =>
             answering
               .value
@@ -196,7 +199,7 @@ class StreamingAskerSuite extends FunSuite:
       (llm, _) <-
         streamer(part(first, 3) ++ Stream.exec(gate.get) ++ written(rest, 3))
       read <- llm
-        .ask[A](Chat.userSays("Translate."))
+        .ask[A](Conversation.userSays("Translate."))
         .flatMap(
           _.value
             .liftTo[IO](Exception("No value."))
@@ -242,10 +245,12 @@ class StreamingAskerSuite extends FunSuite:
         streamer(written(reply))
           .flatMap((llm, _) =>
             if why == "second" then
-              llm.ask[Two](Chat.userSays("Count.")).flatMap(_.responses.attempt)
+              llm
+                .ask[Two](Conversation.userSays("Count."))
+                .flatMap(_.responses.attempt)
             else
               llm
-                .ask[Gloss](Chat.userSays("Translate."))
+                .ask[Gloss](Conversation.userSays("Translate."))
                 .flatMap(_.responses.attempt),
           )
           .map:
@@ -321,19 +326,19 @@ class StreamingAskerSuite extends FunSuite:
           written("""{"title":"Hi","words":[{"text":"a"}]}"""),
         )
         read <- llm
-          .ask[Page](Chat.userSays("Translate."))
+          .ask[Page](Conversation.userSays("Translate."))
           .flatMap(answering =>
             answering
               .value
               .traverse(_.words.compile.toList)
               .product(answering.responses.map(_.size)),
           )
-        chats <- sent
+        conversations <- sent
       yield
         assertEquals(read, (Some(List(Word("a"))), 2))
         assert(
-          chats.last.messages.last.text.contains("could not be read"),
-          chats.last,
+          conversations.last.messages.last.text.contains("could not be read"),
+          conversations.last,
         ),
     )
 
@@ -361,7 +366,7 @@ class StreamingAskerSuite extends FunSuite:
         streamer(reply)
           .flatMap((llm, _) =>
             llm
-              .ask[Page](Chat.userSays("Translate."))
+              .ask[Page](Conversation.userSays("Translate."))
               .flatMap(answering =>
                 (
                   answering.value.get.words.attempt.compile.toList,
@@ -404,7 +409,7 @@ class StreamingAskerSuite extends FunSuite:
         ) ++ Stream.raiseError[IO](timedOut),
       ).flatMap((llm, _) =>
         llm
-          .ask[Page](Chat.userSays("Translate."))
+          .ask[Page](Conversation.userSays("Translate."))
           .flatMap(answering =>
             (
               answering.value.get.words.attempt.compile.toList,
@@ -428,7 +433,7 @@ class StreamingAskerSuite extends FunSuite:
         3,
       )).flatMap((llm, _) =>
           llm
-            .ask[Stream[IO, Verse]](Chat.userSays("Translate."))
+            .ask[Stream[IO, Verse]](Conversation.userSays("Translate."))
             .flatMap(
               _.value
                 .get
@@ -461,7 +466,7 @@ class StreamingAskerSuite extends FunSuite:
         ) ++ Stream.exec(gate.get) ++ written("""{"text":"b"}]}""", 8)
         (llm, _) <- streamer(reply)
         read     <- llm
-          .ask[Page](Chat.userSays("Translate."))
+          .ask[Page](Conversation.userSays("Translate."))
           .flatMap: answering =>
             val words = answering.value.get.words
             for
@@ -486,7 +491,7 @@ class StreamingAskerSuite extends FunSuite:
     val look = MessagePart.ToolCall(
       "call_1",
       "look",
-      Json.obj("word" -> Json.fromString("Hi")),
+      Json.obj("word" -> Json.fromString("Hi")).noSpaces,
     )
     run(
       streamer(Stream(
@@ -496,7 +501,7 @@ class StreamingAskerSuite extends FunSuite:
       )).flatMap((llm, _) =>
         llm
           .ask[Page](
-            Chat.userSays("Translate."),
+            Conversation.userSays("Translate."),
             ModelRequest.Options(tools =
               List(Tool("look", "Looks up.", Json.obj())),
             ),
@@ -518,7 +523,7 @@ class StreamingAskerSuite extends FunSuite:
       streamer(written(page, 4))
         .flatMap((llm, _) =>
           llm
-            .ask[Page](Chat.userSays("Translate."))
+            .ask[Page](Conversation.userSays("Translate."))
             .flatMap(answer =>
               answer
                 .responses
@@ -544,7 +549,7 @@ class StreamingAskerSuite extends FunSuite:
         IO.raiseError(Exception("Not counted."))
     run(
       whole
-        .ask[Page](Chat.userSays("Translate."))
+        .ask[Page](Conversation.userSays("Translate."))
         .flatMap(_.value.traverse(_.words.compile.toList))
         .map(words => assertEquals(words, Some(List(Word("a"), Word("b"))))),
     )
@@ -558,7 +563,7 @@ class StreamingAskerSuite extends FunSuite:
           written("""{"first":[1],"second":[2]}"""),
         )
         read <- llm
-          .ask[Two](Chat.userSays("Count."))
+          .ask[Two](Conversation.userSays("Count."))
           .flatMap(two =>
             two
               .value
@@ -570,7 +575,7 @@ class StreamingAskerSuite extends FunSuite:
           written("""{"Refused":{"why":"x"},"Listed":{"items":[1]}}"""),
         )
         listed <- unions
-          .ask[Listing](Chat.userSays("List."))
+          .ask[Listing](Conversation.userSays("List."))
           .flatMap(
             _.value
               .traverse {
@@ -585,7 +590,7 @@ class StreamingAskerSuite extends FunSuite:
 
   test("a given answer's reply is checked as a whole reply would be"):
     val page = """{"title":"Hi","words":[{"text":"a"}]}"""
-    val look = MessagePart.ToolCall("call_1", "look", Json.obj())
+    val look = MessagePart.ToolCall("call_1", "look", "{}")
     run(
       List(
         // A character at a time, so that the stream is seen open.
@@ -609,7 +614,7 @@ class StreamingAskerSuite extends FunSuite:
         streamer(reply)
           .flatMap((llm, _) =>
             llm
-              .ask[Page](Chat.userSays("Translate."))
+              .ask[Page](Conversation.userSays("Translate."))
               .flatMap(answer =>
                 (
                   answer.value.traverse(_.words.compile.toList),
@@ -638,7 +643,7 @@ class StreamingAskerSuite extends FunSuite:
             ended.complete(exit == Resource.ExitCase.Canceled).void,
           )
         (llm, _)  <- streamer(reply)
-        asking    <- llm.ask[Page](Chat.userSays("Translate.")).start
+        asking    <- llm.ask[Page](Conversation.userSays("Translate.")).start
         _         <- begun.get
         _         <- asking.cancel
         cancelled <- ended.get
@@ -657,7 +662,7 @@ class StreamingAskerSuite extends FunSuite:
             ended.complete(exit == Resource.ExitCase.Canceled).void,
           )
         (llm, _) <- streamer(reply)
-        answer   <- llm.ask[Page](Chat.userSays("Translate."))
+        answer   <- llm.ask[Page](Conversation.userSays("Translate."))
         _        <- answer.cancel
         words    <- answer.value.get.words.attempt.compile.toList
         whole    <- answer.responses.attempt
@@ -684,7 +689,7 @@ class StreamingAskerSuite extends FunSuite:
     )
     run(
       anthropic
-        .ask[Person](Chat.userSays("Invent a person."))
+        .ask[Person](Conversation.userSays("Invent a person."))
         .flatMap(answer => answer.usage.map(answer.value -> _.outputTokens))
         .map(read => assertEquals(read, (Some(Person("Ada", 36, None)), 2))),
     )
@@ -699,25 +704,25 @@ class StreamingAskerSuite extends FunSuite:
     Delta.ToolCall(MessagePart.ToolCall(
       if id.isEmpty then s"emit-$text" else id,
       "emit",
-      Json.obj("element" -> Json.obj("text" -> Json.fromString(text))),
+      Json.obj("element" -> Json.obj("text" -> Json.fromString(text))).noSpaces,
     ))
 
   /** An emitted element that cannot be read, its text a number. */
   private def garbled(id: String): Delta = Delta.ToolCall(MessagePart.ToolCall(
     id,
     "emit",
-    Json.obj("element" -> Json.obj("text" -> Json.fromInt(5))),
+    Json.obj("element" -> Json.obj("text" -> Json.fromInt(5))).noSpaces,
   ))
 
   /** A call saying every element has been emitted. */
   private val done: Delta =
-    Delta.ToolCall(MessagePart.ToolCall("done-1", "done", Json.obj()))
+    Delta.ToolCall(MessagePart.ToolCall("done-1", "done", "{}"))
 
   private def look(word: String, id: String = ""): Delta =
     Delta.ToolCall(MessagePart.ToolCall(
       if id.isEmpty then s"look-$word" else id,
       "look",
-      Json.obj("word" -> Json.fromString(word)),
+      Json.obj("word" -> Json.fromString(word)).noSpaces,
     ))
 
   /** A client streaming a list as JSON, keeping the options it was sent. */
@@ -740,7 +745,7 @@ class StreamingAskerSuite extends FunSuite:
     .of[IO, List[String]](Nil)
     .flatMap(asked =>
       llm.ask[Stream[IO, Word]](
-        Chat.userSays("Translate."),
+        Conversation.userSays("Translate."),
         attempts = attempts,
         tools = List(dictionary(asked)),
       ),
@@ -762,7 +767,7 @@ class StreamingAskerSuite extends FunSuite:
         )
         read <- llm
           .ask[Stream[IO, Word]](
-            Chat.userSays("Translate."),
+            Conversation.userSays("Translate."),
             tools = List(dictionary(asked)),
           )
           .flatMap(answer =>
@@ -774,8 +779,8 @@ class StreamingAskerSuite extends FunSuite:
               .toList
               .product(answer.responses.map(_.size)),
           )
-        looked <- asked.get
-        chats  <- sent
+        looked        <- asked.get
+        conversations <- sent
       yield
         assertEquals(
           read,
@@ -783,7 +788,12 @@ class StreamingAskerSuite extends FunSuite:
         )
         assertEquals(looked, List("c"))
         assertEquals(
-          chats(1).messages.last.toolResults.map(_.output),
+          conversations(1)
+            .messages
+            .last
+            .parts
+            .collect { case result: MessagePart.ToolResult => result }
+            .map(_.output),
           List("ok", "ok", "c, as looked up"),
         ),
     )
@@ -796,29 +806,30 @@ class StreamingAskerSuite extends FunSuite:
           Stream(Delta.ToolCall(MessagePart.ToolCall(
             "emit-1",
             "emit",
-            Json.obj("element" -> Json.obj("text" -> Json.fromInt(5))),
+            Json.obj("element" -> Json.obj("text" -> Json.fromInt(5))).noSpaces,
           ))) ++ toolStop,
           Stream(emit("a")) ++ toolStop,
           stop,
         )
         words <- llm
           .ask[Stream[IO, Word]](
-            Chat.userSays("Translate."),
+            Conversation.userSays("Translate."),
             tools = List(dictionary(asked)),
           )
           .flatMap(_.value.get.compile.toList)
-        chats <- sent
+        conversations <- sent
       yield
         assertEquals(words, List(Word("a")))
         assert(
-          chats(1)
+          conversations(1)
             .messages
             .last
-            .toolResults
+            .parts
+            .collect { case result: MessagePart.ToolResult => result }
             .head
             .output
             .contains("could not be read"),
-          chats(1),
+          conversations(1),
         ),
     )
 
@@ -829,7 +840,7 @@ class StreamingAskerSuite extends FunSuite:
         (llm, _) <- streamer(written("""[{"text":"a"},{"text":"b"}]"""))
         words    <- llm
           .ask[Stream[IO, Word]](
-            Chat.userSays("Translate."),
+            Conversation.userSays("Translate."),
             tools = List(dictionary(asked)),
           )
           .flatMap(_.value.get.compile.toList)
@@ -846,12 +857,12 @@ class StreamingAskerSuite extends FunSuite:
         )
         person <- llm
           .ask[Person](
-            Chat.userSays("Invent a person."),
+            Conversation.userSays("Invent a person."),
             tools = List(dictionary(asked)),
           )
           .flatMap(answer => answer.responses.map(answer.value -> _.size))
-        looked <- asked.get
-        chats  <- sent
+        looked        <- asked.get
+        conversations <- sent
       yield
         assertEquals(
           person,
@@ -859,7 +870,12 @@ class StreamingAskerSuite extends FunSuite:
         )
         assertEquals(looked, List("Ada"))
         assertEquals(
-          chats(1).messages.last.toolResults.map(_.output),
+          conversations(1)
+            .messages
+            .last
+            .parts
+            .collect { case result: MessagePart.ToolResult => result }
+            .map(_.output),
           List("Ada, as looked up"),
         ),
     )
@@ -874,7 +890,7 @@ class StreamingAskerSuite extends FunSuite:
           streamer().flatMap((llm, _) =>
             llm
               .ask[Stream[IO, Word]](
-                Chat.userSays("Translate."),
+                Conversation.userSays("Translate."),
                 tools = List(
                   dictionary(asked),
                   RunnableTool[IO](
@@ -904,7 +920,7 @@ class StreamingAskerSuite extends FunSuite:
           streamer().flatMap((llm, _) =>
             llm
               .ask[Stream[IO, Word]](
-                Chat.userSays("Translate."),
+                Conversation.userSays("Translate."),
                 ModelRequest.Options(tools =
                   List(Tool(
                     "weather",
@@ -959,36 +975,45 @@ class StreamingAskerSuite extends FunSuite:
           Stream(emit("b"), emit("c")) ++ toolStop,
           stop,
         )
-        words <- emitted(llm).flatMap(_.value.get.compile.toList)
-        chats <- sent
+        words         <- emitted(llm).flatMap(_.value.get.compile.toList)
+        conversations <- sent
       yield
         assertEquals(
           words,
           List(Word("a"), Word("b"), Word("c")),
         )
-        chats(1).messages.last.toolResults.map(_.output) match
-          case List(taken, refused, skipped) =>
-            assertEquals(taken, "ok")
-            assert(
-              refused.contains("could not be read"),
-              refused,
-            )
-            assert(
-              skipped.contains("emit again from that one"),
-              skipped,
-            )
-          case other => fail(s"Not told of each: $other"),
+        conversations(1)
+          .messages
+          .last
+          .parts
+          .collect { case result: MessagePart.ToolResult => result }
+          .map(_.output) match
+            case List(taken, refused, skipped) =>
+              assertEquals(taken, "ok")
+              assert(
+                refused.contains("could not be read"),
+                refused,
+              )
+              assert(
+                skipped.contains("emit again from that one"),
+                skipped,
+              )
+            case other => fail(s"Not told of each: $other"),
     )
 
-  /** Where each chat sent holds a breakpoint: its message, and its part. */
-  private def breakpoints(chats: List[Chat]): List[List[(Int, Int)]] = chats
-    .map(chat =>
-      for
-        (message, at) <- chat.messages.zipWithIndex
-        (part, index) <- message.parts.zipWithIndex
-        if part == MessagePart.CacheBreakpoint
-      yield at -> index,
-    )
+  /**
+    * Where each conversation sent holds a breakpoint: its message, and its
+    * part.
+    */
+  private def breakpoints
+    (conversations: List[Conversation])
+    : List[List[(Int, Int)]] = conversations.map(conversation =>
+    for
+      (message, at) <- conversation.messages.zipWithIndex
+      (part, index) <- message.parts.zipWithIndex
+      if part == MessagePart.CacheBreakpoint
+    yield at -> index,
+  )
 
   test("each request after a round of tools closes with a breakpoint alone"):
     run(
@@ -1006,7 +1031,7 @@ class StreamingAskerSuite extends FunSuite:
         )
         person <- whole
           .ask[Person](
-            Chat.userSays("Invent a person."),
+            Conversation.userSays("Invent a person."),
             tools = List(dictionary(asked)),
           )
           .map(_.value)
@@ -1043,17 +1068,22 @@ class StreamingAskerSuite extends FunSuite:
         )
         words <- llm
           .ask[Stream[IO, Word]](
-            Chat.userSays("Translate."),
+            Conversation.userSays("Translate."),
             tools = List(dictionary(asked)),
           )
           .flatMap(_.value.get.compile.toList)
-        looked <- asked.get
-        chats  <- sent
+        looked        <- asked.get
+        conversations <- sent
       yield
         assertEquals(words, List(Word("a"), Word("b")))
         assertEquals(looked, List("c", "d"))
         assertEquals(
-          chats(1).messages.last.toolResults.map(_.output),
+          conversations(1)
+            .messages
+            .last
+            .parts
+            .collect { case result: MessagePart.ToolResult => result }
+            .map(_.output),
           List(
             "ok",
             "ok",
@@ -1070,11 +1100,11 @@ class StreamingAskerSuite extends FunSuite:
         read        <- emitted(llm).flatMap(answer =>
           answer.value.get.compile.toList.product(answer.responses),
         )
-        chats <- sent
+        conversations <- sent
       yield
         val (words, responses) = read
         assertEquals(words, List(Word("a"), Word("b")))
-        assertEquals(chats.size, 1)
+        assertEquals(conversations.size, 1)
         assertEquals(
           responses.map(response =>
             (response.stopReason, response.toolCalls.map(_.tool)),
@@ -1086,12 +1116,12 @@ class StreamingAskerSuite extends FunSuite:
   test("done alone, with no element emitted, ends the stream empty"):
     run(
       for
-        (llm, sent) <- streamer(Stream(done) ++ toolStop)
-        words       <- emitted(llm).flatMap(_.value.get.compile.toList)
-        chats       <- sent
+        (llm, sent)   <- streamer(Stream(done) ++ toolStop)
+        words         <- emitted(llm).flatMap(_.value.get.compile.toList)
+        conversations <- sent
       yield
         assertEquals(words, Nil)
-        assertEquals(chats.size, 1),
+        assertEquals(conversations.size, 1),
     )
 
   test("done after elements written as JSON, none emitted, ends with those"):
@@ -1103,11 +1133,11 @@ class StreamingAskerSuite extends FunSuite:
             done,
           ) ++ toolStop,
         )
-        words <- emitted(llm).flatMap(_.value.get.compile.toList)
-        chats <- sent
+        words         <- emitted(llm).flatMap(_.value.get.compile.toList)
+        conversations <- sent
       yield
         assertEquals(words, List(Word("a"), Word("b")))
-        assertEquals(chats.size, 1),
+        assertEquals(conversations.size, 1),
     )
 
   test("done beside a tool to run is not taken, and the stream goes on"):
@@ -1120,25 +1150,30 @@ class StreamingAskerSuite extends FunSuite:
         )
         words <- llm
           .ask[Stream[IO, Word]](
-            Chat.userSays("Translate."),
+            Conversation.userSays("Translate."),
             tools = List(dictionary(asked)),
           )
           .flatMap(_.value.get.compile.toList)
-        looked <- asked.get
-        chats  <- sent
+        looked        <- asked.get
+        conversations <- sent
       yield
         assertEquals(words, List(Word("a"), Word("b")))
         assertEquals(looked, List("b"))
-        assertEquals(chats.size, 2)
-        chats(1).messages.last.toolResults.map(_.output) match
-          case List(taken, found, untaken) =>
-            assertEquals(taken, "ok")
-            assertEquals(found, "b, as looked up")
-            assert(
-              untaken.contains("call `done` again"),
-              untaken,
-            )
-          case other => fail(s"Not told of each: $other"),
+        assertEquals(conversations.size, 2)
+        conversations(1)
+          .messages
+          .last
+          .parts
+          .collect { case result: MessagePart.ToolResult => result }
+          .map(_.output) match
+            case List(taken, found, untaken) =>
+              assertEquals(taken, "ok")
+              assertEquals(found, "b, as looked up")
+              assert(
+                untaken.contains("call `done` again"),
+                untaken,
+              )
+            case other => fail(s"Not told of each: $other"),
     )
 
   test("done beside an element refused is not taken, before it or after"):
@@ -1153,12 +1188,16 @@ class StreamingAskerSuite extends FunSuite:
             first ++ toolStop,
             Stream(emit("b"), done) ++ toolStop,
           )
-          words <- emitted(llm).flatMap(_.value.get.compile.toList)
-          chats <- sent
+          words         <- emitted(llm).flatMap(_.value.get.compile.toList)
+          conversations <- sent
         yield
           assertEquals(words, List(Word("a"), Word("b")))
-          assertEquals(chats.size, 2)
-          val told = chats(1).messages.last.toolResults
+          assertEquals(conversations.size, 2)
+          val told = conversations(1)
+            .messages
+            .last
+            .parts
+            .collect { case result: MessagePart.ToolResult => result }
           assert(
             told.find(_.tool == "done").exists(_.output.contains(untaken)),
             told,
@@ -1238,7 +1277,7 @@ class StreamingAskerSuite extends FunSuite:
         (llm, sent) <- streamer(Stream(emit("a"), look("b")) ++ toolStop)
         read        <- llm
           .ask[Stream[IO, Word]](
-            Chat.userSays("Translate."),
+            Conversation.userSays("Translate."),
             tools = List(broken),
           )
           .flatMap(answer =>
@@ -1250,7 +1289,7 @@ class StreamingAskerSuite extends FunSuite:
               .toList
               .product(answer.responses.attempt),
           )
-        chats <- sent
+        conversations <- sent
       yield
         read match
           case (
@@ -1264,7 +1303,7 @@ class StreamingAskerSuite extends FunSuite:
             assertEquals(error.getMessage, "Broken.")
             assertEquals(same.getMessage, "Broken.")
           case other => fail(s"Not failed: $other")
-        assertEquals(chats.size, 1),
+        assertEquals(conversations.size, 1),
     )
 
   test("a cancelled answer stops a tool running between its elements"):
@@ -1281,7 +1320,7 @@ class StreamingAskerSuite extends FunSuite:
         )
         (llm, _) <- streamer(Stream(emit("a"), look("b")) ++ toolStop)
         answer   <- llm.ask[Stream[IO, Word]](
-          Chat.userSays("Translate."),
+          Conversation.userSays("Translate."),
           tools = List(waiting),
         )
         _     <- started.get
@@ -1308,13 +1347,13 @@ class StreamingAskerSuite extends FunSuite:
           written("Here are the words."),
           written("""[{"text":"a"}]"""),
         )
-        words <- emitted(llm).flatMap(_.value.get.compile.toList)
-        chats <- sent
+        words         <- emitted(llm).flatMap(_.value.get.compile.toList)
+        conversations <- sent
       yield
         assertEquals(words, List(Word("a")))
         assert(
-          chats(1).messages.last.text.contains("could not be read"),
-          chats(1),
+          conversations(1).messages.last.text.contains("could not be read"),
+          conversations(1),
         ),
     )
 

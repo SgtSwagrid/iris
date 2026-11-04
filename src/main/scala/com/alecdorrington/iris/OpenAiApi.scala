@@ -174,19 +174,20 @@ private[iris] object OpenAiApi extends ProviderApi:
     .zipWithScan1(Ending())((ending, event) => event.fold(ending)(ending.after))
     .flatMap:
       case (Some(event), _) => Stream.emits(textDelta(event).toList)
-      case (None, ending)   =>
-        Stream.fromEither[F](ending.end).flatMap(Stream.emits)
+      case (None, ending)   => Stream.emits(ending.end)
 
-  /** Refuses an empty chat, and one carrying media other than pictures. */
+  /** Refuses an empty conversation, and one carrying media other than pictures. */
   override def refuseUnsendable
     (
       config: ModelConfig,
-      chat: Chat,
+      conversation: Conversation,
       options: ModelRequest.Options,
     )
     : Either[ModelError, Unit] = JsonHttp
-    .refuseUnanswerable(provider, chat)
-    .flatMap(_ => JsonHttp.refuseUnsupportedMedia(provider, chat, media))
+    .refuseUnanswerable(provider, conversation)
+    .flatMap(_ =>
+      JsonHttp.refuseUnsupportedMedia(provider, conversation, media),
+    )
 
   /**
     * The models whose reasoning effort goes no higher than `high`. OpenAI's
@@ -204,13 +205,13 @@ private[iris] object OpenAiApi extends ProviderApi:
   override def body
     (
       config: ModelConfig,
-      chat: Chat,
+      conversation: Conversation,
       options: ModelRequest.Options,
       streamed: Boolean,
     )
     : String =
-    val messages = chat.instructions.map(text("system", _)).toList ++
-      chat.messages.flatMap(message)
+    val messages = conversation.instructions.map(text("system", _)).toList ++
+      conversation.messages.flatMap(message)
     JsonHttp.body(
       "model"                 -> config.model.id.asJson,
       "max_completion_tokens" -> config.limit(options).asJson,
@@ -243,15 +244,16 @@ private[iris] object OpenAiApi extends ProviderApi:
     "content" -> content.asJson,
   )
 
-  /** Serialises a message, each tool result as a message of its own. */
+  /**
+    * Serialises a message, each tool result as a message of its own. OpenAI
+    * caches long prefixes by itself, so breakpoints are dropped.
+    */
   private def message(message: Message): List[Json] =
-    // OpenAI caches long prefixes by itself, so breakpoints are dropped.
-    val parts = message
-      .withoutBreakpoints
-      .parts
-      .filterNot(_.isInstanceOf[MessagePart.ToolResult])
-    message.toolResults.map(result) ++
-      Option.when(parts.nonEmpty)(written(message.role, parts))
+    message.withoutBreakpoints match
+      case Message.User(parts)  => List(written("user", parts))
+      case Message.Model(parts) => List(written("assistant", parts))
+      case Message.Tool(parts)  => parts.collect:
+          case result: MessagePart.ToolResult => this.result(result)
 
   private def result(result: MessagePart.ToolResult): Json = Json.obj(
     "role"         -> "tool".asJson,
@@ -260,11 +262,11 @@ private[iris] object OpenAiApi extends ProviderApi:
   )
 
   /** Serialises a message of the parts, its tool calls apart. */
-  private def written(role: Role, parts: List[MessagePart]): Json =
+  private def written(role: String, parts: List[MessagePart]): Json =
     val calls = parts.collect:
       case call: MessagePart.ToolCall => call
     JsonHttp.objectOf(
-      "role"    -> named(role).asJson,
+      "role"    -> role.asJson,
       "content" ->
         content(parts.filterNot(_.isInstanceOf[MessagePart.ToolCall])),
       "tool_calls" -> Option.when(calls.nonEmpty)(calls.map(call)).asJson,
@@ -276,18 +278,13 @@ private[iris] object OpenAiApi extends ProviderApi:
     if sent.isEmpty then Json.Null
     else JsonHttp.plain(sent).fold(sent.flatMap(part).asJson)(_.asJson)
 
-  /** A role's name in OpenAI's API. */
-  private def named(role: Role): String = role match
-    case Role.User  => "user"
-    case Role.Model => "assistant"
-
   /** Serialises a tool call, whose arguments OpenAI takes as a string. */
   private def call(call: MessagePart.ToolCall): Json = Json.obj(
     "id"       -> call.id.asJson,
     "type"     -> "function".asJson,
     "function" -> Json.obj(
       "name"      -> call.tool.asJson,
-      "arguments" -> call.arguments.noSpaces.asJson,
+      "arguments" -> call.arguments.asJson,
     ),
   )
 
@@ -373,40 +370,25 @@ private[iris] object OpenAiApi extends ProviderApi:
           ),
         )
 
-    /**
-      * The tool calls and end of the reply, where it said why it stopped, or
-      * why a call is malformed.
-      */
-    def end: Either[ModelError, List[Delta]] = reason
+    /** The tool calls and end of the reply, where it said why it stopped. */
+    def end: List[Delta] = reason
       .toList
-      .flatTraverse(reason =>
-        calls
-          .toList
-          .sortBy(_._1)
-          .traverse(_._2.whole(provider))
-          .map(
-            _ :+ Delta.End(
-              stopReason(Some(reason)),
-              counts.fold(Usage())(_.toUsage),
-            ),
-          ),
+      .flatMap(reason =>
+        calls.toList.sortBy(_._1).map(_._2.whole) :+ Delta.End(
+          stopReason(Some(reason)),
+          counts.fold(Usage())(_.toUsage),
+        ),
       )
 
-  final case class FunctionCall
-    (name: String, arguments: Option[String])
-    derives Decoder:
-
-    /** The arguments, which arrive as a string of JSON. */
-    def parsedArguments: Json = arguments
-      .flatMap(parse(_).toOption)
-      .getOrElse(Json.obj())
+  final case class FunctionCall(name: String, arguments: Option[String])
+    derives Decoder
 
   final case class ToolCall(id: String, function: FunctionCall) derives Decoder:
 
     def toPart: MessagePart.ToolCall = MessagePart.ToolCall(
       id,
       function.name,
-      function.parsedArguments,
+      function.arguments.filter(_.nonEmpty).getOrElse("{}"),
     )
 
   final case class ResponseMessage

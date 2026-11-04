@@ -15,7 +15,7 @@ class CacheSuite extends FunSuite:
 
   private val options = ModelRequest.Options()
 
-  private val chat = Chat()
+  private val conversation = Conversation()
     .withInstructions("Be brief.")
     .userSays(
       MessagePart.Text("A long document."),
@@ -43,8 +43,8 @@ class CacheSuite extends FunSuite:
     .deepMerge(Json.obj("cache_control" -> ephemeral))
 
   /** The system message, and each message's content, Anthropic is sent. */
-  private def sent(chat: Chat): (Option[Json], List[Json]) =
-    val body = json(AnthropicApi.body(config, chat, options)).hcursor
+  private def sent(conversation: Conversation): (Option[Json], List[Json]) =
+    val body = json(AnthropicApi.body(config, conversation, options)).hcursor
     (
       body.downField("system").focus,
       body
@@ -56,13 +56,13 @@ class CacheSuite extends FunSuite:
   test(
     "anthropic marks the block before a breakpoint, else the system message",
   ):
-    val opening = List[MessagePart](
+    val opening = List[UserPart](
       MessagePart.CacheBreakpoint,
       MessagePart.Text("Hi"),
     )
-    List[(Chat, Option[Json], List[Json])](
+    List[(Conversation, Option[Json], List[Json])](
       (
-        chat,
+        conversation,
         Some(Json.fromString("Be brief.")),
         List(Json.arr(
           marked("A long document."),
@@ -71,12 +71,12 @@ class CacheSuite extends FunSuite:
       ),
       // A breakpoint opening the first message marks the system message.
       (
-        Chat().withInstructions("Be brief.").userSays(opening*),
+        Conversation().withInstructions("Be brief.").userSays(opening*),
         Some(Json.arr(marked("Be brief."))),
         List(Json.fromString("Hi")),
       ),
       (
-        Chat().userSays("Hello").modelSays("Hi!").userSays(opening*),
+        Conversation().userSays("Hello").modelSays("Hi!").userSays(opening*),
         None,
         List(
           Json.fromString("Hello"),
@@ -85,20 +85,24 @@ class CacheSuite extends FunSuite:
         ),
       ),
       // A breakpoint with nothing at all before it marks nothing.
-      (Chat().userSays(opening*), None, List(Json.fromString("Hi"))),
+      (Conversation().userSays(opening*), None, List(Json.fromString("Hi"))),
     ).foreach: (asked, system, messages) =>
       assertEquals(sent(asked), (system, messages), asked)
 
   test("a cached block is sent alike whatever follows it"):
-    val warmed = json(AnthropicApi.body(config, chat.cachePrefix, options))
-    val asked  = json(AnthropicApi.body(config, chat, options))
+    val warmed = json(AnthropicApi.body(
+      config,
+      conversation.cachePrefix,
+      options,
+    ))
+    val asked = json(AnthropicApi.body(config, conversation, options))
     assertEquals(
       content(warmed, 0).hcursor.downN(0).focus,
       content(asked, 0).hcursor.downN(0).focus,
     )
 
   test("anthropic refuses to mark more blocks than it keeps, not breakpoints"):
-    val many = Chat().userSays(
+    val many = Conversation().userSays(
       List
         .fill(AnthropicApi.maxBreakpoints + 1)(List(
           MessagePart.Text("x"),
@@ -109,10 +113,10 @@ class CacheSuite extends FunSuite:
     assert(AnthropicApi.refuseExcessBreakpoints(many).isLeft)
     val breakpoints =
       List.fill(AnthropicApi.maxBreakpoints + 1)(MessagePart.CacheBreakpoint)
-    val leading = Chat().userSays(breakpoints :+ MessagePart.Text("x")*)
+    val leading = Conversation().userSays(breakpoints :+ MessagePart.Text("x")*)
     List(
-      chat,
-      Chat().userSays(MessagePart.Text("x") +: breakpoints*),
+      conversation,
+      Conversation().userSays(MessagePart.Text("x") +: breakpoints*),
       leading,
       leading.withInstructions("Be brief."),
     ).foreach(marks =>
@@ -122,10 +126,12 @@ class CacheSuite extends FunSuite:
       ),
     )
 
-  test("anthropic marks the block breakpoints closing a chat follow if it can"):
-    // The host's breakpoints, then two in a row closing the chat, as an ask
+  test(
+    "anthropic marks the block breakpoints closing a conversation follow if it can",
+  ):
+    // The host's breakpoints, then two in a row closing the conversation, as an ask
     // closes each request after a round of tools.
-    def closed(own: Int): Chat = Chat().userSays(
+    def closed(own: Int): Conversation = Conversation().userSays(
       (1 to own)
         .toList
         .flatMap(n =>
@@ -156,12 +162,12 @@ class CacheSuite extends FunSuite:
     assert(AnthropicApi.refuseExcessBreakpoints(closed(most + 1)).isLeft)
 
   test("openai and gemini are sent no breakpoints"):
-    val openAi = json(OpenAiApi.body(config, chat, options))
+    val openAi = json(OpenAiApi.body(config, conversation, options))
     assertEquals(
       content(openAi, 1),
       Json.fromString("A long document.\n\nA question about it."),
     )
-    val gemini = json(GeminiApi.body(config, chat, options))
+    val gemini = json(GeminiApi.body(config, conversation, options))
     assertEquals(
       gemini.hcursor.downField("contents").downN(0).downField("parts").focus,
       Some(Json.arr(
@@ -170,8 +176,8 @@ class CacheSuite extends FunSuite:
       )),
     )
 
-  test("a chat's cacheable part runs to its last breakpoint"):
-    val longer = chat
+  test("a conversation's cacheable part runs to its last breakpoint"):
+    val longer = conversation
       .modelSays("An answer.")
       .userSays(
         MessagePart.Text("Another."),
@@ -180,34 +186,30 @@ class CacheSuite extends FunSuite:
       )
     assertEquals(
       longer.cachePrefix,
-      Chat(
-        chat.messages :+ Message(Role.Model, "An answer.") :+ Message(
-          Role.User,
-          List(
+      Conversation(
+        conversation.messages :+
+          Message.Model(List(MessagePart.Text("An answer."))) :+
+          Message.User(List(
             MessagePart.Text("Another."),
             MessagePart.CacheBreakpoint,
-          ),
-        ),
-        chat.instructions,
+          )),
+        conversation.instructions,
       ),
     )
     assertEquals(
-      chat.cachePrefix.messages,
-      List(Message(
-        Role.User,
-        List(
-          MessagePart.Text("A long document."),
-          MessagePart.CacheBreakpoint,
-        ),
-      )),
+      conversation.cachePrefix.messages,
+      List(Message.User(List(
+        MessagePart.Text("A long document."),
+        MessagePart.CacheBreakpoint,
+      ))),
     )
     assertEquals(
-      Chat().userSays("Hi").cachePrefix.messages,
+      Conversation().userSays("Hi").cachePrefix.messages,
       Nil,
     )
     // A breakpoint opening a message after the user's closes theirs.
     assertEquals(
-      Chat()
+      Conversation()
         .userSays("Hello")
         .modelSays(
           MessagePart.CacheBreakpoint,
@@ -216,24 +218,27 @@ class CacheSuite extends FunSuite:
         .userSays("How are you?")
         .cachePrefix
         .messages,
-      List(Message(
-        Role.User,
-        List(
-          MessagePart.Text("Hello"),
-          MessagePart.CacheBreakpoint,
-        ),
-      )),
+      List(Message.User(List(
+        MessagePart.Text("Hello"),
+        MessagePart.CacheBreakpoint,
+      ))),
     )
 
+  /** Who owns a message. */
+  private def owner(message: Message): String = message match
+    case _: Message.User  => "user"
+    case _: Message.Model => "model"
+    case _: Message.Tool  => "tool"
+
   test("a prefix not ending with the user saying something is followed by it"):
-    val opening = Chat()
+    val opening = Conversation()
       .userSays("Hello")
       .modelSays("Hi!")
       .userSays(
         MessagePart.CacheBreakpoint,
         MessagePart.Text("How are you?"),
       )
-    val closing = Chat()
+    val closing = Conversation()
       .userSays("Hello")
       .modelSays(
         MessagePart.Text("Hi!"),
@@ -243,8 +248,8 @@ class CacheSuite extends FunSuite:
     List(opening, closing).foreach: whole =>
       val prefix = whole.cachePrefix
       assertEquals(
-        prefix.messages.map(_.role),
-        List(Role.User, Role.Model, Role.User),
+        prefix.messages.map(owner),
+        List("user", "model", "user"),
       )
       assert(
         JsonHttp.refuseUnanswerable(ModelProvider.Anthropic, prefix).isRight,
@@ -310,7 +315,7 @@ class CacheSuite extends FunSuite:
       // The reply is passed back, with what writing the cache cost.
       assertEquals(
         warming
-          .warmCache(ModelRequest(chat))
+          .warmCache(ModelRequest(conversation))
           .attempt
           .unsafeRunSync()
           .map(_.usage),
@@ -331,7 +336,7 @@ class CacheSuite extends FunSuite:
         SyncIO.raiseError(Exception("Refused."))
     assert(
       new ModelClient.Forwarding(warming) {}
-        .warmCache(ModelRequest(chat))
+        .warmCache(ModelRequest(conversation))
         .attempt
         .unsafeRunSync()
         .isRight,
@@ -339,7 +344,7 @@ class CacheSuite extends FunSuite:
     assert(
       warming
         .mapK(FunctionK.id)
-        .warmCache(ModelRequest(chat))
+        .warmCache(ModelRequest(conversation))
         .attempt
         .unsafeRunSync()
         .isRight,
@@ -347,14 +352,14 @@ class CacheSuite extends FunSuite:
     assert(
       warming
         .mapK(refusing)
-        .warmCache(ModelRequest(chat))
+        .warmCache(ModelRequest(conversation))
         .attempt
         .unsafeRunSync()
         .isLeft,
     )
 
-  /** A chat whose leading breakpoint caches the system message alone. */
-  private val briefed = Chat()
+  /** A conversation whose leading breakpoint caches the system message alone. */
+  private val briefed = Conversation()
     .withInstructions("A long document.")
     .userSays(
       MessagePart.CacheBreakpoint,
@@ -420,14 +425,14 @@ class CacheSuite extends FunSuite:
         client.warmCache(ModelRequest(briefed)).attempt.unsafeRunSync().isRight,
       )
 
-  test("a chat with nothing marked has nothing to warm"):
+  test("a conversation with nothing marked has nothing to warm"):
     val warming = expecting(
       config,
       """{"content":[],"stop_reason":"max_tokens"}""",
     )(_ => true)
     assert(
       warming
-        .warmCache(ModelRequest(Chat().userSays("Hi")))
+        .warmCache(ModelRequest(Conversation().userSays("Hi")))
         .attempt
         .unsafeRunSync()
         .isLeft,

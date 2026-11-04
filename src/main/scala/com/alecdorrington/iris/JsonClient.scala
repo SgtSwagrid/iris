@@ -23,17 +23,17 @@ private[iris] final class JsonClient[F[_] : MonadThrow : Clock]
   extends ModelClient[F]:
 
   override protected def send(request: ModelRequest): F[ModelResponse] =
-    val ModelRequest(chat, options) = request
+    val ModelRequest(conversation, options) = request
     MonadThrow[F]
       .fromEither(
         api
-          .refuseUnsendable(config, chat, options)
+          .refuseUnsendable(config, conversation, options)
           .flatMap(_ => api.endpoint(config, options, false)),
       )
       .flatMap(endpoint =>
         fetch[Either[ModelError, ModelResponse]](
           endpoint,
-          api.body(config, chat, options),
+          api.body(config, conversation, options),
         )(using api.wholeResponse),
       )
       .flatMap(MonadThrow[F].fromEither(_))
@@ -46,19 +46,23 @@ private[iris] final class JsonClient[F[_] : MonadThrow : Clock]
       )
 
   override def countTokens(request: ModelRequest): F[Int] = MonadThrow[F]
-    .fromEither(api.counting(config, request.chat, request.options))
+    .fromEither(api.counting(
+      config,
+      request.conversation,
+      request.options,
+    ))
     .flatMap(counting =>
       fetch[Int](counting.endpoint, counting.body)(using counting.tokens),
     )
 
   override def stream(request: ModelRequest): Stream[F, Delta] = streamer.fold(
     super.stream(request),
-  )(_.stream(request.chat, request.options))
+  )(_.stream(request.conversation, request.options))
 
   /** Warms with the shortest response the provider allows. */
   override def warmCache(request: ModelRequest): F[ModelResponse] =
     send(ModelRequest(
-      request.chat.cachePrefix,
+      request.conversation.cachePrefix,
       request.options.copy(maxTokens = Some(api.leastMaxTokens)),
     ))
 

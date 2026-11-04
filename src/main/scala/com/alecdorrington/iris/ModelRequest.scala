@@ -1,10 +1,11 @@
 package com.alecdorrington.iris
 
 /**
-  * A request for the model's next response to a chat, as a [[ModelClient]]
-  * sends it, streams it, counts its tokens or warms the cache with it.
+  * A request for the model's next response to a conversation, as a
+  * [[ModelClient]] sends it, streams it, counts its tokens or warms the cache
+  * with it.
   *
-  * @param chat
+  * @param conversation
   *   The conversation so far, including any system message.
   *
   * @param options
@@ -13,7 +14,7 @@ package com.alecdorrington.iris
   */
 final case class ModelRequest
   (
-    chat: Chat,
+    conversation: Conversation,
     options: ModelRequest.Options = ModelRequest.Options(),
   )
 

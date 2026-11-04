@@ -6,6 +6,7 @@ import cats.syntax.all.*
 import fs2.Stream
 import fs2.concurrent.SignallingRef
 import io.circe.Json
+import io.circe.parser.parse
 
 /**
   * The asking of an answer given as its reply unfolds: as soon as all of it but
@@ -27,8 +28,8 @@ private[iris] object StreamingAsker:
     */
   def ask[F[_] : Async, A : Schema as A]
     (
-      stream: (Chat, ModelRequest.Options) => Stream[F, Delta],
-      chat: Chat,
+      stream: (Conversation, ModelRequest.Options) => Stream[F, Delta],
+      conversation: Conversation,
       options: ModelRequest.Options,
       attempts: Int,
       tools: Toolbox[F],
@@ -40,7 +41,7 @@ private[iris] object StreamingAsker:
       base.copy(tools = base.tools ++ Emit.tools(element)),
     )
     val start = WholeAsker.opening(
-      chat,
+      conversation,
       emitting.fold(WholeAsker.schemaPrompt(A))(_ => Emit.prompt),
     )
     (WholeAsker.counted(attempts) *> Emit.unclaimed(emitting, options, offered))
@@ -160,7 +161,7 @@ private[iris] object StreamingAsker:
     */
   private final class Asking[F[_] : Async, A]
     (
-      stream: Chat => Stream[F, Delta],
+      stream: Conversation => Stream[F, Delta],
       schema: Schema[A],
       attempts: Int,
       tools: Toolbox[F],
@@ -174,29 +175,38 @@ private[iris] object StreamingAsker:
     ):
 
     /**
-      * Reads the reply to the chat, and any asked for after it, failing what is
-      * still to be read where it cannot be, or the ask is cancelled first.
+      * Reads the reply to the conversation, and any asked for after it, failing
+      * what is still to be read where it cannot be, or the ask is cancelled
+      * first.
       */
-    def read(chat: Chat): F[Unit] = emitting
-      .fold(attempt(chat, Vector.empty, 0))(element =>
-        opened(Emit.stream) *> emitted(chat, Vector.empty, Progress(), element),
+    def read(conversation: Conversation): F[Unit] = emitting
+      .fold(attempt(conversation, Vector.empty, 0))(element =>
+        opened(Emit.stream) *> emitted(
+          conversation,
+          Vector.empty,
+          Progress(),
+          element,
+        ),
       )
       .handleErrorWith(failed(_).uncancelable)
       .onCancel(failed(IllegalStateException(
         "The answer was cancelled before its reply ended.",
       )))
 
-    /** Reads the reply to the chat, after the replies so far, `tried` read. */
+    /**
+      * Reads the reply to the conversation, after the replies so far, `tried`
+      * read.
+      */
     private def attempt
       (
-        chat: Chat,
+        conversation: Conversation,
         replies: Vector[ModelResponse],
         tried: Int,
       )
       : F[Unit] = Async[F]
       .delay(Unfinished(schema, live))
       .flatMap(unfinished =>
-        stream(chat)
+        stream(conversation)
           .evalMapAccumulate(Vector.empty[MessagePart.ToolCall]):
             case (calls, Delta.Text(text)) => Async[F]
                 .delay(unfinished.feed(text))
@@ -210,7 +220,7 @@ private[iris] object StreamingAsker:
           .flatMap(ending =>
             ended(
               unfinished,
-              chat,
+              conversation,
               replies :+ ModelResponse(
                 text = unfinished.text,
                 stopReason = ending.fold(StopReason.Unknown)(_._2.stopReason),
@@ -253,7 +263,7 @@ private[iris] object StreamingAsker:
     private def ended
       (
         unfinished: Unfinished,
-        chat: Chat,
+        conversation: Conversation,
         replies: Vector[ModelResponse],
         said: Boolean,
         tried: Int,
@@ -273,7 +283,7 @@ private[iris] object StreamingAsker:
             case Some(why) => WholeAsker.unreadable(replies, why).raiseError
         case None => WholeAsker.verdict(
             schema,
-            chat,
+            conversation,
             replies,
             attempts,
             tried + 1,
@@ -286,7 +296,7 @@ private[iris] object StreamingAsker:
                 .ran(calls)
                 .flatMap(results =>
                   attempt(
-                    WholeAsker.onwards(chat, replies.last, results),
+                    WholeAsker.onwards(conversation, replies.last, results),
                     replies,
                     tried,
                   ),
@@ -317,20 +327,20 @@ private[iris] object StreamingAsker:
         .orElse(Option.unless(whole)("It ended before its JSON did."))
 
     /**
-      * Reads a reply to the chat whose elements arrive through [[Emit]], after
-      * the replies so far: each element is fed the answer's stream as its call
-      * ends, and each tool asked for is run once the reply has, before the
-      * model is asked to go on. The answer is given as soon as the reply
-      * begins.
+      * Reads a reply to the conversation whose elements arrive through
+      * [[Emit]], after the replies so far: each element is fed the answer's
+      * stream as its call ends, and each tool asked for is run once the reply
+      * has, before the model is asked to go on. The answer is given as soon as
+      * the reply begins.
       */
     private def emitted
       (
-        chat: Chat,
+        conversation: Conversation,
         replies: Vector[ModelResponse],
         progress: Progress,
         element: Schema[?],
       )
-      : F[Unit] = stream(chat)
+      : F[Unit] = stream(conversation)
       .evalTap(_ => standIn.liftTo[F].flatMap(handOver))
       .evalMapAccumulate((Round(), progress)):
         case ((round, progress), Delta.Text(text)) =>
@@ -377,7 +387,7 @@ private[iris] object StreamingAsker:
             )
             .raiseError
         case Some(((round, progress), end)) => afterwards(
-            chat,
+            conversation,
             replies :+ ModelResponse(
               round.text,
               end.stopReason,
@@ -398,7 +408,7 @@ private[iris] object StreamingAsker:
       */
     private def afterwards
       (
-        chat: Chat,
+        conversation: Conversation,
         replies: Vector[ModelResponse],
         round: Round,
         progress: Progress,
@@ -413,7 +423,8 @@ private[iris] object StreamingAsker:
         attempts,
       )
       .fold(
-        if round.calls.isEmpty then whole(chat, replies, progress, element)
+        if round.calls.isEmpty then
+          whole(conversation, replies, progress, element)
         else if round.ends then
           finished(
             written(replies.last, progress, element),
@@ -430,7 +441,7 @@ private[iris] object StreamingAsker:
               case (call, None) => tools.run(call)
             .flatMap(results =>
               emitted(
-                WholeAsker.onwards(chat, replies.last, results),
+                WholeAsker.onwards(conversation, replies.last, results),
                 replies,
                 progress,
                 element,
@@ -446,7 +457,7 @@ private[iris] object StreamingAsker:
       */
     private def whole
       (
-        chat: Chat,
+        conversation: Conversation,
         replies: Vector[ModelResponse],
         progress: Progress,
         element: Schema[?],
@@ -456,7 +467,7 @@ private[iris] object StreamingAsker:
       else
         WholeAsker.verdict(
           listOf(element),
-          chat,
+          conversation,
           replies,
           attempts,
           progress.tried + 1,
@@ -664,11 +675,9 @@ private[iris] object Emit:
       element: Schema[?],
       call: MessagePart.ToolCall,
     )
-    : Either[String, Any] = call
-    .arguments
-    .hcursor
-    .downField("element")
-    .focus
+    : Either[String, Any] = parse(call.arguments)
+    .toOption
+    .flatMap(_.hcursor.downField("element").focus)
     .toRight("It gave no `element`.")
     .flatMap(WholeAsker.decoded(element, _))
 

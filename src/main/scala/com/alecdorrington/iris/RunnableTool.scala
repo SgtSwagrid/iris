@@ -2,7 +2,7 @@ package com.alecdorrington.iris
 
 import cats.Applicative
 import cats.syntax.all.*
-import io.circe.Json
+import io.circe.parser.parse
 
 /**
   * A tool the model may ask to have run, with what running it does: given to
@@ -17,10 +17,10 @@ import io.circe.Json
   *   The tool, as the model is told of it.
   *
   * @param run
-  *   Runs the tool on the arguments the model gave it, giving its output for
-  *   the model to read.
+  *   Runs the tool on the arguments the model gave it, as it wrote them, giving
+  *   its output for the model to read.
   */
-final case class RunnableTool[F[_]](tool: Tool, run: Json => F[String])
+final case class RunnableTool[F[_]](tool: Tool, run: String => F[String])
 
 object RunnableTool:
 
@@ -62,8 +62,9 @@ object RunnableTool:
     : RunnableTool[F] = RunnableTool(
     Tool(name, description, A.json),
     arguments =>
-      WholeAsker
-        .decoded(A, arguments)
+      parse(arguments)
+        .leftMap(_ => "They are not JSON.")
+        .flatMap(WholeAsker.decoded(A, _))
         .fold(
           why => s"The arguments could not be read:\n$why".pure[F],
           run,
