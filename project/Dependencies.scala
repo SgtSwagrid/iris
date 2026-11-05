@@ -11,6 +11,7 @@ object Dependencies:
     val catsEffect = "3.7.1"
     val munit      = "1.3.6"
     val cadmus     = "0.1.1"
+    val fs2        = "3.14.0"
 
   lazy val sttpClient = libraryDependencies ++= Seq(
     "com.softwaremill.sttp.client4" %% "core" % V.sttpClient,
@@ -22,6 +23,8 @@ object Dependencies:
     "io.circe" %% "circe-core"   % V.circe,
     "io.circe" %% "circe-parser" % V.circe,
   )
+
+  lazy val fs2 = libraryDependencies += "co.fs2" %% "fs2-core" % V.fs2
 
   lazy val cats = libraryDependencies ++= Seq(
     "org.typelevel" %% "cats-core"           % V.cats,
