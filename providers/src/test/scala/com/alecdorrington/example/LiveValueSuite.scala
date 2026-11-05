@@ -174,9 +174,7 @@ class LiveValueSuite extends FunSuite:
     llm
       .query
       .send[A](Conversation.userSays("Translate."))
-      .flatMap(answering =>
-        answering.value.liftTo[IO](Exception("No value.")).flatMap(read),
-      ),
+      .flatMap(answering => read(answering.value)),
   )
 
   test("a stream's elements arrive while the reply is still being written"):
@@ -196,6 +194,7 @@ class LiveValueSuite extends FunSuite:
           .flatMap: answering =>
             answering
               .value
+              .some
               .traverse(page =>
                 page
                   .words
@@ -258,10 +257,8 @@ class LiveValueSuite extends FunSuite:
       read <- llm
         .query
         .send[A](Conversation.userSays("Translate."))
-        .flatMap(
-          _.value
-            .liftTo[IO](Exception("No value."))
-            .flatMap(elements(_).evalTap(_ => gate.complete(())).compile.toList),
+        .flatMap(answer =>
+          elements(answer.value).evalTap(_ => gate.complete(())).compile.toList,
         )
     yield read
 
@@ -391,6 +388,7 @@ class LiveValueSuite extends FunSuite:
           .flatMap(answering =>
             answering
               .value
+              .some
               .traverse(_.words.compile.toList)
               .product(answering.attempts.map(_.size)),
           )
@@ -431,9 +429,9 @@ class LiveValueSuite extends FunSuite:
               .send[Page](Conversation.userSays("Translate."))
               .flatMap(answering =>
                 (
-                  answering.value.get.words.attempt.compile.toList,
+                  answering.value.words.attempt.compile.toList,
                   answering.attempts.attempt,
-                  answering.value.get.words.attempt.compile.toList,
+                  answering.value.words.attempt.compile.toList,
                 ).tupled,
               ),
           )
@@ -475,7 +473,7 @@ class LiveValueSuite extends FunSuite:
           .send[Page](Conversation.userSays("Translate."))
           .flatMap(answering =>
             (
-              answering.value.get.words.attempt.compile.toList,
+              answering.value.words.attempt.compile.toList,
               answering.attempts.attempt,
             ).tupled,
           )
@@ -500,7 +498,6 @@ class LiveValueSuite extends FunSuite:
             .send[Stream[IO, Verse]](Conversation.userSays("Translate."))
             .flatMap(
               _.value
-                .get
                 .evalMap(_.lines.attempt.compile.toList)
                 .attempt
                 .compile
@@ -533,13 +530,13 @@ class LiveValueSuite extends FunSuite:
           .query
           .send[Page](Conversation.userSays("Translate."))
           .flatMap: answering =>
-            val words = answering.value.get.words
+            val words = answering.value.words
             for
               both <- (
                 words.evalTap(_ => gate.complete(())).compile.toList,
                 words.take(1).compile.toList,
               ).parTupled
-              ended <- answering.attempts.as(answering.value.map(_.title))
+              ended <- answering.attempts.as(answering.value.some.map(_.title))
               again <- words.compile.toList
             yield (both, ended, again)
       yield assertEquals(
@@ -552,33 +549,49 @@ class LiveValueSuite extends FunSuite:
       ),
     )
 
-  test("a tool asked for in a streamed reply is in its reply, with no value"):
+  test(
+    "a tool asked for in a streamed reply is asked again, as a query runs none",
+  ):
     val look = MessagePart.ToolCall(
       "call_1",
       "look",
       Json.obj("word" -> Json.fromString("Hi")).noSpaces,
     )
     run(
-      streamer(Stream(
-        wrote("Let me look."),
-        called(look),
-        ended(StopReason.ToolCall, Usage()),
-      )).flatMap((llm, _) =>
-        llm
+      for
+        (llm, sent) <- streamer(
+          Stream(
+            wrote("Let me look."),
+            called(look),
+            ended(StopReason.ToolCall, Usage()),
+          ),
+          written("""{"title":"Hi","words":[]}"""),
+        )
+        answer <- llm
           .query
           .send[Page](PromptRequest(
             Conversation.userSays("Translate."),
             tools = List(Tool("look", "Looks up.", Json.obj())),
           ))
-          .flatMap(answer =>
-            answer
-              .attempts
-              .map(responses =>
-                (answer.value.isEmpty, responses.last.toolCalls),
-              ),
-          )
-          .map(read => assertEquals(read, (true, List(look)))),
-      ),
+        responses     <- answer.attempts
+        conversations <- sent
+      yield
+        assertEquals(
+          (answer.value.title, responses.size),
+          ("Hi", 2),
+        )
+        assert(
+          conversations
+            .last
+            .messages
+            .last
+            .parts
+            .exists:
+              case MessagePart.Text(text) =>
+                text.contains("It asked for a tool")
+              case _ => false,
+          conversations.last,
+        ),
     )
 
   test("a reply is read to its end though nothing reads its streams"):
@@ -592,7 +605,7 @@ class LiveValueSuite extends FunSuite:
             .flatMap(answer =>
               answer
                 .attempts
-                .product(answer.value.traverse(_.words.compile.toList)),
+                .product(answer.value.some.traverse(_.words.compile.toList)),
             ),
         )
         .map((responses, words) =>
@@ -629,7 +642,7 @@ class LiveValueSuite extends FunSuite:
       whole
         .query
         .send[Page](Conversation.userSays("Translate."))
-        .flatMap(_.value.traverse(_.words.compile.toList))
+        .flatMap(_.value.some.traverse(_.words.compile.toList))
         .map(words => assertEquals(words, Some(List(Word("a"), Word("b"))))),
     )
 
@@ -647,6 +660,7 @@ class LiveValueSuite extends FunSuite:
           .flatMap(two =>
             two
               .value
+              .some
               .traverse(two => (two.first ++ two.second).compile.toList)
               .product(two.attempts.map(_.size)),
           )
@@ -659,6 +673,7 @@ class LiveValueSuite extends FunSuite:
           .send[Listing](Conversation.userSays("List."))
           .flatMap(
             _.value
+              .some
               .traverse {
                 case Listed(items) => items.compile.toList.map(Right(_))
                 case refused       => IO.pure(Left(refused))
@@ -699,7 +714,7 @@ class LiveValueSuite extends FunSuite:
               .send[Page](Conversation.userSays("Translate."))
               .flatMap(answer =>
                 (
-                  answer.value.traverse(_.words.compile.toList),
+                  answer.value.some.traverse(_.words.compile.toList),
                   answer.attempts.attempt,
                 ).tupled,
               ),
@@ -747,7 +762,7 @@ class LiveValueSuite extends FunSuite:
         (llm, _) <- streamer(reply)
         answer   <- llm.query.send[Page](Conversation.userSays("Translate."))
         _        <- answer.cancel
-        words    <- answer.value.get.words.attempt.compile.toList
+        words    <- answer.value.words.attempt.compile.toList
         whole    <- answer.attempts.attempt
         stopped  <- ended.get
       yield
@@ -770,7 +785,7 @@ class LiveValueSuite extends FunSuite:
         .query
         .send[Person](Conversation.userSays("Invent a person."))
         .flatMap(answer => answer.usage.map(answer.value -> _.outputTokens))
-        .map(read => assertEquals(read, (Some(Person("Ada", 36, None)), 2))),
+        .map(read => assertEquals(read, (Person("Ada", 36, None), 2))),
     )
 
   /** A tool looking a word up, which says each word it was asked about. */
@@ -820,7 +835,6 @@ class LiveValueSuite extends FunSuite:
     .of[IO, List[String]](Nil)
     .flatMap(asked =>
       llm
-        .query
         .agent(dictionary(asked))
         .send[Stream[IO, Word]](QueryRequest(
           PromptRequest(Conversation.userSays("Translate.")),
@@ -843,13 +857,11 @@ class LiveValueSuite extends FunSuite:
           stop,
         )
         read <- llm
-          .query
           .agent(dictionary(asked))
           .send[Stream[IO, Word]](Conversation.userSays("Translate."))
           .flatMap(answer =>
             answer
               .value
-              .get
               .evalTap(_ => gate.complete(()))
               .compile
               .toList
@@ -888,10 +900,9 @@ class LiveValueSuite extends FunSuite:
           stop,
         )
         words <- llm
-          .query
           .agent(dictionary(asked))
           .send[Stream[IO, Word]](Conversation.userSays("Translate."))
-          .flatMap(_.value.get.compile.toList)
+          .flatMap(_.value.compile.toList)
         conversations <- sent
       yield
         assertEquals(words, List(Word("a")))
@@ -914,10 +925,9 @@ class LiveValueSuite extends FunSuite:
         asked    <- Ref.of[IO, List[String]](Nil)
         (llm, _) <- streamer(written("""[{"text":"a"},{"text":"b"}]"""))
         words    <- llm
-          .query
           .agent(dictionary(asked))
           .send[Stream[IO, Word]](Conversation.userSays("Translate."))
-          .flatMap(_.value.get.compile.toList)
+          .flatMap(_.value.compile.toList)
       yield assertEquals(words, List(Word("a"), Word("b"))),
     )
 
@@ -930,17 +940,13 @@ class LiveValueSuite extends FunSuite:
           written("""{"name":"Ada","age":36}"""),
         )
         person <- llm
-          .query
           .agent(dictionary(asked))
           .send[Person](Conversation.userSays("Invent a person."))
           .flatMap(answer => answer.responses.map(answer.value -> _.size))
         looked        <- asked.get
         conversations <- sent
       yield
-        assertEquals(
-          person,
-          (Some(Person("Ada", 36, None)), 2),
-        )
+        assertEquals(person, (Person("Ada", 36, None), 2))
         assertEquals(looked, List("Ada"))
         assertEquals(
           conversations(1)
@@ -962,7 +968,6 @@ class LiveValueSuite extends FunSuite:
         .flatMap(asked =>
           streamer().flatMap((llm, _) =>
             llm
-              .query
               .agent(
                 dictionary(asked),
                 RunnableTool[IO](
@@ -991,7 +996,6 @@ class LiveValueSuite extends FunSuite:
         .flatMap(asked =>
           streamer().flatMap((llm, _) =>
             llm
-              .query
               .agent(dictionary(asked))
               .send[Stream[IO, Word]](PromptRequest(
                 Conversation.userSays("Translate."),
@@ -1016,8 +1020,8 @@ class LiveValueSuite extends FunSuite:
     run(
       for
         offered <- Ref.of[IO, List[List[Tool]]](Nil)
-        words <- emitted(offering(offered)).flatMap(_.value.get.compile.toList)
-        tools <- offered.get
+        words   <- emitted(offering(offered)).flatMap(_.value.compile.toList)
+        tools   <- offered.get
       yield
         assertEquals(words, Nil)
         assertEquals(
@@ -1044,7 +1048,7 @@ class LiveValueSuite extends FunSuite:
           Stream(emit("b"), emit("c")) ++ toolStop,
           stop,
         )
-        words         <- emitted(llm).flatMap(_.value.get.compile.toList)
+        words         <- emitted(llm).flatMap(_.value.compile.toList)
         conversations <- sent
       yield
         assertEquals(
@@ -1093,13 +1097,12 @@ class LiveValueSuite extends FunSuite:
           Stream(emit("b")) ++ toolStop,
           stop,
         )
-        words           <- emitted(llm).flatMap(_.value.get.compile.toList)
+        words           <- emitted(llm).flatMap(_.value.compile.toList)
         (whole, wholly) <- streamer(
           Stream(look("Ada")) ++ toolStop,
           written("""{"name":"Ada","age":36}"""),
         )
         person <- whole
-          .query
           .agent(dictionary(asked))
           .send[Person](Conversation.userSays("Invent a person."))
           .map(_.value)
@@ -1108,7 +1111,7 @@ class LiveValueSuite extends FunSuite:
       yield
         assertEquals(
           (words, person),
-          (List(Word("a"), Word("b")), Some(Person("Ada", 36, None))),
+          (List(Word("a"), Word("b")), Person("Ada", 36, None)),
         )
         // After the results of each round: the first has two, the next one.
         assertEquals(
@@ -1135,10 +1138,9 @@ class LiveValueSuite extends FunSuite:
           stop,
         )
         words <- llm
-          .query
           .agent(dictionary(asked))
           .send[Stream[IO, Word]](Conversation.userSays("Translate."))
-          .flatMap(_.value.get.compile.toList)
+          .flatMap(_.value.compile.toList)
         looked        <- asked.get
         conversations <- sent
       yield
@@ -1165,7 +1167,7 @@ class LiveValueSuite extends FunSuite:
       for
         (llm, sent) <- streamer(Stream(emit("a"), emit("b"), done) ++ toolStop)
         read        <- emitted(llm).flatMap(answer =>
-          answer.value.get.compile.toList.product(answer.responses),
+          answer.value.compile.toList.product(answer.responses),
         )
         conversations <- sent
       yield
@@ -1184,7 +1186,7 @@ class LiveValueSuite extends FunSuite:
     run(
       for
         (llm, sent)   <- streamer(Stream(done) ++ toolStop)
-        words         <- emitted(llm).flatMap(_.value.get.compile.toList)
+        words         <- emitted(llm).flatMap(_.value.compile.toList)
         conversations <- sent
       yield
         assertEquals(words, Nil)
@@ -1200,7 +1202,7 @@ class LiveValueSuite extends FunSuite:
             done,
           ) ++ toolStop,
         )
-        words         <- emitted(llm).flatMap(_.value.get.compile.toList)
+        words         <- emitted(llm).flatMap(_.value.compile.toList)
         conversations <- sent
       yield
         assertEquals(words, List(Word("a"), Word("b")))
@@ -1216,10 +1218,9 @@ class LiveValueSuite extends FunSuite:
           Stream(emit("b"), done) ++ toolStop,
         )
         words <- llm
-          .query
           .agent(dictionary(asked))
           .send[Stream[IO, Word]](Conversation.userSays("Translate."))
-          .flatMap(_.value.get.compile.toList)
+          .flatMap(_.value.compile.toList)
         looked        <- asked.get
         conversations <- sent
       yield
@@ -1254,7 +1255,7 @@ class LiveValueSuite extends FunSuite:
             first ++ toolStop,
             Stream(emit("b"), done) ++ toolStop,
           )
-          words         <- emitted(llm).flatMap(_.value.get.compile.toList)
+          words         <- emitted(llm).flatMap(_.value.compile.toList)
           conversations <- sent
         yield
           assertEquals(words, List(Word("a"), Word("b")))
@@ -1282,7 +1283,7 @@ class LiveValueSuite extends FunSuite:
           Stream(garbled("emit-3")) ++ toolStop,
         )
         words <-
-          emitted(llm, attempts = 2).flatMap(_.value.get.attempt.compile.toList)
+          emitted(llm, attempts = 2).flatMap(_.value.attempt.compile.toList)
       yield words match
         case List(
             Right(word),
@@ -1309,13 +1310,12 @@ class LiveValueSuite extends FunSuite:
           stop,
         )
         words <- llm
-          .query
           .agent(AgentConfig(
             List(dictionary(asked)),
             maxIterations = Some(2),
           ))
           .send[Stream[IO, Word]](Conversation.userSays("Translate."))
-          .flatMap(_.value.get.attempt.compile.toList)
+          .flatMap(_.value.attempt.compile.toList)
         looked <- asked.get
       yield
         assertEquals(looked, List("b"))
@@ -1355,7 +1355,6 @@ class LiveValueSuite extends FunSuite:
             read     <- emitted(llm).flatMap(answer =>
               answer
                 .value
-                .get
                 .attempt
                 .compile
                 .toList
@@ -1382,13 +1381,11 @@ class LiveValueSuite extends FunSuite:
       for
         (llm, sent) <- streamer(Stream(emit("a"), look("b")) ++ toolStop)
         read        <- llm
-          .query
           .agent(broken)
           .send[Stream[IO, Word]](Conversation.userSays("Translate."))
           .flatMap(answer =>
             answer
               .value
-              .get
               .attempt
               .compile
               .toList
@@ -1425,13 +1422,12 @@ class LiveValueSuite extends FunSuite:
         )
         (llm, _) <- streamer(Stream(emit("a"), look("b")) ++ toolStop)
         answer   <- llm
-          .query
           .agent(waiting)
           .send[Stream[IO, Word]](Conversation.userSays("Translate."))
         _     <- started.get
         _     <- answer.cancel
         _     <- stopped.get
-        words <- answer.value.get.attempt.compile.toList
+        words <- answer.value.attempt.compile.toList
       yield words match
         case List(
             Right(word),
@@ -1452,7 +1448,7 @@ class LiveValueSuite extends FunSuite:
           written("Here are the words."),
           written("""[{"text":"a"}]"""),
         )
-        words         <- emitted(llm).flatMap(_.value.get.compile.toList)
+        words         <- emitted(llm).flatMap(_.value.compile.toList)
         conversations <- sent
       yield
         assertEquals(words, List(Word("a")))
@@ -1467,13 +1463,7 @@ class LiveValueSuite extends FunSuite:
       for
         (llm, _) <- streamer(written(""))
         read     <- emitted(llm).flatMap(answer =>
-          answer
-            .value
-            .get
-            .compile
-            .toList
-            .attempt
-            .product(answer.responses.attempt),
+          answer.value.compile.toList.attempt.product(answer.responses.attempt),
         )
       yield read match
         case (
@@ -1550,7 +1540,7 @@ class LiveValueSuite extends FunSuite:
           llm.query.send[Person](prompt),
           llm.query.send[Person](query),
         ).traverse(_.map(_.value))
-        agent = llm.query.agent()
+        agent = llm.agent()
         acted <- List(
           agent.send[Person]("Invent a person."),
           agent.send[Person](conversation),
@@ -1566,7 +1556,7 @@ class LiveValueSuite extends FunSuite:
         )
         assertEquals(
           queried ++ acted,
-          List.fill(9)(Some(Person("Ada", 36, None))),
+          List.fill(9)(Person("Ada", 36, None)),
         )
         // Each was sent what the user says, closed by the schema for a value.
         assertEquals(conversations.size, 12)
@@ -1592,17 +1582,13 @@ class LiveValueSuite extends FunSuite:
           written("""{"name":"Ada","age":36}"""),
         )
         answer <- llm
-          .query
           .agent(dictionary(asked))
           .send[Person](Conversation.userSays("Invent a person."))
         rounds <- answer.iterations
         sizes  <- rounds.traverse(_.attempts.map(_.size))
         all    <- answer.responses
       yield
-        assertEquals(
-          answer.value,
-          Some(Person("Ada", 36, None)),
-        )
+        assertEquals(answer.value, Person("Ada", 36, None))
         assertEquals(sizes, List(1, 2))
         assertEquals(
           rounds.map(_.value),

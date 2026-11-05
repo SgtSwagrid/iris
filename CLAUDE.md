@@ -46,11 +46,15 @@ from the one below, with a request, a response, a configuration and errors of it
 - `query` (`QueryService`, `QueryRequest`, `QueryResponse`, `QueryConfig`, `QueryError`): a value of any type with a
   `Schema`, made by `prompt.query`.
 - `agent` (`AgentService`, `AgentRequest`, `AgentResponse`, `AgentConfig`): a value with tools run, made by
-  `query.agent(tools*)`. A query (`PromptQueryService`) reads a type holding no stream once its response is whole
-  (`ValueReader.whole`) and any other as it arrives (`LiveReader`), its schema prompt added once per conversation
-  (`ValueReader.opening`), and gives the conversation as the model saw it last (`QueryResponse.conversation`). An agent
-  (`QueryAgentService`) runs rounds over `query.send` (`QueryAgentService.rounds`): the tools in its `Toolbox` run, the query sent again going on
-  from that conversation with their results, each round's query attempting afresh; a stream with tools comes
+  `prompt.agent(tools*)`, beside the query over prompt, not above it (the user's choice, 2026-11-05). A query
+  (`PromptQueryService`) reads a type holding no stream once its response is whole (`ValueReader.whole`) and any
+  other as it arrives (`LiveReader`), its schema prompt added once per conversation (`ValueReader.opening`), and
+  gives the conversation as the model saw it last (`QueryResponse.conversation`). A query always ends with a value
+  (`value: A`): a response calling a tool is answered as an unreadable one is and asked again, never ended at (the
+  user: "it should be a retry"). The reading is shared, `PromptQueryService.read`, ending as its
+  `ValueReader.Outcomes` say: a query's at a value alone, an agent's round also at calls its `Toolbox` runs. An
+  agent (`PromptAgentService`) runs rounds over it (`PromptAgentService.rounds`): the tools run, the query sent again
+  going on from that conversation with their results, each round attempting afresh; a stream with tools comes
   through `emit` (`Emitter`, in core's CLAUDE.md).
 Every service has one abstract method: `send` for `query` and `agent`, and `stream` for `api` and `prompt`, whose
 responses hold no type to carry a stream, where `send` is `stream` gathered. Every prompt streams on the wire, as
@@ -71,7 +75,7 @@ every other as it arrives. A service over a backend that cannot stream reads a r
 still answers a type holding a stream, all at once. A response whose events end before the provider says it did
 fails as `ApiError.Malformed` (`ProviderPromptService.gathered`), as does a prompt Gemini blocked. A query needs `Async`, as it reads a streamed response in a fiber of its own
 (unscoped, by the user's choice: read to its end once the value is given, unless `QueryResponse.cancel`, which the
-user asked for, cancels that fiber); tests in `SyncIO` ask through `Fixtures.askWhole`, which is `QueryAgentService.rounds` over `ValueReader.whole`
+user asked for, cancels that fiber); tests in `SyncIO` ask through `Fixtures.askWhole`, which is `PromptAgentService.rounds` over `ValueReader.whole`
 over a prompt service's `send`. Each provider is one object implementing `Provider` (`Anthropic`, `OpenAi`,
 `Gemini`, sharing `JsonHttp`), whose `private[iris]` members tell `HttpApiService` and `ProviderPromptService` all they need to know of it: its paths,
 request bodies, credentials, the conversations it refuses, how its responses read, and how it counts tokens.
@@ -123,13 +127,15 @@ is made, and a request with none fails with `ApiError.Misconfigured`.
   checked: a `Budget` is what bounds the tool loop below by what it spends. Services themselves stay
   stateless. Iris runs a tool only where the host hands an agent one with its implementation (`RunnableTool`), which
   the user chose, as handing it over says it may run: the agent then runs any the model asks for alone (`Toolbox.runs`), tells
-  it their outputs and asks it to go on (`QueryAgentService.onwards`), each round's query with `maxAttempts` attempts of its
+  it their outputs and asks it to go on (`PromptAgentService.onwards`), each round's query with `maxAttempts` attempts of its
   own. The rounds are as many as the model asks for unless the agent's own `maxIterations` (`AgentConfig`, or
-  `AgentRequest` for one) caps them, as the design gives every layer one: the last round's response is then given
-  with no value, its calls unrun (`QueryAgentService.rounds`), and a stream through `emit` fails (`Emitter.called`). Uncapped is
+  `AgentRequest` for one) caps them, as the design gives every layer one: in the last round allowed, a call is asked
+  again, as a query asks again after any, so the value still comes (`PromptAgentService.rounds`), and a stream
+  through `emit` fails (`Emitter.called`). Uncapped is
   the default, as the user chose to bound a runaway loop by what it spends, through a metered prompt service, a
-  count of rounds saying little of cost. `PromptRequest.tools` still offers tools for the host to run, reported in `PromptResponse.toolCalls`; a
-  reply asking for any of those ends the ask with no value. Where tools are run and the answer is itself a
+  count of rounds saying little of cost. A host running tools itself offers them in `PromptRequest.tools` and reads
+  `PromptResponse.toolCalls` from the prompt layer, as a query or agent asks again after a call of a tool it does not
+  run. Where tools are run and the answer is itself a
   stream (`Emitter.element`), its elements come through a tool of Iris's own, `emit`, one call each (wrapped under
   `element`, any `$defs` hoisted), so the model can call tools between them: measured on Haiku 4.5, it batches
   emits per reply and interleaves lookups as told. Emit is the agent's tools, as the design has it: each round is a

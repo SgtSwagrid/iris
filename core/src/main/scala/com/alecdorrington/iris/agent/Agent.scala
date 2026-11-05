@@ -124,12 +124,18 @@ object AgentRequest:
   *
   * @param maxIterations
   *   The most rounds to run, each a query of its own, or `None` for as many as
-  *   the model asks for.
+  *   the model asks for. In the last, the model is asked for the value, its
+  *   calls asked again as a query asks again after any.
+  *
+  * @param maxAttempts
+  *   The most prompts to send for the value in each round, the first included,
+  *   unless the request's query sets its own.
   */
 final case class AgentConfig[F[_]]
   (
     tools: List[RunnableTool[F]] = List.empty,
     maxIterations: Option[Int] = None,
+    maxAttempts: Int = QueryConfig().maxAttempts,
   )
 
 /**
@@ -144,9 +150,9 @@ final case class AgentConfig[F[_]]
   *   The type of the value.
   *
   * @param value
-  *   The value read from the last response, or `None` where the model asked for
-  *   a tool, one the service was not given to run, for the host to run it, or
-  *   any in the last round allowed.
+  *   The value read from the last response. A response asking for a tool the
+  *   service was not given, or for any in the last round allowed, is asked
+  *   again, as a query asks again after one it cannot read.
   *
   * @param iterations
   *   Every round the request took, oldest first, once the last ends: each a
@@ -158,7 +164,7 @@ final case class AgentConfig[F[_]]
   */
 final case class AgentResponse[F[_], +A]
   (
-    value: Option[A],
+    value: A,
     iterations: F[List[QueryResponse[F, Any]]],
     cancel: F[Unit],
   ):
@@ -200,8 +206,8 @@ final case class AgentResponse[F[_], +A]
   * `done`, so that the model may call tools between its elements. The rounds
   * are as many as the model asks for unless [[AgentConfig.maxIterations]] caps
   * them, so that a budget on the prompt service bounds what they spend. A
-  * service is made from the query service it asks through, as
-  * `query.agent(tools*)`.
+  * service is made from the prompt service it asks through, as
+  * `prompt.agent(tools*)`, and reads its value as a query does.
   *
   * @tparam F
   *   The effect type.
@@ -225,10 +231,10 @@ trait AgentService[F[_]]:
   def send[A : Schema](request: into[AgentRequest[F, A]])
     : F[AgentResponse[F, A]]
 
-extension [F[_] : Async](query: QueryService[F])
+extension [F[_] : Async](prompt: PromptService[F])
 
   /**
-    * Runs tools for the requests asked through this query service.
+    * Runs tools for the requests asked through this prompt service.
     *
     * @param tools
     *   The tools to offer the model and run.
@@ -240,7 +246,7 @@ extension [F[_] : Async](query: QueryService[F])
     agent(AgentConfig(tools.toList))
 
   /**
-    * Runs tools for the requests asked through this query service.
+    * Runs tools for the requests asked through this prompt service.
     *
     * @param config
     *   The settings every request takes, unless it sets its own.
@@ -249,12 +255,12 @@ extension [F[_] : Async](query: QueryService[F])
     *   A service asking through this one, running the tools.
     */
   def agent(config: AgentConfig[F]): AgentService[F] =
-    QueryAgentService(query, config)
+    PromptAgentService(prompt, config)
 
-/** An [[AgentService]] asking through a query service, round after round. */
-private[iris] final class QueryAgentService[F[_] : Async]
+/** An [[AgentService]] asking through a prompt service, round after round. */
+private[iris] final class PromptAgentService[F[_] : Async]
   (
-    query: QueryService[F],
+    prompt: PromptService[F],
     config: AgentConfig[F],
   )
   extends AgentService[F]:
@@ -268,27 +274,36 @@ private[iris] final class QueryAgentService[F[_] : Async]
       Emitter
         .element(A)
         .filter(_ => tools.tools.nonEmpty)
-        .fold(QueryAgentService.rounds(
-          query.send[A](_),
+        .fold(PromptAgentService.rounds(
+          PromptQueryService.read[F, A, Option[A]](
+            prompt,
+            A,
+            _,
+            config.maxAttempts,
+            _,
+          ),
           tools,
           request.query,
           most,
-        ))(Emitter.run(query, tools, request.query, most, A, _))
+        ))(Emitter.run(prompt, tools, request.query, most, A, _))
 
-private[iris] object QueryAgentService:
+private[iris] object PromptAgentService:
 
   /**
     * Runs the rounds of an agent's request: a query sent, the tools it asks for
     * run, and the query sent again, going on from it with their results, until
-    * the model gives its value, asks for a tool not in the box, or has had the
-    * most rounds allowed. Each round after the first caches the whole
-    * conversation, so that the next reads the rounds before it from the cache
-    * and writes only its own. It needs no more than `MonadThrow`, so that tests
-    * may run it in `SyncIO`.
+    * the model gives its value. A call of a tool not in the box, or of any in
+    * the last round allowed, is asked again, as a query asks again after any.
+    * Each round after the first caches the whole conversation, so that the next
+    * reads the rounds before it from the cache and writes only its own. It
+    * needs no more than `MonadThrow`, so that tests may run it in `SyncIO`.
     */
   def rounds[F[_] : MonadThrow, A]
     (
-      send: QueryRequest[A] => F[QueryResponse[F, A]],
+      send: (
+        QueryRequest[A],
+        ValueReader.Outcomes[A, Option[A]],
+      ) => F[QueryResponse[F, Option[A]]],
       tools: Toolbox[F],
       asked: QueryRequest[A],
       maxIterations: Option[Int],
@@ -299,30 +314,31 @@ private[iris] object QueryAgentService:
         request: QueryRequest[A],
         done: Vector[QueryResponse[F, Any]],
       )
-      : F[AgentResponse[F, A]] = send(request).flatMap: response =>
-      val rounds   = done :+ response
-      val answered = AgentResponse(
-        response.value,
-        rounds.toList.pure[F],
-        response.cancel,
-      ).pure[F]
-      if response.value.nonEmpty then answered
-      else
-        response
-          .attempts
-          .map(_.last.toolCalls)
-          .flatMap(calls =>
-            if !tools.runs(calls) || maxIterations.contains(rounds.size) then
-              answered
-            else
-              (tools.ran(calls), response.conversation).flatMapN(
-                (results, conversation) =>
-                  round(
-                    onwards(request, conversation, results),
-                    rounds,
-                  ),
+      : F[AgentResponse[F, A]] =
+      val last = maxIterations.contains(done.size + 1)
+      send(
+        request,
+        ValueReader.Outcomes(
+          Some(_),
+          calls => Option.when(!last && tools.runs(calls))(None),
+        ),
+      ).flatMap: response =>
+        val rounds = done :+ response
+        response.value match
+          case Some(value) => AgentResponse(
+              value,
+              rounds.toList.pure[F],
+              response.cancel,
+            ).pure[F]
+          case None => (
+              response.attempts.map(_.last.toolCalls).flatMap(tools.ran),
+              response.conversation,
+            ).flatMapN((results, conversation) =>
+              round(
+                onwards(request, conversation, results),
+                rounds,
               ),
-          )
+            )
     round(offered(tools, asked), Vector.empty)
 
   /** The query offering the box's tools, beside those it offers already. */
@@ -362,7 +378,7 @@ private[iris] object QueryAgentService:
   */
 private[iris] final class Emitter[F[_] : Async]
   (
-    query: QueryService[F],
+    prompt: PromptService[F],
     tools: Toolbox[F],
     element: Schema[?],
     limit: Int,
@@ -420,10 +436,19 @@ private[iris] final class Emitter[F[_] : Async]
       progress: Progress,
       done: Vector[QueryResponse[F, Any]],
     )
-    : F[Unit] = query
-    .send[List[Any]](request.copy(maxAttempts =
-      if progress.fed > 0 then Some(1) else request.maxAttempts,
-    ))
+    : F[Unit] = PromptQueryService
+    .read(
+      prompt,
+      listed,
+      request.copy(maxAttempts =
+        if progress.fed > 0 then Some(1) else request.maxAttempts,
+      ),
+      limit,
+      ValueReader.Outcomes(
+        Some(_),
+        calls => Option.when(answerable(calls))(None),
+      ),
+    )
     .attempt
     .flatMap:
       case Right(response) => response.value match
@@ -459,6 +484,16 @@ private[iris] final class Emitter[F[_] : Async]
           turned(last.toolCalls, progress) *> unreadable(done, responses, why)
       case Left(error) => error.raiseError
 
+  /**
+    * Whether a round may end at calls: of `emit`, `done` or the box's tools
+    * alone, as any other is asked again, as a query asks again after any.
+    */
+  private def answerable(calls: List[MessagePart.ToolCall]): Boolean = calls
+    .forall(call =>
+      call.tool == Emitter.name || call.tool == Emitter.done ||
+      tools.runs(List(call)),
+    )
+
   /** Reads a round's calls, feeding each element, then goes on as they say. */
   private def called
     (
@@ -471,17 +506,7 @@ private[iris] final class Emitter[F[_] : Async]
     : F[Unit] =
     val calls = responses.last.toolCalls
     turned(calls, progress).flatMap: (turn, progress) =>
-      val strangers = turn.others.filterNot(call => tools.runs(List(call)))
-      if strangers.nonEmpty then
-        unreadable(
-          done.init,
-          responses,
-          s"It asked for a tool it was not given to run: ${ strangers
-              .map(call => s"`${ call.tool }`")
-              .distinct
-              .mkString(", ") }.",
-        )
-      else if progress.wrong >= limit then
+      if progress.wrong >= limit then
         unreadable(
           done.init,
           responses,
@@ -509,7 +534,7 @@ private[iris] final class Emitter[F[_] : Async]
             case (call, None) => tools.run(call)
           .flatMap(results =>
             round(
-              QueryAgentService.onwards(request, conversation, results),
+              PromptAgentService.onwards(request, conversation, results),
               progress,
               done,
             ),
@@ -589,7 +614,7 @@ private[iris] object Emitter:
     */
   def run[F[_] : Async, A]
     (
-      query: QueryService[F],
+      prompt: PromptService[F],
       tools: Toolbox[F],
       asked: QueryRequest[A],
       maxIterations: Option[Int],
@@ -613,7 +638,7 @@ private[iris] object Emitter:
             .liftTo[F]
             .flatMap(value =>
               Emitter(
-                query,
+                prompt,
                 tools,
                 element,
                 asked.maxAttempts.getOrElse(QueryConfig().maxAttempts),
@@ -628,7 +653,7 @@ private[iris] object Emitter:
                 .start
                 .map(fiber =>
                   AgentResponse(
-                    Some(value.asInstanceOf[A]),
+                    value.asInstanceOf[A],
                     rounds.get.rethrow,
                     fiber.cancel,
                   ),

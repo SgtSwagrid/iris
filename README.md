@@ -73,7 +73,7 @@ import com.alecdorrington.iris.anthropic.AnthropicModel
 import com.alecdorrington.iris.query.*
 
 AnthropicModel.ClaudeSonnet5_5.prompt[IO]().use: prompt =>
-  prompt.query.agent(dictionary).send[Review]("Review this essay: ...")
+  prompt.agent(dictionary).send[Review]("Review this essay: ...")
 ```
 
 `model.prompt[IO]()` makes the model's prompt service, with an API service and HTTP client of its own,
@@ -441,9 +441,11 @@ JSON, are answered with why, for the model to call it again. A `run` that fails 
 error, the model not told, so turn any failure the model should hear of into output instead. Each round
 is a query of its own, going on from the conversation the last one ended with, so it has its own
 `maxAttempts` attempts. An agent runs tools for as long as the model asks for them, unless its own
-`maxIterations` (in `AgentConfig`, or an `AgentRequest` for one request) caps the rounds: the last round's
-response is then given with no value, its calls not run, and a stream given through `emit` fails. Each round
-is a request, so bound what an agent may spend with a [budget](#budgets) either way.
+`maxIterations` (in `AgentConfig`, or an `AgentRequest` for one request) caps the rounds: in the last, a call
+is answered as an unreadable reply is and asked again, so the value still comes, and a stream given through
+`emit` fails. Each round is a request, so bound what an agent may spend with a [budget](#budgets) either way.
+A call of a tool the agent was not given is asked again too. To run tools yourself, offer them in
+`PromptRequest.tools` and read the prompt layer's `PromptResponse.toolCalls`.
 
 ```scala
 import com.alecdorrington.iris.agent.RunnableTool
@@ -453,7 +455,7 @@ case class Lookup(word: String)
 val dictionary = RunnableTool.of[IO, Lookup]("dictionary", "Looks up a word.")(lookup =>
   IO(definitions(lookup.word)))
 
-prompt.query.agent(dictionary).send[Review](conversation)
+prompt.agent(dictionary).send[Review](conversation)
 ```
 
 An `AgentResponse` gives its `value`, its `iterations`, the query of each round, and `responses`, every
@@ -484,21 +486,18 @@ rounds are left unmarked rather than crowd one of yours out. A write costs a qua
 afresh, so end what every request shares, such as the instructions and any documents, with a breakpoint of
 your own, so that only the rounds are ever written.
 
-Or offer the model tools for you to run yourself, in a `PromptRequest`'s `tools`, and it says so in its
-response's `toolCalls`, with no `value`: append the response and each tool's result, and ask again.
+Or offer the model tools for you to run yourself, in a `PromptRequest`'s `tools`, and read the calls it
+asks for from the prompt layer's response, its `toolCalls`, as a query never ends at a call but asks again:
+append the response and each tool's result, and ask on.
 
 ```scala
 val weather = Tool("weather", "Looks up the weather.", schema)
 
 for
-  asked    <- query.send[String](PromptRequest(conversation, tools = List(weather)))
-  sent     <- asked.attempts
-  call      = sent.last.toolCalls.head
-  result    = MessagePart.ToolResult(call.id, "weather", lookUp(call))
-  answer   <- query.send[String](PromptRequest(
-                conversation.modelSays(sent.last).toolSays(result),
-                tools = List(weather),
-              ))
+  asked  <- prompt.send(PromptRequest(conversation, tools = List(weather)))
+  call    = asked.toolCalls.head
+  result  = MessagePart.ToolResult(call.id, "weather", lookUp(call))
+  answer <- prompt.query.send[String](conversation.modelSays(asked).toolSays(result))
 yield answer.value
 ```
 
@@ -646,7 +645,7 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
 | `ModelClient.fromEnv[F]`                              | `Providers.from().traverse(found => found.model.prompt[F](found.api, found.config))` |
 | `ModelClient(config, backend)`                        | `model.prompt(model.provider.api(apiConfig, backend), promptConfig)` |
 | `client.ask[A](conversation, options, attempts)`      | `prompt.query.send[A](QueryRequest(PromptRequest(conversation, ...), Some(attempts)))` |
-| `client.ask[A](conversation, tools = tools)`          | `prompt.query.agent(tools*).send[A](conversation)`                   |
+| `client.ask[A](conversation, tools = tools)`          | `prompt.agent(tools*).send[A](conversation)`                         |
 | `ValidatedResponse`, its `responses`                  | `QueryResponse`, its `attempts` (an agent's `AgentResponse.responses`) |
 | `client.stream(request)`, `Delta`                     | `prompt.stream(request)`, `PromptEvent`                              |
 | `ModelRequest(conversation, ModelRequest.Options(...))` | `PromptRequest(conversation, ...)`, its settings flat              |
@@ -691,6 +690,13 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
   over a backend that cannot stream reads a response's events at once. A response whose events end before
   it says it is over fails as `ApiError.Malformed`; counting tokens with OpenAI is no longer offered at all, where it failed with `Unsupported`.
 - `warmCache` asks for no tokens of response, which each provider raises to the least it allows.
+- A query always ends with a value: `QueryResponse.value` is an `A`, where it was an `Option`, and a
+  response asking for a tool is answered as an unreadable one is and asked again, where it ended the query
+  with `None`. Read calls you run yourself from the prompt layer's `PromptResponse.toolCalls`.
+- The agent is made from the prompt service, `prompt.agent(tools*)`, beside the query rather than above it,
+  and its `value` is an `A` too: a call of a tool it was not given, or of any in the last round allowed by
+  `maxIterations`, is asked again rather than ending it with `None`. `AgentConfig.maxAttempts` is the most
+  prompts each round sends for its value.
 - Each round of an agent's tools is a query of its own, with its own `maxAttempts` attempts, where an
   ask's attempts were shared by its rounds. The agent's own `maxIterations` caps how many rounds it runs. A stream given through `emit` gets its elements as each
   response ends, where each came as its call did.

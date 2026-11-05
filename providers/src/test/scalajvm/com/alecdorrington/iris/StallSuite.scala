@@ -76,7 +76,7 @@ class StallSuite extends FunSuite:
       stalls = false,
     )(configured =>
       assertEquals(
-        asked(configured).flatMap(_.toOption).flatMap(_.value),
+        asked(configured).flatMap(_.toOption).map(_.value),
         Some("Hi"),
       ),
     )
