@@ -626,7 +626,14 @@ def logged(prompt: PromptService[IO]): PromptService[IO] = request =>
 Semaphore[IO](16).map(permits => (request => Stream.resource(permits.permit) >> prompt.stream(request)): PromptService[IO])
 ```
 
-`send` and `warmCache` are `stream` gathered, so a middleware on `stream` sees them too.
+`send` and `warmCache` are `stream` gathered, so a middleware on `stream` sees them too. A request warming the cache says
+so (`request.warming`), for a middleware that treats it apart, as by charging it nothing. A service answering
+each request whole, as a cache or a test's fake does, is `PromptService.of`, which gives its response as the
+events `stream` would (`response.events`), so that it reads alike whether streamed, sent or queried:
+
+```scala
+val fake = PromptService.of[IO](request => IO.pure(PromptResponse("\"Hi\"")))
+```
 
 ### Upgrading from 0.5
 

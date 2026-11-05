@@ -319,3 +319,49 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
         provider.defaultModel,
       )
       assert(result(keyed).isRight, provider)
+
+  test("a service answering whole is read alike, streamed or sent"):
+    val looked   = MessagePart.ToolCall("call_1", "look", "{}")
+    val response = PromptResponse(
+      "Hi",
+      StopReason.ToolCall,
+      toolCalls = List(looked),
+    )
+    val answering = PromptService.of[SyncIO](_ => SyncIO.pure(response))
+    assertEquals(
+      response.events,
+      List(
+        PromptEvent.Written(PromptEvent.Part.Text, "Hi"),
+        PromptEvent.Written(
+          PromptEvent.Part.Call("call_1", "look", None),
+          "{}",
+        ),
+        PromptEvent.Ended(response),
+      ),
+    )
+    assertEquals(
+      answering.stream(prompt).compile.toList.unsafeRunSync(),
+      response.events,
+    )
+    assertEquals(
+      answering.send(prompt).unsafeRunSync(),
+      response,
+    )
+
+  test("a request warming the cache says so, and no other does"):
+    val asked =
+      for
+        sent <- Ref.of[SyncIO, List[PromptRequest]](Nil)
+        recording = PromptService.of[SyncIO](request =>
+          sent.update(_ :+ request).as(PromptResponse("")),
+        )
+        cached = Conversation.userSays(
+          "A long document.",
+          MessagePart.CacheBreakpoint,
+          "A question of it.",
+        )
+        _     <- recording.warmCache(cached)
+        _     <- recording.send(cached)
+        sends <- sent.get
+      yield sends.map(_.warming)
+    assertEquals(asked.unsafeRunSync(), List(true, false))
