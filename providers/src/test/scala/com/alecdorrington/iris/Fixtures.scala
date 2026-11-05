@@ -67,23 +67,23 @@ object Fixtures:
       (
         conversation: Conversation,
         offered: List[Tool] = Nil,
-        attempts: Int = QueryConfig().maxIterations,
+        attempts: Int = QueryConfig().maxAttempts,
         tools: List[RunnableTool[F]] = Nil,
         rounds: Option[Int] = None,
       )
-      : F[(Option[A], List[PromptResponse])] = Rounds
-      .run[F, A](
+      : F[(Option[A], List[PromptResponse])] = QueryAgentService
+      .rounds[F, A](
         request =>
-          Reading.counted(attempts).liftTo[F] *> Reading.whole(
+          ValueReader.counted(attempts).liftTo[F] *> ValueReader.whole(
             prompt.send(_),
             Schema[A],
             attempts,
             request
               .prompt
               .copy(conversation =
-                Reading.opening(
+                ValueReader.opening(
                   request.prompt.conversation,
-                  Reading.schemaPrompt(Schema[A]),
+                  ValueReader.schemaPrompt(Schema[A]),
                 ),
               ),
           ),

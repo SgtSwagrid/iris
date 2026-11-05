@@ -71,7 +71,7 @@ trait ProviderModel:
     */
   def prompt[F[_] : Sync]
     (api: ApiService[F], config: PromptConfig)
-    : PromptService[F] = ProviderPrompt(api, provider, this, config)
+    : PromptService[F] = ProviderPromptService(api, provider, this, config)
 
   /**
     * Makes this model's token counter over an API service, where its provider
@@ -88,7 +88,7 @@ trait ProviderModel:
     */
   def counter[F[_] : Sync](api: ApiService[F]): Option[TokenCounter[F]] = Option
     .when(provider.counting(this, Conversation()).isDefined)(
-      ProviderCounter(api, provider, this),
+      ProviderTokenCounter(api, provider, this),
     )
 
   /**

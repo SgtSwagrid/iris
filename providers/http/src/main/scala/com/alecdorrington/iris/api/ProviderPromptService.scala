@@ -13,7 +13,7 @@ import scala.Conversion.into
   * [[ApiService]] as its [[Provider]] says, each response priced as it ends, at
   * the configuration's rates, else those listed for the model.
   */
-private[iris] final class ProviderPrompt[F[_] : Sync]
+private[iris] final class ProviderPromptService[F[_] : Sync]
   (
     api: ApiService[F],
     provider: Provider,
@@ -47,48 +47,49 @@ private[iris] final class ProviderPrompt[F[_] : Sync]
       )
 
   /** The deltas of whole responses, each as it would have arrived. */
-  private def wholes(bodies: Stream[F, Json]): Stream[F, Delta] = bodies
+  private def wholes(bodies: Stream[F, Json]): Stream[F, ProviderEvent] = bodies
     .flatMap(body =>
       Stream
         .fromEither[F](read(body, provider.wholeResponse).flatten)
-        .flatMap(response => Stream.emits(Delta.of(response))),
+        .flatMap(response => Stream.emits(ProviderEvent.of(response))),
     )
 
   /** The events deltas make, the response gathered and priced at their end. */
-  private def gathered(deltas: Stream[F, Delta]): Stream[F, PromptEvent] =
-    deltas
-      .evalMapAccumulate(PromptResponse("")):
-        case (so, Delta.Text(text)) => (
-            so.copy(text = so.text + text),
-            PromptEvent.Written(PromptEvent.Part.Text, text),
-          ).pure[F]
-        case (so, Delta.ToolCall(call)) => (
-            so.copy(toolCalls = so.toolCalls :+ call),
-            PromptEvent.Written(
-              PromptEvent.Part.Call(call.id, call.tool, call.signature),
-              call.arguments,
-            ),
-          ).pure[F]
-        case (so, Delta.End(stopReason, usage)) => Sync[F]
-            .realTime
-            .map(now =>
-              val ended = so.copy(
-                stopReason = stopReason,
-                usage = usage,
-                cost = config
-                  .rates
-                  .orElse(provider.rates(model, now))
-                  .map(_.cost(usage)),
-              )
-              (ended, PromptEvent.Ended(ended)),
+  private def gathered
+    (deltas: Stream[F, ProviderEvent])
+    : Stream[F, PromptEvent] = deltas
+    .evalMapAccumulate(PromptResponse("")):
+      case (so, ProviderEvent.Text(text)) => (
+          so.copy(text = so.text + text),
+          PromptEvent.Written(PromptEvent.Part.Text, text),
+        ).pure[F]
+      case (so, ProviderEvent.ToolCall(call)) => (
+          so.copy(toolCalls = so.toolCalls :+ call),
+          PromptEvent.Written(
+            PromptEvent.Part.Call(call.id, call.tool, call.signature),
+            call.arguments,
+          ),
+        ).pure[F]
+      case (so, ProviderEvent.End(stopReason, usage)) => Sync[F]
+          .realTime
+          .map(now =>
+            val ended = so.copy(
+              stopReason = stopReason,
+              usage = usage,
+              cost = config
+                .rates
+                .orElse(provider.rates(model, now))
+                .map(_.cost(usage)),
             )
-      .map(_._2)
+            (ended, PromptEvent.Ended(ended)),
+          )
+    .map(_._2)
 
   /** A body read as the provider's response, or why it cannot be. */
   private def read[A](body: Json, decoder: Decoder[A]): Either[ApiError, A] =
-    ProviderPrompt.read(provider, body, decoder)
+    ProviderPromptService.read(provider, body, decoder)
 
-private[iris] object ProviderPrompt:
+private[iris] object ProviderPromptService:
 
   /** A body read by a decoder, or why it cannot be. */
   def read[A]
@@ -107,7 +108,7 @@ private[iris] object ProviderPrompt:
     )
 
 /** The [[TokenCounter]] of a model, whose provider counts as it says. */
-private[iris] final class ProviderCounter[F[_] : Sync]
+private[iris] final class ProviderTokenCounter[F[_] : Sync]
   (
     api: ApiService[F],
     provider: Provider,
@@ -125,5 +126,7 @@ private[iris] final class ProviderCounter[F[_] : Sync]
     .flatMap(counting =>
       api
         .send(ApiRequest(counting.path, counting.body))
-        .flatMap(ProviderPrompt.read(provider, _, counting.tokens).liftTo[F]),
+        .flatMap(
+          ProviderPromptService.read(provider, _, counting.tokens).liftTo[F],
+        ),
     )

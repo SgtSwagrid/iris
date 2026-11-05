@@ -267,7 +267,7 @@ object Gemini extends Provider:
     */
   override private[iris] def deltas[F[_] : RaiseThrowable]
     (events: Stream[F, Json])
-    : Stream[F, Delta] = events
+    : Stream[F, ProviderEvent] = events
     .zipWithScan1(false)(_ || asks(_))
     .flatMap((event, asked) => Stream.emits(deltas(event, asked)))
 
@@ -283,12 +283,12 @@ object Gemini extends Provider:
     .toOption
     .getOrElse(List.empty)
 
-  private def deltas(event: Json, asked: Boolean): List[Delta] =
+  private def deltas(event: Json, asked: Boolean): List[ProviderEvent] =
     val parts = partsOf(event)
     val text  = parts.flatMap(_.text).mkString
     List.concat(
-      Option.when(text.nonEmpty)(Delta.Text(text)),
-      parts.flatMap(_.toolCall).map(Delta.ToolCall(_)),
+      Option.when(text.nonEmpty)(ProviderEvent.Text(text)),
+      parts.flatMap(_.toolCall).map(ProviderEvent.ToolCall(_)),
       event
         .hcursor
         .downField("candidates")
@@ -296,7 +296,7 @@ object Gemini extends Provider:
         .get[String]("finishReason")
         .toOption
         .map(reason =>
-          Delta.End(
+          ProviderEvent.End(
             stopped(asked, Some(reason)),
             event
               .hcursor

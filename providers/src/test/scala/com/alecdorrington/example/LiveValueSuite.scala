@@ -57,7 +57,7 @@ final case class Listed(items: Stream[IO, Int]) extends Listing
 
 final case class Refused(why: String) extends Listing
 
-class StreamingAskerSuite extends FunSuite:
+class LiveValueSuite extends FunSuite:
 
   /** A reply written `size` characters at a time, ending as said. */
   private def written
@@ -204,7 +204,7 @@ class StreamingAskerSuite extends FunSuite:
                   .toList
                   .map(page.title -> _),
               )
-              .product(answering.iterations.map(_.size))
+              .product(answering.attempts.map(_.size))
       yield assertEquals(
         read,
         (Some("Hi" -> List(Word("a"), Word("b", Some("be")))), 1),
@@ -306,12 +306,12 @@ class StreamingAskerSuite extends FunSuite:
               llm
                 .query
                 .send[Two](Conversation.userSays("Count."))
-                .flatMap(_.iterations.attempt)
+                .flatMap(_.attempts.attempt)
             else
               llm
                 .query
                 .send[Gloss](Conversation.userSays("Translate."))
-                .flatMap(_.iterations.attempt),
+                .flatMap(_.attempts.attempt),
           )
           .map:
             case Left(QueryError.Unreadable(detail, _)) =>
@@ -392,7 +392,7 @@ class StreamingAskerSuite extends FunSuite:
             answering
               .value
               .traverse(_.words.compile.toList)
-              .product(answering.iterations.map(_.size)),
+              .product(answering.attempts.map(_.size)),
           )
         conversations <- sent
       yield
@@ -432,7 +432,7 @@ class StreamingAskerSuite extends FunSuite:
               .flatMap(answering =>
                 (
                   answering.value.get.words.attempt.compile.toList,
-                  answering.iterations.attempt,
+                  answering.attempts.attempt,
                   answering.value.get.words.attempt.compile.toList,
                 ).tupled,
               ),
@@ -476,7 +476,7 @@ class StreamingAskerSuite extends FunSuite:
           .flatMap(answering =>
             (
               answering.value.get.words.attempt.compile.toList,
-              answering.iterations.attempt,
+              answering.attempts.attempt,
             ).tupled,
           )
           .map((words, answer) =>
@@ -539,7 +539,7 @@ class StreamingAskerSuite extends FunSuite:
                 words.evalTap(_ => gate.complete(())).compile.toList,
                 words.take(1).compile.toList,
               ).parTupled
-              ended <- answering.iterations.as(answering.value.map(_.title))
+              ended <- answering.attempts.as(answering.value.map(_.title))
               again <- words.compile.toList
             yield (both, ended, again)
       yield assertEquals(
@@ -572,7 +572,7 @@ class StreamingAskerSuite extends FunSuite:
           ))
           .flatMap(answer =>
             answer
-              .iterations
+              .attempts
               .map(responses =>
                 (answer.value.isEmpty, responses.last.toolCalls),
               ),
@@ -591,7 +591,7 @@ class StreamingAskerSuite extends FunSuite:
             .send[Page](Conversation.userSays("Translate."))
             .flatMap(answer =>
               answer
-                .iterations
+                .attempts
                 .product(answer.value.traverse(_.words.compile.toList)),
             ),
         )
@@ -648,7 +648,7 @@ class StreamingAskerSuite extends FunSuite:
             two
               .value
               .traverse(two => (two.first ++ two.second).compile.toList)
-              .product(two.iterations.map(_.size)),
+              .product(two.attempts.map(_.size)),
           )
         // A case whole before another begins waits, and reads as a whole reply.
         (unions, _) <- streamer(
@@ -700,7 +700,7 @@ class StreamingAskerSuite extends FunSuite:
               .flatMap(answer =>
                 (
                   answer.value.traverse(_.words.compile.toList),
-                  answer.iterations.attempt,
+                  answer.attempts.attempt,
                 ).tupled,
               ),
           )
@@ -748,7 +748,7 @@ class StreamingAskerSuite extends FunSuite:
         answer   <- llm.query.send[Page](Conversation.userSays("Translate."))
         _        <- answer.cancel
         words    <- answer.value.get.words.attempt.compile.toList
-        whole    <- answer.iterations.attempt
+        whole    <- answer.attempts.attempt
         stopped  <- ended.get
       yield
         assert(stopped)
@@ -1596,7 +1596,7 @@ class StreamingAskerSuite extends FunSuite:
           .agent(dictionary(asked))
           .send[Person](Conversation.userSays("Invent a person."))
         rounds <- answer.iterations
-        sizes  <- rounds.traverse(_.iterations.map(_.size))
+        sizes  <- rounds.traverse(_.attempts.map(_.size))
         all    <- answer.responses
       yield
         assertEquals(

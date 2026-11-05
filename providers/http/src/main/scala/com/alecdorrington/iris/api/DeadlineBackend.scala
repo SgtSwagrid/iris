@@ -20,7 +20,7 @@ import sttp.client4.wrappers.DelegateBackend
   * stall may hold a thread for as long as the backend lives. A reply that comes
   * after its request was given up on is read and dropped.
   */
-private[iris] final class Deadlined[F[_] : Temporal]
+private[iris] final class DeadlineBackend[F[_] : Temporal]
   (delegate: Backend[F])
   extends DelegateBackend[F, Any](delegate), Backend[F]:
 

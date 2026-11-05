@@ -120,13 +120,8 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
                 ),
             )
           val api = draw.fold(model.provider.api(configured, backend))(draw =>
-            Retrying(
-              model
-                .provider
-                .api(
-                  configured.copy(maxIterations = 1),
-                  backend,
-                ),
+            RetryingApiService(
+              model.provider.api(configured.copy(maxRetries = 0), backend),
               configured,
               IO.pure(draw),
             ),
@@ -360,7 +355,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 
   test("a service told not to retry gives each refusal at once"):
     answering(
-      access.copy(maxIterations = 1),
+      access.copy(maxRetries = 0),
       refused(429, Seq(Header("retry-after", "2"))),
     )(draw = None)((services, times) =>
       for
@@ -401,7 +396,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 
   test("waiting stops where the next wait would pass the patience"):
     answering(
-      access.copy(maxIterations = 10),
+      access.copy(maxRetries = 9),
       refused(429, Seq(Header("retry-after", "25"))),
     )()((services, times) =>
       for
@@ -699,7 +694,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
     "a streamed refusal fails the api's stream, as a refusal by status does",
   ):
     answering(
-      access.copy(maxIterations = 1),
+      access.copy(maxRetries = 0),
       streamed(s"data: $overloaded\n\n"),
     )()((services, _) =>
       services

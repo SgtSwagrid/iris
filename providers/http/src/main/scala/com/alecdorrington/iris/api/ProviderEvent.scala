@@ -8,7 +8,7 @@ import com.alecdorrington.iris.prompt.*
   * [[ToolCall]]s, followed by one [[End]], which a [[PromptService]] gathers
   * into [[PromptEvent]]s, pricing the response.
   */
-private[iris] enum Delta:
+private[iris] enum ProviderEvent:
 
   /**
     * More of the reply's text, to append to what came before.
@@ -37,10 +37,10 @@ private[iris] enum Delta:
     */
   case End(stopReason: StopReason, usage: Usage)
 
-private[iris] object Delta:
+private[iris] object ProviderEvent:
 
   /** The deltas of a whole response, as it would have arrived. */
-  def of(response: PromptResponse): List[Delta] = List.concat(
+  def of(response: PromptResponse): List[ProviderEvent] = List.concat(
     Option.when(response.text.nonEmpty)(Text(response.text)),
     response.toolCalls.map(ToolCall(_)),
     List(End(response.stopReason, response.usage)),
@@ -50,17 +50,18 @@ private[iris] object Delta:
   * A tool call whose arguments arrive in fragments of JSON, as Anthropic and
   * OpenAI stream them.
   */
-private[iris] final case class Calling
+private[iris] final case class PartialToolCall
   (
     id: String,
     tool: String,
     arguments: String = "",
   ):
 
-  def more(fragment: String): Calling = copy(arguments = arguments + fragment)
+  def more(fragment: String): PartialToolCall =
+    copy(arguments = arguments + fragment)
 
   /** The whole call, its arguments an empty object where none were given. */
-  def whole: Delta = Delta.ToolCall(MessagePart.ToolCall(
+  def whole: ProviderEvent = ProviderEvent.ToolCall(MessagePart.ToolCall(
     id,
     tool,
     if arguments.isEmpty then "{}" else arguments,

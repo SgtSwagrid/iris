@@ -79,15 +79,15 @@ trait ApiService[F[_]]:
     * for.
     *
     * @param config
-    *   The configuration, whose `maxIterations`, `backoff` and `patience` say
-    *   how often and how long to try.
+    *   The configuration, whose `maxRetries`, `backoff` and `patience` say how
+    *   often and how long to try.
     *
     * @return
     *   A service trying each request until it is answered or may not be tried
     *   again.
     */
   final def retrying(config: ApiConfig)(using Async[F]): ApiService[F] =
-    Retrying(
+    RetryingApiService(
       this,
       config,
       Async[F].delay(Random.nextDouble()),
@@ -107,9 +107,9 @@ trait ApiService[F[_]]:
   *   The longest a request is waited for: a whole response from sending it to
   *   reading it, and each next part of a streamed one.
   *
-  * @param maxIterations
-  *   The most times a request is sent, the first included, where the provider
-  *   refuses or fails it for now: `1` sends each once.
+  * @param maxRetries
+  *   The most times a request is sent again after the first, where the provider
+  *   refuses or fails it for now: `0` sends each once.
   *
   * @param backoff
   *   The wait before sending a request again where the provider asks for none,
@@ -125,7 +125,7 @@ final case class ApiConfig
     key: Option[String] = None,
     baseUrl: Option[String] = None,
     timeout: FiniteDuration = ApiConfig.defaultTimeout,
-    maxIterations: Int = 4,
+    maxRetries: Int = 3,
     backoff: FiniteDuration = 1.second,
     patience: FiniteDuration = 1.minute,
   ):
@@ -144,7 +144,7 @@ final case class ApiConfig
     )
     : Option[FiniteDuration] = ApiConfig
     .asked(error)
-    .filter(_ => tried < maxIterations)
+    .filter(_ => tried <= maxRetries)
     .map(_.fold(backedOff(tried, draw))(after(_, draw)))
     .filter(_ <= patience - waited)
 
@@ -157,7 +157,7 @@ final case class ApiConfig
   /** The configuration, its key redacted, so that hosts may log it. */
   override def toString: String = s"ApiConfig(${ key.map(_ =>
       "<redacted>",
-    ) }, $baseUrl, $timeout, $maxIterations, $backoff, $patience)"
+    ) }, $baseUrl, $timeout, $maxRetries, $backoff, $patience)"
 
 object ApiConfig:
 
@@ -359,7 +359,7 @@ enum ApiError(message: String) extends Exception(message):
   * fails it for now, while nothing of its response has arrived, waiting as
   * [[ApiConfig.delay]] says, with `draw` giving each random draw.
   */
-private[iris] final class Retrying[F[_] : Temporal]
+private[iris] final class RetryingApiService[F[_] : Temporal]
   (
     service: ApiService[F],
     config: ApiConfig,

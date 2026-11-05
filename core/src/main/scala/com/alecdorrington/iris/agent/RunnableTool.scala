@@ -67,7 +67,7 @@ object RunnableTool:
     arguments =>
       parse(arguments)
         .leftMap(_ => "They are not JSON.")
-        .flatMap(Reading.decoded(A, _))
+        .flatMap(ValueReader.decoded(A, _))
         .fold(
           why => s"The arguments could not be read:\n$why".pure[F],
           run,

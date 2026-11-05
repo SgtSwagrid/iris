@@ -15,8 +15,8 @@ class StreamSuite extends FunSuite:
 
   private def reply
     (body: String)
-    (read: Pipe[SyncIO, Json, Delta])
-    : List[Delta] = Stream
+    (read: Pipe[SyncIO, Json, ProviderEvent])
+    : List[ProviderEvent] = Stream
     .emits(body.getBytes("UTF-8"))
     .covary[SyncIO]
     .through(Sse.events)
@@ -92,9 +92,9 @@ data: {"candidates":[{"content":{"parts":[{"text":"lo"}]},"finishReason":"STOP"}
       assertEquals(
         reply(body)(api.deltas),
         List(
-          Delta.Text("Hel"),
-          Delta.Text("lo"),
-          Delta.End(StopReason.Completed, usage),
+          ProviderEvent.Text("Hel"),
+          ProviderEvent.Text("lo"),
+          ProviderEvent.End(StopReason.Completed, usage),
         ),
         api,
       )
@@ -104,13 +104,13 @@ data: {"candidates":[{"content":{"parts":[{"text":"lo"}]},"finishReason":"STOP"}
         """data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}
 """,
       )(Anthropic.deltas),
-      List(Delta.End(StopReason.MaxTokens, Usage())),
+      List(ProviderEvent.End(StopReason.MaxTokens, Usage())),
     )
     // OpenAI's usage is read where it comes with the stop reason, too.
     assertEquals(
       reply("""data: {"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}
 """)(OpenAi.deltas),
-      List(Delta.End(StopReason.MaxTokens, usage)),
+      List(ProviderEvent.End(StopReason.MaxTokens, usage)),
     )
 
   test("anthropic's stop counts what its start leaves out, and its thinking"):
@@ -120,7 +120,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input
 """
     assertEquals(
       reply(body)(Anthropic.deltas),
-      List(Delta.End(
+      List(ProviderEvent.End(
         StopReason.Completed,
         Usage(
           uncachedTokens = 5,
@@ -135,7 +135,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input
     assertEquals(
       reply("""data: {"choices":[{"delta":{"content":"Hel"}}],"usage":null}
 """)(OpenAi.deltas),
-      List(Delta.Text("Hel")),
+      List(ProviderEvent.Text("Hel")),
     )
 
   test("gemini stops for a tool it asked for, however late it says it stopped"):
@@ -148,9 +148,9 @@ data: {"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}],
     assertEquals(
       reply(late)(Gemini.deltas),
       List(
-        Delta.Text("Let me look."),
-        Delta.ToolCall(weather),
-        Delta.End(
+        ProviderEvent.Text("Let me look."),
+        ProviderEvent.ToolCall(weather),
+        ProviderEvent.End(
           StopReason.ToolCall,
           Usage(uncachedTokens = 7, visibleTokens = 3),
         ),
@@ -162,8 +162,8 @@ data: {"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}],
     assertEquals(
       reply(together)(Gemini.deltas),
       List(
-        Delta.ToolCall(weather),
-        Delta.End(StopReason.ToolCall, Usage()),
+        ProviderEvent.ToolCall(weather),
+        ProviderEvent.End(StopReason.ToolCall, Usage()),
       ),
     )
 
@@ -174,9 +174,11 @@ data: {"candidates":[{"content":{"parts":[{"text":""}]},"finishReason":"STOP"}],
     assertEquals(
       reply(together)(Gemini.deltas),
       List(
-        Delta.ToolCall(weather.copy(id = "a1", signature = Some("c2lnbmVk"))),
-        Delta.ToolCall(weather.copy(id = "b2")),
-        Delta.End(StopReason.ToolCall, Usage()),
+        ProviderEvent.ToolCall(
+          weather.copy(id = "a1", signature = Some("c2lnbmVk")),
+        ),
+        ProviderEvent.ToolCall(weather.copy(id = "b2")),
+        ProviderEvent.End(StopReason.ToolCall, Usage()),
       ),
     )
 
@@ -200,9 +202,9 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
     assertEquals(
       reply(anthropic)(Anthropic.deltas),
       List(
-        Delta.Text("Let me look."),
-        Delta.ToolCall(weather),
-        Delta.End(StopReason.ToolCall, Usage()),
+        ProviderEvent.Text("Let me look."),
+        ProviderEvent.ToolCall(weather),
+        ProviderEvent.End(StopReason.ToolCall, Usage()),
       ),
     )
     val openAi = """data: {"choices":[{"delta":{"content":"Let me look."}}]}
@@ -220,9 +222,9 @@ data: [DONE]
     assertEquals(
       reply(openAi)(OpenAi.deltas),
       List(
-        Delta.Text("Let me look."),
-        Delta.ToolCall(weather),
-        Delta.End(StopReason.ToolCall, Usage()),
+        ProviderEvent.Text("Let me look."),
+        ProviderEvent.ToolCall(weather),
+        ProviderEvent.End(StopReason.ToolCall, Usage()),
       ),
     )
 
@@ -244,7 +246,7 @@ data: {"type":"content_block_stop","index":0}
         .toList
         .attempt
         .unsafeRunSync(),
-      Right(List(Delta.ToolCall(weather.copy(arguments = "{\"ci")))),
+      Right(List(ProviderEvent.ToolCall(weather.copy(arguments = "{\"ci")))),
     )
 
   /** The call each provider is asked for, as it is read. */

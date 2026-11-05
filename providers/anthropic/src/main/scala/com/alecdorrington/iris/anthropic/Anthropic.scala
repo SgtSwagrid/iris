@@ -55,7 +55,7 @@ object Anthropic extends Provider:
     */
   override private[iris] def deltas[F[_] : RaiseThrowable]
     (events: Stream[F, Json])
-    : Stream[F, Delta] = events
+    : Stream[F, ProviderEvent] = events
     .mapAccumulate(Streamed())(_.read(_))
     .flatMap((_, deltas) => Stream.emits(deltas))
     .rethrow
@@ -483,11 +483,11 @@ object Anthropic extends Provider:
   private[iris] final case class Streamed
     (
       start: TokenCounts = TokenCounts.unreported,
-      calls: Map[Int, Calling] = Map.empty,
+      calls: Map[Int, PartialToolCall] = Map.empty,
     ):
 
     /** This, after an event, and the deltas the event makes, or why not. */
-    def read(event: Json): (Streamed, List[Either[ApiError, Delta]]) =
+    def read(event: Json): (Streamed, List[Either[ApiError, ProviderEvent]]) =
       val cursor = event.hcursor
       val index  = cursor.get[Int]("index").toOption
       cursor.get[String]("type").toOption match
@@ -514,14 +514,14 @@ object Anthropic extends Provider:
                 delta
                   .get[String]("text")
                   .toOption
-                  .map(text => Right(Delta.Text(text)))
+                  .map(text => Right(ProviderEvent.Text(text)))
                   .toList
         case Some("content_block_stop") => index.fold(this -> Nil)(at =>
             copy(calls = calls - at) ->
               calls.get(at).map(call => Right(call.whole)).toList,
           )
         case Some("error")         => this -> List(Left(streamedError(event)))
-        case Some("message_delta") => this -> List(Right(Delta.End(
+        case Some("message_delta") => this -> List(Right(ProviderEvent.End(
             stopReason(
               cursor.downField("delta").get[String]("stop_reason").toOption,
             ),
@@ -556,12 +556,12 @@ object Anthropic extends Provider:
       )
 
     /** The call a block begins, whose arguments are still to come. */
-    def calling: Option[Calling] =
+    def calling: Option[PartialToolCall] =
       for
         _    <- Option.when(kind == "tool_use")(())
         id   <- id
         name <- name
-      yield Calling(id, name)
+      yield PartialToolCall(id, name)
 
   private[iris] object Block:
 

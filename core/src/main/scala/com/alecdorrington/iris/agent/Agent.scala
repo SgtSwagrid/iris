@@ -170,7 +170,7 @@ final case class AgentResponse[F[_], +A]
     *   An effect producing every round's responses, in order.
     */
   def responses(using cats.Monad[F]): F[List[PromptResponse]] = iterations
-    .flatMap(_.flatTraverse(_.iterations))
+    .flatMap(_.flatTraverse(_.attempts))
 
   /**
     * The token counts of every response the request took, together.
@@ -248,10 +248,11 @@ extension [F[_] : Async](query: QueryService[F])
     * @return
     *   A service asking through this one, running the tools.
     */
-  def agent(config: AgentConfig[F]): AgentService[F] = Agency(query, config)
+  def agent(config: AgentConfig[F]): AgentService[F] =
+    QueryAgentService(query, config)
 
 /** An [[AgentService]] asking through a query service, round after round. */
-private[iris] final class Agency[F[_] : Async]
+private[iris] final class QueryAgentService[F[_] : Async]
   (
     query: QueryService[F],
     config: AgentConfig[F],
@@ -263,28 +264,29 @@ private[iris] final class Agency[F[_] : Async]
     : F[AgentResponse[F, A]] =
     val tools = Toolbox(request.tools.getOrElse(config.tools))
     val most  = request.maxIterations.orElse(config.maxIterations)
-    most.traverse_(Reading.counted).liftTo[F] *>
-      Emit
+    most.traverse_(ValueReader.counted).liftTo[F] *>
+      Emitter
         .element(A)
         .filter(_ => tools.tools.nonEmpty)
-        .fold(Rounds.run(
+        .fold(QueryAgentService.rounds(
           query.send[A](_),
           tools,
           request.query,
           most,
-        ))(Emitting.run(query, tools, request.query, most, A, _))
+        ))(Emitter.run(query, tools, request.query, most, A, _))
 
-/**
-  * The rounds of an agent's request: a query sent, the tools it asks for run,
-  * and the query sent again, going on from it with their results, until the
-  * model gives its value, asks for a tool not in the box, or has had the most
-  * rounds allowed. Each round after the first caches the whole conversation, so
-  * that the next reads the rounds before it from the cache and writes only its
-  * own.
-  */
-private[iris] object Rounds:
+private[iris] object QueryAgentService:
 
-  def run[F[_] : MonadThrow, A]
+  /**
+    * Runs the rounds of an agent's request: a query sent, the tools it asks for
+    * run, and the query sent again, going on from it with their results, until
+    * the model gives its value, asks for a tool not in the box, or has had the
+    * most rounds allowed. Each round after the first caches the whole
+    * conversation, so that the next reads the rounds before it from the cache
+    * and writes only its own. It needs no more than `MonadThrow`, so that tests
+    * may run it in `SyncIO`.
+    */
+  def rounds[F[_] : MonadThrow, A]
     (
       send: QueryRequest[A] => F[QueryResponse[F, A]],
       tools: Toolbox[F],
@@ -307,7 +309,7 @@ private[iris] object Rounds:
       if response.value.nonEmpty then answered
       else
         response
-          .iterations
+          .attempts
           .map(_.last.toolCalls)
           .flatMap(calls =>
             if !tools.runs(calls) || maxIterations.contains(rounds.size) then
@@ -351,21 +353,21 @@ private[iris] object Rounds:
 
 /**
   * The rounds of an agent's request for a stream, whose elements the model
-  * gives through [[Emit]], one call each, so that it may call the box's tools
+  * gives through `emit`, one call each, so that it may call the box's tools
   * between them: the stream given at once, and fed each element as its round
-  * ends, in a fiber of its own, until the model calls [[Emit.done]] in a round
-  * that asks for nothing more, or stops calling tools, failing it where the
-  * model is still calling them in the last round allowed. A model writing the
-  * elements as JSON instead has them read as a query reads any value.
+  * ends, in a fiber of its own, until the model calls `done` in a round that
+  * asks for nothing more, or stops calling tools, failing it where the model is
+  * still calling them in the last round allowed. A model writing the elements
+  * as JSON instead has them read as a query reads any value.
   */
-private[iris] final class Emitting[F[_] : Async]
+private[iris] final class Emitter[F[_] : Async]
   (
     query: QueryService[F],
     tools: Toolbox[F],
     element: Schema[?],
     limit: Int,
     maxIterations: Option[Int],
-    feeds: Feeds[F],
+    feeds: StreamBuffers[F],
     rounds: Deferred[
       F,
       Either[Throwable, List[QueryResponse[F, Any]]],
@@ -393,7 +395,7 @@ private[iris] final class Emitting[F[_] : Async]
     * One round's calls, as they are read: what the model is told of each,
     * aligned with them, or `None` for a tool to run, whether an element in it
     * was refused, after which every later one is too, so that elements arrive
-    * in order, and whether it called [[Emit.done]].
+    * in order, and whether it called [[Emitter.done]].
     */
   private final case class Turn
     (
@@ -419,8 +421,8 @@ private[iris] final class Emitting[F[_] : Async]
       done: Vector[QueryResponse[F, Any]],
     )
     : F[Unit] = query
-    .send[List[Any]](request.copy(maxIterations =
-      if progress.fed > 0 then Some(1) else request.maxIterations,
+    .send[List[Any]](request.copy(maxAttempts =
+      if progress.fed > 0 then Some(1) else request.maxAttempts,
     ))
     .attempt
     .flatMap:
@@ -429,7 +431,7 @@ private[iris] final class Emitting[F[_] : Async]
               if progress.fed > 0 then Nil else elements,
               done :+ response,
             )
-          case None => (response.iterations, response.conversation).flatMapN(
+          case None => (response.attempts, response.conversation).flatMapN(
               (responses, conversation) =>
                 called(
                   request,
@@ -489,7 +491,7 @@ private[iris] final class Emitting[F[_] : Async]
       else if turn.ends then
         finished(
           if progress.fed > 0 then Nil
-          else Reading.read(listed, responses.last).getOrElse(Nil),
+          else ValueReader.read(listed, responses.last).getOrElse(Nil),
           done,
         )
       else if maxIterations.contains(done.size) then
@@ -507,7 +509,7 @@ private[iris] final class Emitting[F[_] : Async]
             case (call, None) => tools.run(call)
           .flatMap(results =>
             round(
-              Rounds.onwards(request, conversation, results),
+              QueryAgentService.onwards(request, conversation, results),
               progress,
               done,
             ),
@@ -520,21 +522,21 @@ private[iris] final class Emitting[F[_] : Async]
       progress: Progress,
     )
     : F[(Turn, Progress)] = calls.foldLeftM((Turn(), progress)):
-    case ((turn, progress), call) if call.tool == Emit.name =>
-      if turn.refused then (turn.said(Emit.skipped), progress).pure[F]
+    case ((turn, progress), call) if call.tool == Emitter.name =>
+      if turn.refused then (turn.said(Emitter.skipped), progress).pure[F]
       else
-        Emit.read(element, call) match
+        Emitter.read(element, call) match
           case Right(read) => feeds
-              .feed(Emit.stream, read)
-              .as((turn.said(Emit.taken), Progress(progress.fed + 1, 0)))
+              .feed(Emitter.stream, read)
+              .as((turn.said(Emitter.taken), Progress(progress.fed + 1, 0)))
           case Left(why) => (
-              turn.said(Emit.refused(why)).copy(refused = true),
+              turn.said(Emitter.refused(why)).copy(refused = true),
               progress.copy(wrong = progress.wrong + 1),
             ).pure[F]
-    case ((turn, progress), call) if call.tool == Emit.done =>
+    case ((turn, progress), call) if call.tool == Emitter.done =>
       (
         turn
-          .said(if turn.refused then Emit.skipped else Emit.unfinished)
+          .said(if turn.refused then Emitter.skipped else Emitter.unfinished)
           .copy(done = true),
         progress,
       ).pure[F]
@@ -560,7 +562,7 @@ private[iris] final class Emitting[F[_] : Async]
       why: String,
     )
     : F[Unit] = before
-    .flatTraverse(_.iterations.map(_.toVector))
+    .flatTraverse(_.attempts.map(_.toVector))
     .flatMap(earlier =>
       QueryError.Unreadable(why, earlier.toList ++ responses).raiseError,
     )
@@ -571,17 +573,17 @@ private[iris] final class Emitting[F[_] : Async]
       elements: List[Any],
       done: Vector[QueryResponse[F, Any]],
     )
-    : F[Unit] = elements.traverse_(feeds.feed(Emit.stream, _)) *>
-    feeds.end(Emit.stream) *> rounds.complete(Right(done.toList)).void
+    : F[Unit] = elements.traverse_(feeds.feed(Emitter.stream, _)) *>
+    feeds.end(Emitter.stream) *> rounds.complete(Right(done.toList)).void
 
   /** Fails the stream, and its rounds. */
   private def failed(error: Throwable): F[Unit] =
     rounds.complete(Left(error)) *> feeds.fail(error)
 
-private[iris] object Emitting:
+private[iris] object Emitter:
 
   /**
-    * Asks for a stream through [[Emit]], given at once, its rounds asked in a
+    * Asks for a stream through `emit`, given at once, its rounds asked in a
     * fiber of its own, which stops early only where the request, or its value,
     * is cancelled.
     */
@@ -595,33 +597,33 @@ private[iris] object Emitting:
       element: Schema[?],
     )
     : F[AgentResponse[F, A]] =
-    val offered = tools.offered(asked.prompt.tools) ++ Emit.tools(element)
-    Emit.unclaimed(asked.prompt.tools, offered).liftTo[F] *>
+    val offered = tools.offered(asked.prompt.tools) ++ Emitter.tools(element)
+    Emitter.unclaimed(asked.prompt.tools, offered).liftTo[F] *>
       (
-        Feeds[F],
+        StreamBuffers[F],
         Deferred[
           F,
           Either[Throwable, List[QueryResponse[F, Any]]],
         ],
       ).flatMapN((feeds, rounds) =>
-        feeds.open(Emit.stream) *>
-          Unfinished
-            .standIn(schema, feeds.live(Emit.stream))
+        feeds.open(Emitter.stream) *>
+          PartialParser
+            .standIn(schema, feeds.live(Emitter.stream))
             .leftMap(IllegalStateException(_))
             .liftTo[F]
             .flatMap(value =>
-              Emitting(
+              Emitter(
                 query,
                 tools,
                 element,
-                asked.maxIterations.getOrElse(QueryConfig().maxIterations),
+                asked.maxAttempts.getOrElse(QueryConfig().maxAttempts),
                 maxIterations,
                 feeds,
                 rounds,
               ).run(QueryRequest(
                   asked.prompt.copy(tools = offered),
-                  asked.maxIterations,
-                  Some(Emit.prompt),
+                  asked.maxAttempts,
+                  Some(Emitter.prompt),
                 ))
                 .start
                 .map(fiber =>
@@ -634,14 +636,13 @@ private[iris] object Emitting:
             ),
       )
 
-/**
-  * The tool through which an answer that is itself a stream gives its elements,
-  * one call of it each, where the ask runs tools, so that the model may call
-  * those between them, and the tool, [[done]], through which the model says it
-  * has given the last, so that the reply saying so ends the answer.
-  */
-private[iris] object Emit:
-
+  /**
+    * The name of the tool through which an answer that is itself a stream gives
+    * its elements, one call of it each, where the ask runs tools, so that the
+    * model may call those between them; [[done]] is that through which the
+    * model says it has given the last, so that the reply saying so ends the
+    * answer.
+    */
   val name: String = "emit"
 
   /** The name of the tool through which the model says it is done. */
@@ -675,7 +676,7 @@ private[iris] object Emit:
   /** What the model is told of the form its answer must take. */
   val prompt: String =
     s"Give your answer only through the `$name` tool, one call per element, in " +
-      "order, writing no other text. Emit each element as soon as you can, " +
+      "order, writing no other text. Emitter each element as soon as you can, " +
       "calling any other tool only when the next element needs it. You may " +
       "make several calls at once. Once every element has been emitted, call " +
       s"`$done` in that same reply, then stop. If there are no elements, " +
@@ -756,4 +757,4 @@ private[iris] object Emit:
     .toOption
     .flatMap(_.hcursor.downField("element").focus)
     .toRight("It gave no `element`.")
-    .flatMap(Reading.decoded(element, _))
+    .flatMap(ValueReader.decoded(element, _))

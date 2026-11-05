@@ -13,24 +13,29 @@ import fs2.concurrent.SignallingRef
   * and how it ended, once it has. Every element is kept for as long as the
   * stream is, so that it reads alike however often.
   */
-private[iris] final case class Feed
+private[iris] final case class StreamBuffer
   (
     elements: Vector[Any] = Vector.empty,
     end: Option[Either[Throwable, Unit]] = None,
   ):
 
-  def fed(element: Any): Feed = copy(elements = elements :+ element)
+  def fed(element: Any): StreamBuffer = copy(elements = elements :+ element)
 
   /** This feed ended, unless it has already. */
-  def ended(outcome: Either[Throwable, Unit]): Feed =
+  def ended(outcome: Either[Throwable, Unit]): StreamBuffer =
     if end.isDefined then this else copy(end = Some(outcome))
 
 /** The feeds of a value's streams, by number, each opened as it begins. */
-private[iris] final class Feeds[F[_] : Async]
-  (feeds: Ref[F, Map[Int, SignallingRef[F, Feed]]]):
+private[iris] final class StreamBuffers[F[_] : Async]
+  (
+    feeds: Ref[
+      F,
+      Map[Int, SignallingRef[F, StreamBuffer]],
+    ],
+  ):
 
   def open(stream: Int): F[Unit] = SignallingRef
-    .of[F, Feed](Feed())
+    .of[F, StreamBuffer](StreamBuffer())
     .flatMap(feed => feeds.update(_ + (stream -> feed)))
 
   def feed(stream: Int, element: Any): F[Unit] = feeds
@@ -64,26 +69,29 @@ private[iris] final class Feeds[F[_] : Async]
         ),
     )
 
-private[iris] object Feeds:
+private[iris] object StreamBuffers:
 
-  def apply[F[_] : Async]: F[Feeds[F]] = Ref
-    .of[F, Map[Int, SignallingRef[F, Feed]]](Map.empty)
-    .map(new Feeds(_))
+  def apply[F[_] : Async]: F[StreamBuffers[F]] = Ref
+    .of[
+      F,
+      Map[Int, SignallingRef[F, StreamBuffer]],
+    ](Map.empty)
+    .map(new StreamBuffers(_))
 
 /**
   * The reading of a value holding a stream as its response arrives: the value
   * given as soon as all of it but its streams is read, each stream then fed as
   * its elements close. Until then, a response that cannot be read is asked for
   * again, as one read whole is; afterwards, one that cannot be read to its end
-  * fails the streams not yet ended, and the query's iterations.
+  * fails the streams not yet ended, and the query's attempts.
   */
-private[iris] final class Unfolding[F[_] : Async, A]
+private[iris] final class LiveReader[F[_] : Async, A]
   (
     prompt: PromptService[F],
     schema: Schema[A],
-    iterations: Int,
+    attempts: Int,
     asked: PromptRequest,
-    feeds: Feeds[F],
+    feeds: StreamBuffers[F],
     value: Deferred[F, Either[Throwable, Option[A]]],
     ended: Deferred[
       F,
@@ -112,7 +120,7 @@ private[iris] final class Unfolding[F[_] : Async, A]
       sent: Vector[PromptResponse],
     )
     : F[Unit] = Async[F]
-    .delay(Unfinished(schema, feeds.live))
+    .delay(PartialParser(schema, feeds.live))
     .flatMap(unfinished =>
       prompt
         .stream(asked.copy(conversation = conversation))
@@ -141,28 +149,28 @@ private[iris] final class Unfolding[F[_] : Async, A]
   /** Does as an event of the response says, while it is still arriving. */
   private def performed
     (
-      unfinished: Unfinished,
+      unfinished: PartialParser,
       sent: Vector[PromptResponse],
     )
-    (event: Unfinished.Event)
+    (event: PartialParser.Event)
     : F[Unit] = event match
-    case Unfinished.Event.Opened(stream) => feeds.open(stream)
-    case Unfinished.Event.Read(0, read)  =>
+    case PartialParser.Event.Opened(stream) => feeds.open(stream)
+    case PartialParser.Event.Read(0, read)  =>
       value.complete(Right(Some(read.asInstanceOf[A]))).void
-    case Unfinished.Event.Read(stream, read) => feeds.feed(stream, read)
-    case Unfinished.Event.Ended(stream)      => feeds.end(stream)
-    case Unfinished.Event.Failed(detail)     => unreadable(
+    case PartialParser.Event.Read(stream, read) => feeds.feed(stream, read)
+    case PartialParser.Event.Ended(stream)      => feeds.end(stream)
+    case PartialParser.Event.Failed(detail)     => unreadable(
         sent :+ PromptResponse(unfinished.text, StopReason.Unknown),
         detail,
       )
 
   /**
     * Ends a response, checking it as a whole one is where its value was given
-    * already, and otherwise reading it whole, as [[Reading.verdict]] does.
+    * already, and otherwise reading it whole, as [[ValueReader.verdict]] does.
     */
   private def answered
     (
-      unfinished: Unfinished,
+      unfinished: PartialParser,
       conversation: Conversation,
       responses: Vector[PromptResponse],
     )
@@ -176,16 +184,16 @@ private[iris] final class Unfolding[F[_] : Async, A]
       .flatMap:
         case Some(_) =>
           fault(response, unfinished.whole).fold(done)(unreadable(responses, _))
-        case None => Reading.verdict(
+        case None => ValueReader.verdict(
             schema,
             conversation,
             response,
-            responses.size < iterations,
+            responses.size < attempts,
           ) match
-            case Reading.Verdict.Answered(read) =>
+            case ValueReader.Verdict.Answered(read) =>
               value.complete(Right(read)) *> done
-            case Reading.Verdict.Again(next) => attempt(next, responses)
-            case Reading.Verdict.Failed(why) => unreadable(responses, why)
+            case ValueReader.Verdict.Again(next) => attempt(next, responses)
+            case ValueReader.Verdict.Failed(why) => unreadable(responses, why)
 
   /**
     * Why the response a value was given from cannot end it, where it cannot: it
@@ -194,11 +202,11 @@ private[iris] final class Unfolding[F[_] : Async, A]
     */
   private def fault(response: PromptResponse, whole: Boolean): Option[String] =
     Option
-      .when(Reading.calledTools(response))(
+      .when(ValueReader.calledTools(response))(
         if whole then "It asked for a tool once its answer was given."
         else "It asked for a tool partway through its answer.",
       )
-      .orElse(Reading.hopeless(response))
+      .orElse(ValueReader.hopeless(response))
       .orElse(Option.unless(whole)("It ended before its JSON did."))
 
   private def unreadable
@@ -212,7 +220,7 @@ private[iris] final class Unfolding[F[_] : Async, A]
   private def failed(error: Throwable): F[Unit] = value.complete(Left(error)) *>
     ended.complete(Left(error)) *> feeds.fail(error)
 
-private[iris] object Unfolding:
+private[iris] object LiveReader:
 
   /**
     * Reads a value holding a stream, its response read to its end in a fiber of
@@ -223,11 +231,11 @@ private[iris] object Unfolding:
     (
       prompt: PromptService[F],
       schema: Schema[A],
-      iterations: Int,
+      attempts: Int,
       asked: PromptRequest,
     )
     : F[QueryResponse[F, A]] = (
-    Feeds[F],
+    StreamBuffers[F],
     Deferred[F, Either[Throwable, Option[A]]],
     Deferred[
       F,
@@ -240,10 +248,10 @@ private[iris] object Unfolding:
     val whole = ended.get.rethrow
     // Started and watched at once, so that no cancel falls between.
     Async[F].uncancelable(poll =>
-      Unfolding(
+      LiveReader(
         prompt,
         schema,
-        iterations,
+        attempts,
         asked,
         feeds,
         value,

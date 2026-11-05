@@ -22,9 +22,9 @@ import scala.util.matching.Regex
   * @param prompt
   *   The prompt each attempt sends.
   *
-  * @param maxIterations
+  * @param maxAttempts
   *   The most prompts to send for the value, the first included, or `None` for
-  *   the service's [[QueryConfig.maxIterations]].
+  *   the service's [[QueryConfig.maxAttempts]].
   *
   * @param instructions
   *   The words telling the model what form its response must take, closing the
@@ -33,7 +33,7 @@ import scala.util.matching.Regex
 final case class QueryRequest[A]
   (
     prompt: PromptRequest,
-    maxIterations: Option[Int] = None,
+    maxAttempts: Option[Int] = None,
     instructions: Option[String] = None,
   )
 
@@ -86,11 +86,11 @@ object QueryRequest:
   * The settings every [[QueryRequest]] to a service takes, unless it sets its
   * own.
   *
-  * @param maxIterations
+  * @param maxAttempts
   *   The most prompts to send for a value, the first included: asking again
   *   after a response that cannot be read, told why.
   */
-final case class QueryConfig(maxIterations: Int = 3)
+final case class QueryConfig(maxAttempts: Int = 3)
 
 /**
   * A value of a type as a [[QueryService]] gives it, read from what the model
@@ -108,7 +108,7 @@ final case class QueryConfig(maxIterations: Int = 3)
   *   tools instead. Each `fs2.Stream` within it delivers its elements as the
   *   model writes them, each time it is read, from the first.
   *
-  * @param iterations
+  * @param attempts
   *   Every response the query took, oldest first, once the last ends: the last
   *   is the one the value was read from. Where the last cannot be read to its
   *   end after the value was given, it fails as the value's streams not yet
@@ -118,7 +118,7 @@ final case class QueryConfig(maxIterations: Int = 3)
   * @param cancel
   *   Stops reading the last response, where it is still being read once the
   *   value was given, as it is for a type holding a stream: its streams not yet
-  *   ended, and its iterations, then fail with an `IllegalStateException`.
+  *   ended, and its attempts, then fail with an `IllegalStateException`.
   *   Otherwise it does nothing, as does a cancel once the response has ended.
   *
   * @param conversation
@@ -128,7 +128,7 @@ final case class QueryConfig(maxIterations: Int = 3)
 final case class QueryResponse[F[_], +A]
   (
     value: Option[A],
-    iterations: F[List[PromptResponse]],
+    attempts: F[List[PromptResponse]],
     cancel: F[Unit],
     conversation: F[Conversation],
   ):
@@ -140,7 +140,7 @@ final case class QueryResponse[F[_], +A]
     *   An effect producing the counts, once the last response ends.
     */
   def usage(using Functor[F]): F[Usage] =
-    iterations.map(_.foldLeft(Usage())(_ + _.usage))
+    attempts.map(_.foldLeft(Usage())(_ + _.usage))
 
   /**
     * What every response the query took cost, together.
@@ -150,7 +150,7 @@ final case class QueryResponse[F[_], +A]
     *   where any response has none, as from a model Iris does not list.
     */
   def cost(using Functor[F]): F[Option[Usd]] =
-    iterations.map(_.traverse(_.cost).map(_.foldLeft(Usd.zero)(_ + _)))
+    attempts.map(_.traverse(_.cost).map(_.foldLeft(Usd.zero)(_ + _)))
 
 /**
   * An error reading a value from what the model wrote.
@@ -181,7 +181,7 @@ enum QueryError(message: String) extends Exception(message):
       responses: List[PromptResponse],
     )
     extends QueryError(
-      s"The model's response could not be read as asked (iterations: ${ responses
+      s"The model's response could not be read as asked (attempts: ${ responses
           .size })",
     )
 
@@ -191,9 +191,9 @@ enum QueryError(message: String) extends Exception(message):
   * Schema, closing the conversation's last message of the user's, once, and
   * what it writes is read as JSON conforming to it. A response that cannot be
   * read is followed by why, and the model asked again, until one can be or the
-  * iterations run out, but not where asking again could not help: a response
-  * cut off at the token limit, stopped for a reason of the provider's, such as
-  * a refusal, or saying nothing. A response asking for a tool is given with no
+  * attempts run out, but not where asking again could not help: a response cut
+  * off at the token limit, stopped for a reason of the provider's, such as a
+  * refusal, or saying nothing. A response asking for a tool is given with no
   * value. A service is made from the prompt service it sends through, as
   * `prompt.query`.
   *
@@ -245,7 +245,7 @@ object QueryService:
       prompt: PromptService[F],
       config: QueryConfig = QueryConfig(),
     )
-    : QueryService[F] = Querying(prompt, config)
+    : QueryService[F] = PromptQueryService(prompt, config)
 
 extension [F[_] : Async](prompt: PromptService[F])
 
@@ -270,9 +270,9 @@ extension [F[_] : Async](prompt: PromptService[F])
 
 /**
   * A [[QueryService]]: a type holding a stream is read as its response arrives,
-  * by [[Unfolding]], and any other once it is whole.
+  * by [[LiveReader]], and any other once it is whole.
   */
-private[iris] final class Querying[F[_] : Async]
+private[iris] final class PromptQueryService[F[_] : Async]
   (
     prompt: PromptService[F],
     config: QueryConfig,
@@ -282,40 +282,37 @@ private[iris] final class Querying[F[_] : Async]
   override def send[A : Schema as A]
     (request: into[QueryRequest[A]])
     : F[QueryResponse[F, A]] =
-    val iterations = request.maxIterations.getOrElse(config.maxIterations)
-    val asked      = request
+    val attempts = request.maxAttempts.getOrElse(config.maxAttempts)
+    val asked    = request
       .prompt
       .copy(conversation =
-        Reading.opening(
+        ValueReader.opening(
           request.prompt.conversation,
-          request.instructions.getOrElse(Reading.schemaPrompt(A)),
+          request.instructions.getOrElse(ValueReader.schemaPrompt(A)),
         ),
       )
-    Reading.counted(iterations).liftTo[F] *>
-      (if A.gradual then Unfolding.read(prompt, A, iterations, asked)
-       else Reading.whole(prompt.send(_), A, iterations, asked))
+    ValueReader.counted(attempts).liftTo[F] *>
+      (if A.gradual then LiveReader.read(prompt, A, attempts, asked)
+       else ValueReader.whole(prompt.send(_), A, attempts, asked))
 
 /**
   * The reading of a value from what the model writes, one way for every type:
   * the model is told the type's JSON Schema, and what it writes read as JSON
   * conforming to it, or answered with why it could not be and asked again.
   */
-private[iris] object Reading:
+private[iris] object ValueReader:
 
   /** What the model is told of the form its response must take. */
   def schemaPrompt(schema: Schema[?]): String =
     "Reply with JSON alone, with no other text and no code fence, " +
       s"conforming to this JSON Schema:\n${ schema.json.noSpaces }"
 
-  /** Refuses fewer than one iteration. */
-  def counted(iterations: Int): Either[IllegalArgumentException, Unit] = Either
-    .cond(
-      iterations >= 1,
-      (),
-      IllegalArgumentException(
-        s"At least one iteration is needed, not $iterations.",
-      ),
-    )
+  /** Refuses a limit below one. */
+  def counted(most: Int): Either[IllegalArgumentException, Unit] = Either.cond(
+    most >= 1,
+    (),
+    IllegalArgumentException(s"A limit of at least one is needed, not $most."),
+  )
 
   /**
     * The conversation to send first: closing the user's last message with the
@@ -384,7 +381,7 @@ private[iris] object Reading:
     (
       send: PromptRequest => F[PromptResponse],
       schema: Schema[A],
-      iterations: Int,
+      attempts: Int,
       asked: PromptRequest,
     )
     : F[QueryResponse[F, A]] =
@@ -400,7 +397,7 @@ private[iris] object Reading:
           schema,
           conversation,
           response,
-          responses.size < iterations,
+          responses.size < attempts,
         ) match
           case Verdict.Answered(value) => QueryResponse(
               value,

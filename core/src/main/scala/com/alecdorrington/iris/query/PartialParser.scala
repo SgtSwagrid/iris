@@ -2,7 +2,7 @@ package com.alecdorrington.iris
 package query
 
 import cats.syntax.all.*
-import com.alecdorrington.iris.query.Unfinished.{Event, Expect, Frame, State}
+import com.alecdorrington.iris.query.PartialParser.{Event, Expect, Frame, State}
 import io.circe.{Decoder, HCursor, Json}
 import io.circe.parser.parse
 import io.circe.syntax.*
@@ -26,7 +26,7 @@ import scala.util.DynamicVariable
   *   The stream to hand over for each stream opened, by its number, counting
   *   from `1`.
   */
-private[iris] final class Unfinished(schema: Schema[?], live: Int => Any):
+private[iris] final class PartialParser(schema: Schema[?], live: Int => Any):
 
   private val written = StringBuilder()
 
@@ -250,7 +250,7 @@ private[iris] final class Unfinished(schema: Schema[?], live: Int => Any):
     val opening = ListBuffer.empty[Event]
     val holes   = ListBuffer.empty[(Json, Any)]
     built(path, index + 1, opening, holes)
-      .flatMap(json => Unfinished.holding(holes.toList)(read(element, json)))
+      .flatMap(json => PartialParser.holding(holes.toList)(read(element, json)))
       .fold(
         failed,
         value =>
@@ -293,7 +293,7 @@ private[iris] final class Unfinished(schema: Schema[?], live: Int => Any):
               .map(member => member -> reserved(frame, member, opening, holes)),
           ),
         ).mapN(_ ++ _ ++ _).map(frame.json)
-      case Arrival.Whole => Left(Unfinished.unparsed)
+      case Arrival.Whole => Left(PartialParser.unparsed)
 
   /**
     * Opens a stream begun within a value being handed over, with the elements
@@ -347,11 +347,11 @@ private[iris] final class Unfinished(schema: Schema[?], live: Int => Any):
     opening += Event.Opened(streams)
     streams -> hole
 
-  private def read(schema: Schema[?], json: Json): Either[String, Any] = Reading
-    .decoded(schema, json)
+  private def read(schema: Schema[?], json: Json): Either[String, Any] =
+    ValueReader.decoded(schema, json)
 
   private def parsed(start: Int, end: Int): Either[String, Json] =
-    parse(written.substring(start, end)).leftMap(_ => Unfinished.unparsed)
+    parse(written.substring(start, end)).leftMap(_ => PartialParser.unparsed)
 
   /**
     * Stops reading, saying why where the answer was handed over already, and
@@ -361,12 +361,12 @@ private[iris] final class Unfinished(schema: Schema[?], live: Int => Any):
     if answered then events += Event.Failed(why)
     state = State.Lost
 
-  private def lost(): Unit = failed(Unfinished.unparsed)
+  private def lost(): Unit = failed(PartialParser.unparsed)
 
   private def delimits(char: Char): Boolean = char.isWhitespace ||
     char == ',' || char == ']' || char == '}' || char == ':'
 
-private[iris] object Unfinished:
+private[iris] object PartialParser:
 
   private val unparsed = "It is not JSON."
 
@@ -397,7 +397,7 @@ private[iris] object Unfinished:
     */
   def standIn(schema: Schema[?], stream: Any): Either[String, Any] =
     val hole = Json.obj("stream" -> Json.fromInt(0))
-    holding(List(hole -> stream))(Reading.decoded(schema, hole))
+    holding(List(hole -> stream))(ValueReader.decoded(schema, hole))
 
   /** Reads with the streams that placeholders stand for. */
   private def holding[A](filled: List[(Json, Any)])(read: => A): A = holes
