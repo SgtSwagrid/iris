@@ -51,7 +51,14 @@ final case class PromptRequest
     effort: Option[Effort] = None,
     tools: List[Tool] = List.empty,
     cacheAll: Boolean = false,
-  )
+  ):
+
+  /**
+    * Whether the request warms the cache, as [[PromptService.warmCache]] sends
+    * it: asking for no tokens of response, which no other request does, so that
+    * a middleware may treat warming apart, as by charging it nothing.
+    */
+  def warming: Boolean = maxTokens.contains(0)
 
 object PromptRequest:
 
@@ -175,6 +182,24 @@ final case class PromptResponse
   /** The model's message, its text and tool calls. */
   def message: Message = Message.Model(
     Option.when(text.nonEmpty)(MessagePart.Text(text)).toList ++ toolCalls,
+  )
+
+  /**
+    * The events of this response, as [[PromptService.stream]] would give it
+    * whole: its text, each tool call, and its end, so that a service answering
+    * whole, as a cache or a test's fake does, is read alike however it is read.
+    */
+  def events: List[PromptEvent] = List.concat(
+    Option.when(text.nonEmpty)(
+      PromptEvent.Written(PromptEvent.Part.Text, text),
+    ),
+    toolCalls.map(call =>
+      PromptEvent.Written(
+        PromptEvent.Part.Call(call.id, call.tool, call.signature),
+        call.arguments,
+      ),
+    ),
+    List(PromptEvent.Ended(this)),
   )
 
 /**
@@ -391,6 +416,24 @@ trait PromptService[F[_]]:
     *   A service spending from the budget.
     */
   final def limitedBy(budget: Budget[F]): PromptService[F] = budget.limits(this)
+
+object PromptService:
+
+  /**
+    * A service answering each request whole, as a cache or a test's fake does,
+    * its response given as its [[PromptResponse.events]].
+    *
+    * F The effect type.
+    *
+    * respond Answers a request.
+    *
+    * The service.
+    */
+  def of[F[_]](respond: PromptRequest => F[PromptResponse]): PromptService[F] =
+    request =>
+      Stream
+        .eval(respond(request))
+        .flatMap(response => Stream.emits(response.events))
 
 /**
   * Counts the tokens of a conversation as its model's provider would, where it

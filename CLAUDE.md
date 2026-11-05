@@ -40,7 +40,9 @@ from the one below, with a request, a response, a configuration and errors of it
   exchange of text, made by `model.prompt` (a `ProviderModel`'s). `ProviderPromptService` implements it over an `ApiService`,
   writing bodies and reading responses as the model's `Provider` says, through the internal `ProviderEvent`, which it gathers
   into `PromptEvent`s, pricing the response at its end. `metered` and `Budget.limits` (`limitedBy`) are its
-  middleware. `TokenCounter` (`model.counter(api)`) stands apart, as counting is no prompt.
+  middleware. `PromptService.of` answers whole (`PromptResponse.events`), as hosts' caches and fakes do, and
+  `PromptRequest.warming` names what `warmCache` sends (`maxTokens` 0), as both hosts' ports wrote these themselves.
+  `TokenCounter` (`model.counter(api)`) stands apart, as counting is no prompt.
 - `query` (`QueryService`, `QueryRequest`, `QueryResponse`, `QueryConfig`, `QueryError`): a value of any type with a
   `Schema`, made by `prompt.query`.
 - `agent` (`AgentService`, `AgentRequest`, `AgentResponse`, `AgentConfig`): a value with tools run, made by
