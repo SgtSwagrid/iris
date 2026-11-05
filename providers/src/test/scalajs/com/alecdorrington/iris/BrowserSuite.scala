@@ -17,4 +17,4 @@ class BrowserSuite extends FunSuite:
     )
 
   test("there is no environment to configure a model from"):
-    assertEquals(Providers.fromEnv(), None)
+    assertEquals(Providers.from(), None)

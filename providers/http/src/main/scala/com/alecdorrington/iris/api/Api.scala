@@ -164,37 +164,6 @@ object ApiConfig:
   /** The longest a request is waited for, unless configured otherwise. */
   val defaultTimeout: FiniteDuration = 5.minutes
 
-  /**
-    * Reads a configuration from the environment: `LLM_BASE_URL` and
-    * `LLM_TIMEOUT` (in whole seconds), the key left to the provider's own
-    * variable.
-    *
-    * @return
-    *   The configuration, or `None` where `LLM_TIMEOUT` is set but is no
-    *   positive number.
-    */
-  def fromEnv(): Option[ApiConfig] = from(Environment.variable)
-
-  /**
-    * Reads a configuration from variables, as [[fromEnv]] does.
-    *
-    * @param variable
-    *   Looks up a variable by name.
-    *
-    * @return
-    *   The configuration, or `None` where `LLM_TIMEOUT` is set but is no
-    *   positive number.
-    */
-  def from(variable: String => Option[String]): Option[ApiConfig] =
-    variable("LLM_TIMEOUT")
-      .fold(Some(defaultTimeout))(Environment.positive(_).map(_.seconds))
-      .map(timeout =>
-        ApiConfig(
-          baseUrl = variable("LLM_BASE_URL"),
-          timeout = timeout,
-        ),
-      )
-
   /** The wait a refusal for now asks for, where it is one. */
   private def asked(error: Throwable): Option[Option[FiniteDuration]] =
     error match

@@ -1,13 +1,12 @@
 package com.alecdorrington.iris
 package providers
 
-import cats.effect.{Async, Resource}
-import cats.syntax.all.*
 import com.alecdorrington.iris.anthropic.*
 import com.alecdorrington.iris.api.*
 import com.alecdorrington.iris.gemini.*
 import com.alecdorrington.iris.openai.*
 import com.alecdorrington.iris.prompt.*
+import scala.concurrent.duration.DurationInt
 
 /**
   * Every provider Iris has, for choosing one and its model at runtime, as from
@@ -63,27 +62,34 @@ object Providers:
     .find(_.id.equalsIgnoreCase(name.trim))
 
   /**
-    * Reads the model from the environment: by `LLM_MODEL`, as [[model]] reads
-    * it, else the default model of the provider `LLM_PROVIDER` names, else that
-    * of the first provider whose key is set.
+    * Reads what the environment configures, every variable through one lookup:
+    * the model by `LLM_MODEL`, as [[model]] reads it, else the default model of
+    * the provider `LLM_PROVIDER` names, else that of the first provider whose
+    * key is set; how its API is reached by the provider's key, `LLM_BASE_URL`
+    * and `LLM_TIMEOUT` (in whole seconds); and its settings by
+    * `LLM_MAX_TOKENS`.
     *
-    * @return
-    *   The model, or `None` where none is configured, or a variable is set but
-    *   unrecognised, as a set but unknown provider or model is never taken to
-    *   mean another.
-    */
-  def fromEnv(): Option[ProviderModel] = from(Environment.variable)
-
-  /**
-    * Reads the model from variables, as [[fromEnv]] does.
+    * {{{
+    * Providers.from().traverse(found => found.model.prompt[IO](found.api, found.config))
+    * }}}
     *
     * @param variable
-    *   Looks up a variable by name.
+    *   Looks up a variable by name, as from the environment, by default.
+    *
+    * @param defaultMaxTokens
+    *   The most tokens a response may take where `LLM_MAX_TOKENS` is unset.
     *
     * @return
-    *   The model, or `None` where none is configured.
+    *   The model, how its API is reached and its settings, or `None` where none
+    *   is configured, or a variable is set but cannot be used, as a set but
+    *   unknown provider or model is never taken to mean another.
     */
-  def from(variable: String => Option[String]): Option[ProviderModel] =
+  def from
+    (
+      variable: String => Option[String] = Environment.variable,
+      defaultMaxTokens: Int = PromptConfig.defaultMaxTokens,
+    )
+    : Option[(model: ProviderModel, api: ApiConfig, config: PromptConfig)] =
     val named = variable("LLM_MODEL")
     for
       provider <- variable("LLM_PROVIDER").fold(
@@ -94,27 +100,27 @@ object Providers:
       model <- named.fold(Some(provider.defaultModel))(model(_).filter(
         _.provider == provider,
       ))
-      _ <- provider.key(variable)
-    yield model
+      key     <- provider.key(variable)
+      timeout <- variable("LLM_TIMEOUT").fold(Some(ApiConfig.defaultTimeout))(
+        Environment.positive(_).map(_.seconds),
+      )
+      maxTokens <- variable("LLM_MAX_TOKENS").fold(
+        Some(defaultMaxTokens),
+      )(Environment.positive)
+    yield (
+      model = model,
+      api = ApiConfig(
+        key = Some(key),
+        baseUrl = variable("LLM_BASE_URL"),
+        timeout = timeout,
+      ),
+      config = PromptConfig(maxTokens = maxTokens),
+    )
 
-  /**
-    * Makes the prompt service the environment configures: its model by
-    * [[fromEnv]], its API by `ApiConfig.fromEnv` and its settings by
-    * `PromptConfig.fromEnv`.
-    *
-    * @tparam F
-    *   The effect type.
-    *
-    * @param defaultMaxTokens
-    *   The most tokens a response may take where `LLM_MAX_TOKENS` is unset.
-    *
-    * @return
-    *   A resource holding the service, or `None` where the environment
-    *   configures none.
-    */
-  def prompt[F[_] : Async]
-    (defaultMaxTokens: Int = PromptConfig.defaultMaxTokens)
-    : Resource[F, Option[PromptService[F]]] =
-    (fromEnv(), ApiConfig.fromEnv(), PromptConfig.fromEnv(defaultMaxTokens))
-      .tupled
-      .traverse((model, api, config) => model.prompt[F](api, config))
+  /** Every variable [[from]] reads, the providers' keys among them. */
+  val variables: List[String] = List("LLM_PROVIDER", "LLM_MODEL") ++
+    all.flatMap(_.keyVariables) ++ List(
+      "LLM_BASE_URL",
+      "LLM_TIMEOUT",
+      "LLM_MAX_TOKENS",
+    )

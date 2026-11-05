@@ -73,10 +73,12 @@ user asked for, cancels that fiber); tests in `SyncIO` ask through `Fixtures.ask
 over a prompt service's `send`. Each provider is one object implementing `Provider` (`Anthropic`, `OpenAi`,
 `Gemini`, sharing `JsonHttp`), whose `private[iris]` members tell `HttpApiService` and `ProviderPromptService` all they need to know of it: its paths,
 request bodies, credentials, the conversations it refuses, how its responses read, and how it counts tokens.
-Anything provider-specific goes there, never in the services. `Providers.fromEnv`, `ApiConfig.fromEnv` and
-`PromptConfig.fromEnv` read `LLM_*` and the providers' `*_API_KEY` variables (each `from` through a lookup of the
-host's), `Providers.prompt` all three, with the token limit when `LLM_MAX_TOKENS` is unset a parameter, for
-hosts whose responses run longer. A key not configured is read from the provider's variable when its `ApiService`
+Anything provider-specific goes there, never in the services. `Providers.from` reads `LLM_*` and the providers'
+`*_API_KEY` variables, every one through one lookup (the environment's by default), the key too, giving the model,
+its `ApiConfig` and its `PromptConfig` together, with the token limit when `LLM_MAX_TOKENS` is unset a parameter,
+for hosts whose responses run longer; `Providers.variables` names them all. One reader, as three readers each
+taking a lookup let the key be read from the real environment while the provider was chosen by the lookup's
+(found in Themis's port, 2026-11-05). A key not configured is read from the provider's variable when its `ApiService`
 is made, and a request with none fails with `ApiError.Misconfigured`.
 
 - Names are plain and of one sense (the user's 0.5.0 naming pass): never a name as readily taken for a verb as for

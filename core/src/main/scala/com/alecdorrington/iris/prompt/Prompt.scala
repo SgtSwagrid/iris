@@ -131,41 +131,6 @@ object PromptConfig:
   /** The most tokens the model may write, unless configured otherwise. */
   val defaultMaxTokens: Int = 8192
 
-  /**
-    * Reads a configuration from the environment: `LLM_MAX_TOKENS`.
-    *
-    * @param defaultMaxTokens
-    *   The most tokens where `LLM_MAX_TOKENS` is unset.
-    *
-    * @return
-    *   The configuration, or `None` where `LLM_MAX_TOKENS` is set but is no
-    *   positive number.
-    */
-  def fromEnv(defaultMaxTokens: Int = defaultMaxTokens): Option[PromptConfig] =
-    from(Environment.variable, defaultMaxTokens)
-
-  /**
-    * Reads a configuration from variables, as [[fromEnv]] does.
-    *
-    * @param variable
-    *   Looks up a variable by name.
-    *
-    * @param defaultMaxTokens
-    *   The most tokens where `LLM_MAX_TOKENS` is unset.
-    *
-    * @return
-    *   The configuration, or `None` where `LLM_MAX_TOKENS` is set but is no
-    *   positive number.
-    */
-  def from
-    (
-      variable: String => Option[String],
-      defaultMaxTokens: Int = defaultMaxTokens,
-    )
-    : Option[PromptConfig] = variable("LLM_MAX_TOKENS")
-    .fold(Some(defaultMaxTokens))(Environment.positive)
-    .map(maxTokens => PromptConfig(maxTokens = maxTokens))
-
 /** A request's settings, resolved against its service's configuration. */
 private[iris] final case class Settings
   (
