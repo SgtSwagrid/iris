@@ -5,12 +5,12 @@ provider, no HTTP and no code of one platform's. The repository's [CLAUDE.md](..
 what every module shares.
 
 - `QueryService.send[A : Schema]` reads every type one way, `String` included, and always gives a
-  `QueryResponse[F, A]`: `value: Option[A]`, `None` where the model asked for a tool, and `iterations`, every
+  `QueryResponse[F, A]`: `value: Option[A]`, `None` where the model asked for a tool, and `attempts`, every
   response the query took, the last the one the value was read from. Tool calls count only under `ToolCall`,
-  `Completed` or `StopSequence` (`Reading.calledTools`), never under a refusal or the token limit. Never read one type differently from another, as
+  `Completed` or `StopSequence` (`ValueReader.calledTools`), never under a refusal or the token limit. Never read one type differently from another, as
   0.2's `Answer` type class once did, nor give some types a different result: the user wants every ask
   uniform. The provider's own response is a `PromptResponse`, which a prompt's `send` and `warmCache` give. A query is built on
-  its prompt service alone, provider-agnostic, passing `Reading.whole` its `send` as a function: the schema is asked for in words closing the
+  its prompt service alone, provider-agnostic, passing `ValueReader.whole` its `send` as a function: the schema is asked for in words closing the
   last user message (never the system message, so a cached prefix is sent alike), not through a provider's
   native structured output. It stays after every breakpoint of the host's, so is never cached with the host's
   prefix (only within an ask, by a round's, above), by the user's choice on the
@@ -111,28 +111,28 @@ what every module shares.
   place of it (the user wants the model to read both), joined as paragraphs, then any `described` words. `imap`/`emap` are inline so as to read the target type's. Test derivation from
   outside the package (`SchemaSuite` is in `com.alecdorrington.example`), as inline code reaches private
   helpers only through accessors.
-- A query of a type holding an `fs2.Stream` (`Unfolding`) gives its `QueryResponse` as soon as all of `A` but its streams is
+- A query of a type holding an `fs2.Stream` (`LiveReader`) gives its `QueryResponse` as soon as all of `A` but its streams is
   read; each stream (not within a list or map, which are read whole)
   is then fed as its elements close. The user chose live streams in the value over snapshots of a partial value,
   knowing the costs: `Schema[Stream[F, A]]`'s encoder throws (a stream cannot be said without being run), nothing is
   asked again once handed over (a later failure fails the unfinished streams and `responses`: `UnreadableResponse` for a reply,
   a request's own error), and `F` must be the client's (the cast is unchecked). Tool calls stream as
-  `Delta.ToolCall`, each once whole (Anthropic's and OpenAI's argument fragments gathered by a `Calling`), so a streamed
+  `ProviderEvent.ToolCall`, each once whole (Anthropic's and OpenAI's argument fragments gathered by a `PartialToolCall`), so a streamed
   ask takes tools as any does. The model is told a stream as an array, the same schema as a `List`. Each schema's `Arrival` says how it is read early (`Whole`, `Streamed`, or `Assembled` from
   members, by key or index, `ready` once those begun have settled, giving the streams still to come); fields are
   taken to be written in order (`Schema.awaited`), so an optional one absent before a begun one is left out, and
   required streams after the last begun are handed over before they begin (`Frame.coming`), so that every trailing
   stream of a value is live. A value is handed over before it is whole only while a member it is writing is open and
-  read already (`Unfinished.open`): until a stream begins, a reply that cannot be read can still be asked again, and
+  read already (`PartialParser.open`): until a stream begins, a reply that cannot be read can still be asked again, and
   a union whose case is whole waits to be whole itself. So how a reply's parts arrive can decide whether a value is
   given early (a stream opening and closing within one part is never seen open); tests that mean a stream to be
   seen open feed it a character at a time. A given answer's reply is checked at its end as `verdict` checks one
-  (`Unfolding.fault`): tool calls, a stop, the token limit or unended JSON fail it as `UnreadableResponse`. Once a value is handed over (`Frame.taken`), a member it
-  knows arriving later, or a reserved stream never begun, fails the reply rather than be lost. `Unfinished` follows only brackets, strings,
+  (`LiveReader.fault`): tool calls, a stop, the token limit or unended JSON fail it as `UnreadableResponse`. Once a value is handed over (`Frame.taken`), a member it
+  knows arriving later, or a reserved stream never begun, fails the reply rather than be lost. `PartialParser` follows only brackets, strings,
   escapes, commas and colons
   (circe parses each value once whole, and the schema's own decoder reads it, so every value is decoded by the
   same code as a whole reply), standing in for each open stream with a placeholder `Json` found by identity
   through a `DynamicVariable` while decoding. A type with no stream is not read early, but at the end through
-  `Reading.verdict`, as a whole query reads it. `Unfolding` drives it in a background fiber, keeping each stream's elements
+  `ValueReader.verdict`, as a whole query reads it. `LiveReader` drives it in a background fiber, keeping each stream's elements
   and end in a `SignallingRef` (never a `Channel`, which serves one reader), so a stream reads alike however often,
   as `Stream.emits` from a whole reply does.

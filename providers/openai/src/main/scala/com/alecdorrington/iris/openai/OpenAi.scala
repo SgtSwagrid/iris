@@ -174,7 +174,7 @@ object OpenAi extends Provider:
     */
   override private[iris] def deltas[F[_] : RaiseThrowable]
     (events: Stream[F, Json])
-    : Stream[F, Delta] = events
+    : Stream[F, ProviderEvent] = events
     .noneTerminate
     .zipWithScan1(Ending())((ending, event) => event.fold(ending)(ending.after))
     .flatMap:
@@ -317,7 +317,7 @@ object OpenAi extends Provider:
     toolCall = Some("tool_calls"),
   )
 
-  private def textDelta(event: Json): Option[Delta] = event
+  private def textDelta(event: Json): Option[ProviderEvent] = event
     .hcursor
     .downField("choices")
     .downN(0)
@@ -325,7 +325,7 @@ object OpenAi extends Provider:
     .get[String]("content")
     .toOption
     .filter(_.nonEmpty)
-    .map(Delta.Text.apply)
+    .map(ProviderEvent.Text.apply)
 
   /**
     * What a stream has said so far of how it ended: why it stopped, its token
@@ -336,7 +336,7 @@ object OpenAi extends Provider:
     (
       reason: Option[String] = None,
       counts: Option[TokenCounts] = None,
-      calls: Map[Int, Calling] = Map.empty,
+      calls: Map[Int, PartialToolCall] = Map.empty,
     ):
 
     def after(event: Json): Ending =
@@ -356,7 +356,11 @@ object OpenAi extends Provider:
       )
 
     /** The calls, with a fragment of one. */
-    private def called(calls: Map[Int, Calling], fragment: Json) =
+    private def called
+      (
+        calls: Map[Int, PartialToolCall],
+        fragment: Json,
+      ) =
       val cursor   = fragment.hcursor
       val function = cursor.downField("function")
       cursor
@@ -369,17 +373,17 @@ object OpenAi extends Provider:
                 (
                   cursor.get[String]("id").toOption,
                   function.get[String]("name").toOption,
-                ).mapN(Calling(_, _)),
+                ).mapN(PartialToolCall(_, _)),
               )
               .map(_.more(function.get[String]("arguments").getOrElse(""))),
           ),
         )
 
     /** The tool calls and end of the reply, where it said why it stopped. */
-    def end: List[Delta] = reason
+    def end: List[ProviderEvent] = reason
       .toList
       .flatMap(reason =>
-        calls.toList.sortBy(_._1).map(_._2.whole) :+ Delta.End(
+        calls.toList.sortBy(_._1).map(_._2.whole) :+ ProviderEvent.End(
           stopReason(Some(reason)),
           counts.fold(Usage())(_.toUsage),
         ),

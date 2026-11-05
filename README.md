@@ -143,8 +143,8 @@ yield second.text
 
 The query layer asks for a value of any type, `String` included, alike for every type: a
 [`QueryResponse`](core/src/main/scala/com/alecdorrington/iris/query/Query.scala) holding its `value`, read and validated against the
-type's schema, and its `iterations`, an effect giving every `PromptResponse` it took, the last the one the
-value was read from; `usage` and `cost` total them. The iterations are an effect as a value may be given
+type's schema, and its `attempts`, an effect giving every `PromptResponse` it took, the last the one the
+value was read from; `usage` and `cost` total them. The attempts are an effect as a value may be given
 before the last ends (see [Streaming](#streaming)); for most types it has ended already. Every case class,
 sealed trait and enum whose fields have one has a [`Schema`](core/src/main/scala/com/alecdorrington/iris/query/Schema.scala), derived wherever it is
 needed, and the model is told the [JSON Schema](https://json-schema.org) its response must conform to, which is read
@@ -167,8 +167,8 @@ deeply that deriving it goes beyond the compiler's limit of inlines, which `-Xma
 
 A response that cannot be read, as one that is not JSON or leaves a field out, is answered with every reason
 it could not be, and the model is asked again, three times in all unless the service's
-`QueryConfig.maxIterations`, or the request's own, says otherwise, as in
-`query.send[Review](QueryRequest(PromptRequest(conversation), maxIterations = Some(5)))`. JSON is read from the whole reply, or else from its last code
+`QueryConfig.maxAttempts`, or the request's own, says otherwise, as in
+`query.send[Review](QueryRequest(PromptRequest(conversation), maxAttempts = Some(5)))`. JSON is read from the whole reply, or else from its last code
 fence, though the model is asked for JSON alone; JSON amid prose with no fence is asked for again. The model
 is told what was wrong as circe says it. A reply asking for a tool is given at once, with no `value`. A reply
 that asking again could not help fails at once: one cut off at the token limit, which is never read, as what
@@ -403,8 +403,8 @@ The model is told the same JSON Schema either way, a stream being an array, so i
 only its reading differs. The response goes on being read in a fiber of its own once the value is given, to
 its end, even where nothing reads its streams, so its tokens are spent and its connection held to its end,
 unless `answer.cancel` stops it, closing its connection as a dropped stream does: its streams not yet ended,
-and its `iterations`, then fail with an `IllegalStateException`. A failure of the response reaches only its
-streams and `iterations`, unseen where neither is read. A stream may be read as often as you like, each time
+and its `attempts`, then fail with an `IllegalStateException`. A failure of the response reaches only its
+streams and `attempts`, unseen where neither is read. A stream may be read as often as you like, each time
 from its first element, keeping every element as long as it is held, and streams may be nested, as a stream
 of pages each with a stream of words. A query needs `Async`, to read in a fiber.
 
@@ -424,7 +424,7 @@ ends with it; what follows, which a response read whole would be refused for, is
 is given, a response that cannot be read is answered and asked again, as for any type; one that does not
 begin with its JSON, or a code fence holding it, is read only once whole. Once the value is given it is
 never asked for again: what fails afterwards fails each of its streams not yet ended, after the elements
-they delivered already, and `iterations`. A response that cannot be read to its end, as one cut off at the
+they delivered already, and `attempts`. A response that cannot be read to its end, as one cut off at the
 token limit, stopped by the provider, asking for a tool, or with an element that cannot be read, fails with
 `QueryError.Unreadable`, as a whole response would, and a request failing partway, as on a timeout, fails
 as it would anywhere.
@@ -438,7 +438,7 @@ a `Schema`, which describes them to the model and reads them back; arguments tha
 JSON, are answered with why, for the model to call it again. A `run` that fails fails the request with its
 error, the model not told, so turn any failure the model should hear of into output instead. Each round
 is a query of its own, going on from the conversation the last one ended with, so it has its own
-`maxIterations` attempts. An agent runs tools for as long as the model asks for them, unless its own
+`maxAttempts` attempts. An agent runs tools for as long as the model asks for them, unless its own
 `maxIterations` (in `AgentConfig`, or an `AgentRequest` for one request) caps the rounds: the last round's
 response is then given with no value, its calls not run, and a stream given through `emit` fails. Each round
 is a request, so bound what an agent may spend with a [budget](#budgets) either way.
@@ -465,7 +465,7 @@ response giving its last element, the model calls a second tool of Iris's, `done
 stream with no request after it; a model that does not stops in a response of its own, a request later.
 `done` is not taken in a response that also asks for another tool, or gives an element that cannot be read,
 and the stream goes on. An element that cannot be read is answered with why, and the model emits it again,
-and those after it, up to the query's `maxIterations` times for each element. A model writing its elements as
+and those after it, up to the query's `maxAttempts` times for each element. A model writing its elements as
 a JSON array instead has them read from its response once it ends, and is asked again where they cannot be.
 A response cut off at the token limit, or stopped, ends the stream with `QueryError.Unreadable` after the
 elements it gave, as a failing `run` ends it with its error. Taking only some of the elements does not stop
@@ -490,7 +490,7 @@ val weather = Tool("weather", "Looks up the weather.", schema)
 
 for
   asked    <- query.send[String](PromptRequest(conversation, tools = List(weather)))
-  sent     <- asked.iterations
+  sent     <- asked.attempts
   call      = sent.last.toolCalls.head
   result    = MessagePart.ToolResult(call.id, "weather", lookUp(call))
   answer   <- query.send[String](PromptRequest(
@@ -591,11 +591,11 @@ case ApiError.RateLimited(provider, wait, _) =>
 case ApiError.Overloaded(provider, _, _) => s"$provider is busy. Try again soon."
 ```
 
-`ApiConfig` says how many tries to make (`maxIterations`, the first included, so `1` sends each once), how
+`ApiConfig` says how many times to send a request again (`maxRetries`, after the first, so `0` sends each once), how
 long to wait where the provider names no wait (`backoff`), and how long to wait in all (`patience`):
 
 ```scala
-model.prompt[IO](api = ApiConfig(maxIterations = 6, backoff = 2.seconds, patience = 5.minutes))
+model.prompt[IO](api = ApiConfig(maxRetries = 5, backoff = 2.seconds, patience = 5.minutes))
 ```
 
 Nothing else is sent again, as waiting cannot change it: a refused key, a request the provider cannot take,
@@ -638,7 +638,7 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
 | `ModelClient(config, backend)`                        | `model.prompt(model.provider.api(apiConfig, backend), promptConfig)` |
 | `client.ask[A](conversation, options, attempts)`      | `prompt.query.send[A](QueryRequest(PromptRequest(conversation, ...), Some(attempts)))` |
 | `client.ask[A](conversation, tools = tools)`          | `prompt.query.agent(tools*).send[A](conversation)`                   |
-| `ValidatedResponse`, its `responses`                  | `QueryResponse`, its `iterations` (an agent's `AgentResponse.responses`) |
+| `ValidatedResponse`, its `responses`                  | `QueryResponse`, its `attempts` (an agent's `AgentResponse.responses`) |
 | `client.stream(request)`, `Delta`                     | `prompt.stream(request)`, `PromptEvent`                              |
 | `ModelRequest(conversation, ModelRequest.Options(...))` | `PromptRequest(conversation, ...)`, its settings flat              |
 | `ModelResponse`                                       | `PromptResponse`                                                     |
@@ -653,7 +653,7 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
 | `Model`, `Model.parse`, `Model.listed`                | `ProviderModel`, `Providers.model`, each provider's `listed`        |
 | `ModelProvider.Anthropic`, `ModelProvider.parse`      | `Anthropic` (a `Provider`), `Providers.provider`                     |
 | `Rates.listed(model, at)`                             | `model.rates(at)`                                                    |
-| `Retries(attempts, backoff, patience)`, `Retries.none` | `ApiConfig(maxIterations = ..., backoff = ..., patience = ...)`, `maxIterations = 1` |
+| `Retries(attempts, backoff, patience)`, `Retries.none` | `ApiConfig(maxRetries = ..., backoff = ..., patience = ...)`, `maxRetries = 0` |
 | `ModelError`                                          | `ApiError`, `PromptError`, `QueryError` (`UnreadableResponse` is `QueryError.Unreadable`) |
 | `Chat`, a request's `chat`                            | `Conversation`, its `conversation`                                   |
 
@@ -669,7 +669,7 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
 - A `Content` writes a value as text (`MessagePart.Text`), and a part goes into a message as itself,
   where its message holds its kind: a type's own content may no longer write it as media.
 - A service made by `model.prompt[F]()` or over a backend that can stream waits out a provider's
-  refusals for now, as [Rate limits](#rate-limits) says. Give its `ApiConfig` `maxIterations = 1` to have
+  refusals for now, as [Rate limits](#rate-limits) says. Give its `ApiConfig` `maxRetries = 0` to have
   each refusal at once, as before.
 - A refusal for now is `ApiError.RateLimited` (`429`) or `ApiError.Overloaded` (`503`, `529`), and a
   failure for now `ApiError.Transient` (`408`, `409`, `500`, `502`, `504`), which carry the wait asked
@@ -679,7 +679,7 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
 - A service over a backend that cannot stream answers a streamed request whole, reading its events at
   once; counting tokens with OpenAI is no longer offered at all, where it failed with `Unsupported`.
 - `warmCache` asks for no tokens of response, which each provider raises to the least it allows.
-- Each round of an agent's tools is a query of its own, with its own `maxIterations` attempts, where an
+- Each round of an agent's tools is a query of its own, with its own `maxAttempts` attempts, where an
   ask's attempts were shared by its rounds. The agent's own `maxIterations` caps how many rounds it runs. A stream given through `emit` gets its elements as each
   response ends, where each came as its call did.
 

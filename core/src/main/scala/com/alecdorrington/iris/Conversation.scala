@@ -290,7 +290,7 @@ object Message:
   * {{{
   * for
   *   first  <- query.send[String](conversation)
-  *   asked  <- first.iterations
+  *   asked  <- first.attempts
   *   next    = conversation.modelSays(asked.last).userSays("Tell me more.")
   *   second <- query.send[String](next)
   * yield second.value

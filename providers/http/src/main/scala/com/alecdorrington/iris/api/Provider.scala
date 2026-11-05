@@ -69,12 +69,12 @@ trait Provider:
     : Resource[F, ApiService[F]] = Platform
     .backends[F]
     .map(backends =>
-      HttpApi(
+      HttpApiService(
         this,
         config,
         key(config),
-        Deadlined(backends.sending),
-        Some(Streaming(this, config, backends.streaming)),
+        DeadlineBackend(backends.sending),
+        Some(EventStreams(this, config, backends.streaming)),
       ).retrying(config),
     )
 
@@ -96,7 +96,7 @@ trait Provider:
     *   The service.
     */
   def api[F[_] : Sync](config: ApiConfig, backend: Backend[F]): ApiService[F] =
-    HttpApi(this, config, key(config), backend, None)
+    HttpApiService(this, config, key(config), backend, None)
 
   /**
     * Makes the provider's API service over a host's backend that can stream,
@@ -122,12 +122,12 @@ trait Provider:
       config: ApiConfig,
       backend: StreamBackend[F, Fs2Streams[F]],
     )
-    : ApiService[F] = HttpApi(
+    : ApiService[F] = HttpApiService(
     this,
     config,
     key(config),
     backend,
-    Some(Streaming(
+    Some(EventStreams(
       this,
       config,
       Async[F].pure(Exchange(backend, Async[F].unit)),
@@ -228,7 +228,7 @@ trait Provider:
 
   /** The response a stream's events make up, read as they arrive. */
   private[iris] def deltas[F[_] : RaiseThrowable](events: Stream[F, Json])
-    : Stream[F, Delta]
+    : Stream[F, ProviderEvent]
 
   /** Why this provider would refuse the conversation, where it would. */
   private[iris] def refuseUnsendable

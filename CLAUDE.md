@@ -33,41 +33,42 @@ opens with chained package clauses (`package com.alecdorrington.iris`, then `pac
 members need no import, and internals stay `private[iris]` across modules. The four layers are each a service made
 from the one below, with a request, a response, a configuration and errors of its own:
 - `api` (`ApiService`, `ApiRequest`, `ApiConfig`, `ApiError`): one exchange of a provider's own JSON, made by
-  `provider.api`. `HttpApi` implements it over HTTP for every provider, as its `Provider` says (credentials,
-  origin, refusals, Gemini's `alt=sse`), streamed requests through `Streaming`'s exchanges; `Retrying` (`retrying`) is its
+  `provider.api`. `HttpApiService` implements it over HTTP for every provider, as its `Provider` says (credentials,
+  origin, refusals, Gemini's `alt=sse`), streamed requests through `EventStreams`'s exchanges; `RetryingApiService` (`retrying`) is its
   middleware, applied by `provider.api` but over a backend that cannot stream.
 - `prompt` (`PromptService`, `PromptRequest`, `PromptResponse`, `PromptEvent`, `PromptConfig`, `PromptError`): one
-  exchange of text, made by `model.prompt` (a `ProviderModel`'s). `ProviderPrompt` implements it over an `ApiService`,
-  writing bodies and reading responses as the model's `Provider` says, through the internal `Delta`, which it gathers
+  exchange of text, made by `model.prompt` (a `ProviderModel`'s). `ProviderPromptService` implements it over an `ApiService`,
+  writing bodies and reading responses as the model's `Provider` says, through the internal `ProviderEvent`, which it gathers
   into `PromptEvent`s, pricing the response at its end. `metered` and `Budget.limits` (`limitedBy`) are its
   middleware. `TokenCounter` (`model.counter(api)`) stands apart, as counting is no prompt.
 - `query` (`QueryService`, `QueryRequest`, `QueryResponse`, `QueryConfig`, `QueryError`): a value of any type with a
   `Schema`, made by `prompt.query`.
 - `agent` (`AgentService`, `AgentRequest`, `AgentResponse`, `AgentConfig`): a value with tools run, made by
-  `query.agent(tools*)`. A query (`Querying`) reads a type holding no stream once its response is whole
-  (`Reading.whole`) and any other as it arrives (`Unfolding`), its schema prompt added once per conversation
-  (`Reading.opening`), and gives the conversation as the model saw it last (`QueryResponse.conversation`). An agent
-  (`Agency`) runs rounds over `query.send` (`Rounds`): the tools in its `Toolbox` run, the query sent again going on
+  `query.agent(tools*)`. A query (`PromptQueryService`) reads a type holding no stream once its response is whole
+  (`ValueReader.whole`) and any other as it arrives (`LiveReader`), its schema prompt added once per conversation
+  (`ValueReader.opening`), and gives the conversation as the model saw it last (`QueryResponse.conversation`). An agent
+  (`QueryAgentService`) runs rounds over `query.send` (`QueryAgentService.rounds`): the tools in its `Toolbox` run, the query sent again going on
   from that conversation with their results, each round's query attempting afresh; a stream with tools comes
-  through `emit` (`Emitting`, in core's CLAUDE.md).
+  through `emit` (`Emitter`, in core's CLAUDE.md).
 Every service has one abstract method: `send` for `query` and `agent`, and `stream` for `api` and `prompt`, whose
 responses hold no type to carry a stream, where `send` is `stream` gathered, forcing `streamed = false`. A request
 holds the one below's (`agentRequest.query.prompt.conversation`), and every `send` takes `into[ThatLayersRequest]`
 with conversions in the request's companion from text, a conversation and lower requests. A middleware is a function
 from a service to one of its layer (`PromptService` and `ApiService` being single-abstract-method traits, a lambda is
 one). Configuration (`XConfig`) is what a service is built with, every field defaulted, and a request's `Option`s
-override it; nothing is nested as `Options`. Every layer's limit on requests to the one below is `maxIterations`
-(`ApiConfig`'s tries, `QueryConfig`'s attempts), and each response lists them as `iterations`. Callers query for a
+override it; nothing is nested as `Options`. Each layer's limit on requests to the one below is named for what they are (the user's choice, 2026-11-05):
+`ApiConfig.maxRetries` (after the first try), `PromptConfig.maxTokens`, `QueryConfig.maxAttempts`, listed as
+`QueryResponse.attempts`, and `AgentConfig.maxIterations`, listed as `AgentResponse.iterations`. Callers query for a
 value of any type with a `Schema`, `String` included, as a uniform `QueryResponse[F, A]`: its `value` as soon as all
-but its streams is read, and its `iterations`, an `F[List[PromptResponse]]` of every response the query took
+but its streams is read, and its `attempts`, an `F[List[PromptResponse]]` of every response the query took
 (attempts, tool and `emit` rounds), once the last ends; the response is their summary, totalling them (`usage`,
 `cost`). A query of a type holding no stream sends whole (`Schema.gradual` false); every other streams. A service
 over a backend that cannot stream answers a streamed request whole, reading its SSE body at once, so it still answers
 a type holding a stream, all at once. A query needs `Async`, as it reads a streamed response in a fiber of its own
 (unscoped, by the user's choice: read to its end once the value is given, unless `QueryResponse.cancel`, which the
-user asked for, cancels that fiber); tests in `SyncIO` ask through `Fixtures.askWhole`, which is `Rounds.run` over `Reading.whole`
+user asked for, cancels that fiber); tests in `SyncIO` ask through `Fixtures.askWhole`, which is `QueryAgentService.rounds` over `ValueReader.whole`
 over a prompt service's `send`. Each provider is one object implementing `Provider` (`Anthropic`, `OpenAi`,
-`Gemini`, sharing `JsonHttp`), whose `private[iris]` members tell `HttpApi` and `ProviderPrompt` all they need to know of it: its paths,
+`Gemini`, sharing `JsonHttp`), whose `private[iris]` members tell `HttpApiService` and `ProviderPromptService` all they need to know of it: its paths,
 request bodies, credentials, the conversations it refuses, how its responses read, and how it counts tokens.
 Anything provider-specific goes there, never in the services. `Providers.fromEnv`, `ApiConfig.fromEnv` and
 `PromptConfig.fromEnv` read `LLM_*` and the providers' `*_API_KEY` variables (each `from` through a lookup of the
@@ -87,7 +88,7 @@ is made, and a request with none fails with `ApiError.Misconfigured`.
 - The library does no throttling or logging of its own; those are the host's middleware. It retries only two
   things: a query asks again after a response it cannot read, and an `ApiService` made by `provider.api` (but
   over a backend that cannot stream) sends again a request refused or failed for now (`RateLimited`, `Overloaded`,
-  `Transient`), as its `ApiConfig` (`maxIterations`, `backoff`, `patience`) says, through `Retrying`, the api
+  `Transient`), as its `ApiConfig` (`maxRetries`, `backoff`, `patience`) says, through `RetryingApiService`, the api
   layer's middleware, so that a host's `Budget` or meter on the prompt layer sees one request. Alec agreed (2026-11-03, for Code
   Switch's many tabs) that backing off from providers' limits belongs in Iris, as the providers' own SDKs do it.
   It waits as asked plus up to `backoff` at random, else `backoff` doubling, less up to half at random, and
@@ -95,10 +96,10 @@ is made, and a request with none fails with `ApiError.Misconfigured`.
   request is a stream there, a whole one of one element, so a request is sent again only while it has emitted
   nothing (a `Ref` set by its first chunk; `Stream.handleErrorWith` closes the failed attempt's scope, aborting its
   exchange). Events that only open a stream (`Provider.opening`: Anthropic's `message_start` and
-  `ping`) are held back until another comes (`HttpApi.held`), so that a refusal right after them, before any text, is
-  still sent again, and a streamed `error` event fails the api's stream (`Provider.failure`), below `Retrying`. An `ApiService` over a plain `Backend` needs only `Sync`, so cannot wait, and sends each request once. Its tests (`RetrySuite`) run in virtual time through
+  `ping`) are held back until another comes (`HttpApiService.held`), so that a refusal right after them, before any text, is
+  still sent again, and a streamed `error` event fails the api's stream (`Provider.failure`), below `RetryingApiService`. An `ApiService` over a plain `Backend` needs only `Sync`, so cannot wait, and sends each request once. Its tests (`RetrySuite`) run in virtual time through
   cats-effect's `TestControl` (`cats-effect-testkit`, a test dependency), whose `realTime` starts at 1970, and
-  pass `Retrying` a fixed draw. A transport failure or `TimedOut` is not sent again, as a request given up on
+  pass `RetryingApiService` a fixed draw. A transport failure or `TimedOut` is not sent again, as a request given up on
   may have been answered, and charged for.
   `PromptService.metered` (the user approved it for Code Switch's spending total) runs a host's function on each
   response's `Usage` and `cost` at its `PromptEvent.Ended`: once per attempt and round of a query or an agent,
@@ -115,39 +116,39 @@ is made, and a request with none fails with `ApiError.Misconfigured`.
   checked: a `Budget` is what bounds the tool loop below by what it spends. Services themselves stay
   stateless. Iris runs a tool only where the host hands an agent one with its implementation (`RunnableTool`), which
   the user chose, as handing it over says it may run: the agent then runs any the model asks for alone (`Toolbox.runs`), tells
-  it their outputs and asks it to go on (`Rounds.onwards`), each round's query with `maxIterations` attempts of its
+  it their outputs and asks it to go on (`QueryAgentService.onwards`), each round's query with `maxAttempts` attempts of its
   own. The rounds are as many as the model asks for unless the agent's own `maxIterations` (`AgentConfig`, or
   `AgentRequest` for one) caps them, as the design gives every layer one: the last round's response is then given
-  with no value, its calls unrun (`Rounds.run`), and a stream through `emit` fails (`Emitting.called`). Uncapped is
+  with no value, its calls unrun (`QueryAgentService.rounds`), and a stream through `emit` fails (`Emitter.called`). Uncapped is
   the default, as the user chose to bound a runaway loop by what it spends, through a metered prompt service, a
   count of rounds saying little of cost. `PromptRequest.tools` still offers tools for the host to run, reported in `PromptResponse.toolCalls`; a
   reply asking for any of those ends the ask with no value. Where tools are run and the answer is itself a
-  stream (`Emit.element`), its elements come through a tool of Iris's own, `emit`, one call each (wrapped under
+  stream (`Emitter.element`), its elements come through a tool of Iris's own, `emit`, one call each (wrapped under
   `element`, any `$defs` hoisted), so the model can call tools between them: measured on Haiku 4.5, it batches
   emits per reply and interleaves lookups as told. Emit is the agent's tools, as the design has it: each round is a
-  query for `List[E]` instructed by `Emit.prompt` (`QueryRequest.instructions`), and its calls are read in order once
-  its response ends (`Emitting.turned`), each element fed then, so a stream's elements arrive a round at a time, not
+  query for `List[E]` instructed by `Emitter.prompt` (`QueryRequest.instructions`), and its calls are read in order once
+  its response ends (`Emitter.turned`), each element fed then, so a stream's elements arrive a round at a time, not
   as each call arrives (the user's design; no host streamed with tools). In the reply giving its last element the model calls a
   second tool, `done` (the user chose a tool of its own over a flag on `emit`), and that reply ends the stream
   with no request after it (`Turn.ends`), unless it also asks for another tool or has an element refused,
-  when `done` is told it was not taken (`Emit.unfinished`) and the stream goes on. A reply calling `done`
-  with no element emitted has its text read as a whole query's is (`Reading.read`), so that elements written as
+  when `done` is told it was not taken (`Emitter.unfinished`) and the stream goes on. A reply calling `done`
+  with no element emitted has its text read as a whole query's is (`ValueReader.read`), so that elements written as
   JSON instead are kept. Measured on Haiku 4.5 and 5.5 (2026-10-31, 16 runs), `done` came with the last emit
   every time, never early, sparing the request each stream otherwise ends with to hear the model stop. `emit` takes one element per call, by the user's choice: a call reaches Iris only
   whole, so a list would hold its elements back, and models already batch emits as parallel calls. An
-  unreadable element is told back, the reply's later emits refused unread (`Emit.skipped`) so that elements
+  unreadable element is told back, the reply's later emits refused unread (`Emitter.skipped`) so that elements
   keep their order, and the model emits again from it, up to `attempts` times in a row per element. What
   each call is told is kept aligned with the calls (`Turn.told`), never by id, which Gemini repeats. A
   model writing JSON instead is read as its round's query reads any value, asked again where it cannot be;
-  once elements have come, a response asking for nothing ends the stream, read once (`maxIterations` 1), its
+  once elements have come, a response asking for nothing ends the stream, read once (`maxAttempts` 1), its
   failure to read caught where it stopped as the model meant. A response cut off or stopped still feeds the
   elements of its whole calls before the stream fails, and a failure carries every round's responses. Tools for the host to run are refused beside `emit`
-  (`Emit.unclaimed`), as an answer already given could not end at their calls, as are tools named `emit` or
+  (`Emitter.unclaimed`), as an answer already given could not end at their calls, as are tools named `emit` or
   `done`. Gemini refuses a tool whose object schema has no properties, so `Gemini` declares one taking
   nothing (`properties` empty, and `additionalProperties` absent or `false`), as `done`, with no `parameters`;
   a map's schema, or one with no `properties` at all, is sent as it is.
   Each request after a round (and any correction after one) closes with a breakpoint of Iris's own
-  (`PromptRequest.cacheAll`, added by `ProviderPrompt` as it is sent, so the conversation an agent goes on with holds
+  (`PromptRequest.cacheAll`, added by `ProviderPromptService` as it is sent, so the conversation an agent goes on with holds
   none and the mark moves on), so
   it reads the earlier rounds from the cache and writes only its own, where N rounds once cost O(N²) uncached input.
   Only the newest end is marked, as Anthropic finds the previous write itself, up to 20 blocks back, a run of
@@ -165,7 +166,7 @@ is made, and a request with none fails with `ApiError.Misconfigured`.
   block only where the others leave room (`Anthropic.placed`). So an ask's own never crowd out the host's nor get
   a conversation refused: where the host's mark four, rounds go unmarked, the host's choice winning. OpenAI and Gemini cache
   prefixes unasked and are sent nothing, so their APIs drop them (`Message.withoutBreakpoints`). `PromptService.warmCache` sends
-  `Conversation.cachePrefix` asking for no tokens, which `ProviderPrompt` raises to the least the provider allows
+  `Conversation.cachePrefix` asking for no tokens, which `ProviderPromptService` raises to the least the provider allows
   (`Provider.leastMaxTokens`: Anthropic `max_tokens: 0`, others 1), an ordinary request, so middleware sees it
   as any other. `cachePrefix` always ends with the user saying something:
   breakpoints left alone in the last message move back to what came before, and a prefix ending at the system message
@@ -198,7 +199,7 @@ is made, and a request with none fails with `ApiError.Misconfigured`.
   pricing it apart, thinking as output), and a long-prompt tier is `Rates.Above`, which prices the whole request
   once its `inputTokens` exceed it (Claude Haiku 5.5 over 100K, GPT-5.6 and later over 272K, Gemini 2.5 Pro over
   200K). Figures go through `Provider.usd` and derived ones are worked out in `BigDecimal`, never `Double`.
-  `ProviderPrompt` prices each response as it ends, by the effect's `Clock`, at `PromptConfig.rates`, else
+  `ProviderPromptService` prices each response as it ends, by the effect's `Clock`, at `PromptConfig.rates`, else
   those listed, so `PromptResponse.cost` is per request, summed over a query or an agent only where every response
   has one, and `None` for an `Other` model with no rates configured. Iris prices nothing it does not send: batch,
   priority or fast mode, data residency, server tools. `/update-iris` keeps the rates current.

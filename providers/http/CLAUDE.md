@@ -1,7 +1,7 @@
 # CLAUDE.md
 
-What every provider shares over HTTP (`iris-http`): the `api` layer (`ApiService`, `HttpApi`, `Retrying`), the
-`Provider` and `ProviderModel` traits, the prompt service over a provider's API (`ProviderPrompt`), and `Platform`,
+What every provider shares over HTTP (`iris-http`): the `api` layer (`ApiService`, `HttpApiService`, `RetryingApiService`), the
+`Provider` and `ProviderModel` traits, the prompt service over a provider's API (`ProviderPromptService`), and `Platform`,
 the only code of one platform's. The repository's [CLAUDE.md](../../CLAUDE.md) describes the whole, and each
 provider's module what is particular to it.
 
@@ -24,10 +24,10 @@ provider's module what is particular to it.
   streams are not read for errors yet. Waits are clamped (`Refusal.nanos`) so that adding them never
   overflows.
 - The JDK's client counts a request's read timeout only until its reply begins, so `provider.api` wraps the backend
-  it makes in `Deadlined`, which gives each exchange that long whole, body included, and `Streaming.bounded` gives each
+  it makes in `DeadlineBackend`, which gives each exchange that long whole, body included, and `EventStreams.bounded` gives each
   next part of a stream that long. Neither may wait for the read it gives up on, which cannot be cancelled: sttp
   reads a body in `F.blocking`, and fs2's reactive-streams subscriber waits for a stream's next part in `F.async_`.
-  So `Deadlined` uses `timeoutAndForget`, never `timeout` or `timeoutTo`, and `bounded` reads the stream on a fiber
+  So `DeadlineBackend` uses `timeoutAndForget`, never `timeout` or `timeoutTo`, and `bounded` reads the stream on a fiber
   of its own, timing out each take from it and cancelling that fiber without waiting for it (as `timeoutOnPull`
   would wait). What is given up on may never end, as a socket the server closed can leave the read blocked, so each
   stall may hold a blocking thread (a reply) or two fibers (a stream, unless its exchange is aborted, below) for as
@@ -38,7 +38,7 @@ provider's module what is particular to it.
   of a cancelled one. sttp's backends do not: `FetchFs2Backend` cancels a body's reader only once it is read to its
   end or fails, never when dropped, and aborts its own `AbortController` only until the reply begins; and both it
   (`fromFuture` of `reader.read()`) and the JDK's (fs2's reactive-streams subscriber, in `async_`) wait for each part
-  uninterruptibly, so a cancel waits for the next part, and for good where the reply is silent. So `Streaming`
+  uninterruptibly, so a cancel waits for the next part, and for good where the reply is silent. So `EventStreams`
   streams each reply through an `Exchange` of its own, a backend and an `abort`, which `Stream.bracket` aborts once
   the stream ends, however it ends (after the body's end it does nothing, so a connection read to its end is reused),
   and which `Async.cancelable` aborts where the request is cancelled before its reply begins. `Platform.backends`
@@ -74,7 +74,7 @@ provider's module what is particular to it.
   request may come from a browser's page, for which `Anthropic` adds `anthropic-dangerous-direct-browser-access`.
   Everything else is shared, so use nothing the JS side lacks: no `java.util.Locale` (lower case by character, as
   `Providers.provider` does), nor `java.time`. The tests run on both, so they run their effects in `SyncIO`,
-  never `IO.unsafeRunSync`, which JavaScript lacks, or, where they need concurrency (`StreamingAskerSuite`), return
+  never `IO.unsafeRunSync`, which JavaScript lacks, or, where they need concurrency (`LiveValueSuite`), return
   `IO`'s `unsafeToFuture` with a timeout, which munit awaits on both; tests of one platform alone go in
   `providers/src/test/scalajs` or `providers/src/test/scalajvm`.
 - `ApiConfig.toString` redacts the API key, so hosts may log a configuration. Keep any new secret out of `toString`

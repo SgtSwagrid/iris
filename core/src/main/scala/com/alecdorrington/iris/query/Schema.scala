@@ -319,7 +319,7 @@ object Schema extends DerivedSchemas:
         "A Stream cannot be said as JSON, as it would have to be run: say a list of its values instead.",
       ),
     ),
-    Unfinished.filled(
+    PartialParser.filled(
       Decoder.decodeList(using A.decoder).map[Stream[F, A]](Stream.emits),
     ),
     TypeName("fs2.Stream", "Stream").applied(List(A.name)),

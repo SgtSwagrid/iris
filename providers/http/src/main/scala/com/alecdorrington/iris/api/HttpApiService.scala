@@ -44,13 +44,13 @@ private[iris] final case class Backends[F[_]]
   * any, so that giving it up closes its connection, and is otherwise read
   * whole, its events all at once, as over a host's backend.
   */
-private[iris] final class HttpApi[F[_] : Sync]
+private[iris] final class HttpApiService[F[_] : Sync]
   (
     provider: Provider,
     config: ApiConfig,
     key: Option[String],
     sending: Backend[F],
-    streaming: Option[Streaming[F]],
+    streaming: Option[EventStreams[F]],
   )
   extends ApiService[F]:
 
@@ -154,7 +154,7 @@ private[iris] final class HttpApi[F[_] : Sync]
   * timeout for each next part, never waiting for the read it gives up on, as
   * neither sttp's nor fs2's waits can be cancelled.
   */
-private[iris] final class Streaming[F[_] : Async]
+private[iris] final class EventStreams[F[_] : Async]
   (
     provider: Provider,
     config: ApiConfig,
