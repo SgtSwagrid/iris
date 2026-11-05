@@ -78,8 +78,9 @@ AnthropicModel.ClaudeSonnet5_5.prompt[IO]().use: prompt =>
 
 `model.prompt[IO]()` makes the model's prompt service, with an API service and HTTP client of its own,
 held in a cats-effect `Resource`; its key is the provider's own variable's (`ANTHROPIC_API_KEY`), unless
-`ApiConfig(key = Some(...))` gives one. `Providers.prompt[IO]()` reads the model and its settings from
-the environment (see [Configuration](#%EF%B8%8F-configuration)), giving `None` where none is configured.
+`ApiConfig(key = Some(...))` gives one. `Providers.from()` reads the model, how its API is reached and its
+settings from the environment (see [Configuration](#%EF%B8%8F-configuration)), giving `None` where none is
+configured.
 
 Each provider's models are its own, as [`AnthropicModel`](providers/anthropic/src/main/scala/com/alecdorrington/iris/anthropic/AnthropicModel.scala),
 every one a `ProviderModel` of its [`Provider`](providers/http/src/main/scala/com/alecdorrington/iris/api/Provider.scala)
@@ -635,7 +636,7 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
 | 0.5                                                   | 0.6                                                                  |
 |-------------------------------------------------------|----------------------------------------------------------------------|
 | `ModelClient.resource[F](ModelConfig(model, key, n))` | `model.prompt[F](ApiConfig(key = Some(key)), PromptConfig(maxTokens = n))` |
-| `ModelClient.fromEnv[F]`                              | `Providers.prompt[F]()`                                              |
+| `ModelClient.fromEnv[F]`                              | `Providers.from().traverse(found => found.model.prompt[F](found.api, found.config))` |
 | `ModelClient(config, backend)`                        | `model.prompt(model.provider.api(apiConfig, backend), promptConfig)` |
 | `client.ask[A](conversation, options, attempts)`      | `prompt.query.send[A](QueryRequest(PromptRequest(conversation, ...), Some(attempts)))` |
 | `client.ask[A](conversation, tools = tools)`          | `prompt.query.agent(tools*).send[A](conversation)`                   |
@@ -648,7 +649,8 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
 | `budget.limits(client)`                               | `prompt.limitedBy(budget)`                                           |
 | `ModelClient.Forwarding`, `mapK`                      | a function from one `PromptService` to another (see [Middleware](#middleware)) |
 | `ModelConfig`                                         | the model, `ApiConfig` (key, base URL, timeout, retries) and `PromptConfig` (token limit, sampling, effort, rates) |
-| `ModelConfig.fromEnv`, `ModelConfig.from`             | `Providers.fromEnv`, `ApiConfig.fromEnv`, `PromptConfig.fromEnv`, and their `from` |
+| `ModelConfig.fromEnv`, `ModelConfig.from`             | `Providers.from()`, `Providers.from(lookup)`, giving the model, `api` and `config` |
+| `ModelConfig.apiKeyVariables`, `optionalVariables`    | `Providers.variables`                                                |
 | `"iris"`, `import com.alecdorrington.iris.*`          | `"iris-providers"` (or one provider's), and the layers' packages too  |
 | `Model.ClaudeSonnet5_5`, `Model.of(provider, id)`     | `AnthropicModel.ClaudeSonnet5_5`, `AnthropicModel.of(id)` (likewise `OpenAiModel`, `GeminiModel`) |
 | `Model`, `Model.parse`, `Model.listed`                | `ProviderModel`, `Providers.model`, each provider's `listed`        |
@@ -789,8 +791,13 @@ which find and replace makes:
 
 ## ⚙️ Configuration
 
-`Providers.prompt` reads these environment variables, through `Providers.fromEnv`, `ApiConfig.fromEnv` and
-`PromptConfig.fromEnv`:
+`Providers.from()` reads these environment variables, giving the model, how its API is reached
+(`ApiConfig`) and its settings (`PromptConfig`) together, and `Providers.variables` names them all:
+
+```scala
+Providers.from().traverse(found => found.model.prompt[IO](found.api, found.config))
+```
+
 
 | Variable            | Meaning                                     | Default                        |
 |---------------------|---------------------------------------------|--------------------------------|
@@ -803,7 +810,7 @@ which find and replace makes:
 | `LLM_BASE_URL`      | Overrides the provider's API origin         | The provider's own origin      |
 | `LLM_TIMEOUT`       | Seconds to wait for a response              | `300`                          |
 
-With no key set, `fromEnv` yields `None`. So does a variable which is set but cannot be used:
+With no key set, `from` yields `None`. So does a variable which is set but cannot be used:
 an unrecognised `LLM_PROVIDER`, rather than falling back to whichever key exists, an `LLM_MODEL`
 that names no model Iris lists or one which another provider serves, and an `LLM_MAX_TOKENS`
 which is not a positive whole number, rather than quietly reverting to the default and hiding the
@@ -811,23 +818,23 @@ mistake. A model Iris does not list is named after its provider and a colon, as
 `LLM_MODEL=anthropic:claude-...`, so that a mistyped name is still caught. A Gemini model may
 also be written as Gemini's API lists it, as `gemini:models/gemini-...`.
 
-To read several configurations from one environment, as one per kind of request, pass each `from` a
-lookup of your own, which it reads every variable above through:
+To read several configurations from one environment, as one per kind of request, pass `from` a lookup of
+your own, which it reads every variable above through, the key included:
 
 ```scala
 val fast = (name: String) => sys.env.get(s"${name}_FAST").orElse(sys.env.get(name))
-(Providers.from(fast), ApiConfig.from(fast), PromptConfig.from(fast)).tupled
+Providers.from(fast)
 ```
 
 A host whose responses run longer than most passes its own default for an unset `LLM_MAX_TOKENS`, as in
-`Providers.prompt[IO](defaultMaxTokens = 16_000)` or `PromptConfig.from(lookup, 16_000)`.
+`Providers.from(defaultMaxTokens = 16_000)`.
 
 ## 🌐 In the browser
 
 In JavaScript, a service made by `model.prompt[IO]()` sends requests through the
 [Fetch API](https://developer.mozilla.org/docs/Web/API/Fetch_API), and everything else is as on the JVM.
-There is no environment to read, so `fromEnv` yields `None`: give `ApiConfig` a key yourself, or read the
-configurations with their `from` from wherever your page keeps its settings.
+There is no environment to read, so `Providers.from()` yields `None`: give `ApiConfig` a key yourself, or
+pass `from` a lookup of wherever your page keeps its settings.
 
 A request made from a page carries the page's origin, which Anthropic refuses unless told otherwise, so in
 JavaScript every request to Anthropic says that it may come from a browser

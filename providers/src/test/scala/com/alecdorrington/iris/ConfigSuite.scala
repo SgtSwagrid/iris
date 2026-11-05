@@ -44,7 +44,14 @@ class ConfigSuite extends FunSuite:
       "-5"    -> None,
     ).foreach((written, timeout) =>
       assertEquals(
-        ApiConfig.from(Map("LLM_TIMEOUT" -> written).get).map(_.timeout),
+        Providers
+          .from(
+            Map(
+              "ANTHROPIC_API_KEY" -> "key",
+              "LLM_TIMEOUT"       -> written,
+            ).get,
+          )
+          .map(_.api.timeout),
         timeout,
         written,
       ),
@@ -86,43 +93,76 @@ class ConfigSuite extends FunSuite:
       ) -> OpenAiModel.Gpt5,
     ).foreach: (variables, model) =>
       assertEquals(
-        Providers.from(variables.get).map(model => (model.provider, model)),
+        Providers
+          .from(variables.get)
+          .map(found => (found.model.provider, found.model)),
         Some((OpenAi, model)),
         variables,
       )
     assertEquals(
-      ApiConfig.from(mini.get).map(config => (config.baseUrl, config.timeout)),
+      Providers
+        .from(mini.get)
+        .map(found => (found.api.baseUrl, found.api.timeout)),
       Some((None, 30.seconds)),
     )
     assertEquals(
-      ApiConfig
-        .from(Map("LLM_BASE_URL" -> "https://proxy.test").get)
-        .map(config => (config.baseUrl, config.timeout)),
+      Providers
+        .from(
+          Map(
+            "OPENAI_API_KEY" -> "key",
+            "LLM_BASE_URL"   -> "https://proxy.test",
+          ).get,
+        )
+        .map(found => (found.api.baseUrl, found.api.timeout)),
       Some((Some("https://proxy.test"), ApiConfig.defaultTimeout)),
+    )
+
+  test("the key is read through the lookup that chose its provider"):
+    // As a host reads one configuration of several, each its variables'.
+    val fast = Map(
+      "ANTHROPIC_API_KEY_FAST" -> "fast",
+      "ANTHROPIC_API_KEY"      -> "slow",
+    )
+    assertEquals(
+      Providers
+        .from(name => fast.get(s"${ name }_FAST"))
+        .map(found => (found.model.provider, found.api.key)),
+      Some((Anthropic, Some("fast"))),
+    )
+    assert(
+      List(
+        "LLM_MODEL",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "LLM_MAX_TOKENS",
+      ).forall(Providers.variables.contains),
+      Providers.variables,
     )
 
   test("an unset token limit is the host's default, else Iris's own"):
     val keyed = Map("ANTHROPIC_API_KEY" -> "key")
     assertEquals(
-      PromptConfig.from(keyed.get).map(_.maxTokens),
+      Providers.from(keyed.get).map(_.config.maxTokens),
       Some(PromptConfig.defaultMaxTokens),
     )
     assertEquals(
-      PromptConfig.from(keyed.get, defaultMaxTokens = 16_000).map(_.maxTokens),
+      Providers
+        .from(keyed.get, defaultMaxTokens = 16_000)
+        .map(_.config.maxTokens),
       Some(16_000),
     )
     // A limit set to no limit at all configures nothing.
     assertEquals(
-      PromptConfig.from((keyed + ("LLM_MAX_TOKENS" -> "0")).get),
+      Providers.from((keyed + ("LLM_MAX_TOKENS" -> "0")).get),
       None,
     )
     assertEquals(
-      PromptConfig
+      Providers
         .from(
           (keyed + ("LLM_MAX_TOKENS" -> "500")).get,
           defaultMaxTokens = 16_000,
         )
-        .map(_.maxTokens),
+        .map(_.config.maxTokens),
       Some(500),
     )
 
