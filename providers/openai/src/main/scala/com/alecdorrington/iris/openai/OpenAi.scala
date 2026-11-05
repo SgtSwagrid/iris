@@ -29,16 +29,11 @@ object OpenAi extends Provider:
 
   override val keyVariables: List[String] = List("OPENAI_API_KEY")
 
-  override private[iris] def path
-    (model: ProviderModel, streamed: Boolean)
-    : List[String] = List("v1", "chat", "completions")
+  override private[iris] def path(model: ProviderModel): List[String] =
+    List("v1", "chat", "completions")
 
   override private[iris] def credentials(key: String): Seq[Header] =
     Seq(Header.authorization("Bearer", key))
-
-  override private[iris] val wholeResponse
-    : Decoder[Either[ApiError, PromptResponse]] =
-    Decoder[Response].map(_.toReply)
 
   /**
     * As `retry-after-ms` says, as OpenAI's own SDKs read it first, else
@@ -224,13 +219,10 @@ object OpenAi extends Provider:
       "stop"                  -> JsonHttp.unlessEmpty(settings.stopSequences),
       "tools"                 -> JsonHttp.unlessEmpty(settings.tools.map(tool)),
       "reasoning_effort" -> settings.effort.map(reasoning(model, _)).asJson,
-      "stream"           -> Option.when(settings.streamed)(true).asJson,
+      "stream"           -> true.asJson,
       // Usage is withheld from a stream unless asked for.
-      "stream_options" ->
-        Option
-          .when(settings.streamed)(Json.obj("include_usage" -> true.asJson))
-          .asJson,
-      "messages" -> messages.asJson,
+      "stream_options" -> Some(Json.obj("include_usage" -> true.asJson)).asJson,
+      "messages"       -> messages.asJson,
     )
 
   /**
@@ -389,42 +381,6 @@ object OpenAi extends Provider:
         ),
       )
 
-  private[iris] final case class FunctionCall
-    (name: String, arguments: Option[String])
-    derives Decoder
-
-  private[iris] final case class ToolCall
-    (id: String, function: FunctionCall)
-    derives Decoder:
-
-    def toPart: MessagePart.ToolCall = MessagePart.ToolCall(
-      id,
-      function.name,
-      function.arguments.filter(_.nonEmpty).getOrElse("{}"),
-    )
-
-  private[iris] final case class ResponseMessage
-    (
-      content: Option[String],
-      toolCalls: Option[List[ToolCall]],
-    )
-
-  private[iris] object ResponseMessage:
-
-    given Decoder[ResponseMessage] =
-      Decoder.forProduct2("content", "tool_calls")(ResponseMessage.apply)
-
-  private[iris] final case class Choice
-    (
-      message: ResponseMessage,
-      finishReason: Option[String],
-    )
-
-  private[iris] object Choice:
-
-    given Decoder[Choice] =
-      Decoder.forProduct2("message", "finish_reason")(Choice.apply)
-
   private[iris] final case class PromptBreakdown
     (
       cachedTokens: Option[Int],
@@ -489,22 +445,3 @@ object OpenAi extends Provider:
       "prompt_tokens_details",
       "completion_tokens_details",
     )(TokenCounts.apply)
-
-  private[iris] final case class Response
-    (
-      choices: List[Choice],
-      usage: Option[TokenCounts],
-    )
-    derives Decoder:
-
-    def toReply: Either[ApiError, PromptResponse] = choices
-      .headOption
-      .toRight(ApiError.Malformed(displayName, "no choices"))
-      .map: choice =>
-        PromptResponse(
-          text = choice.message.content.getOrElse(""),
-          stopReason = stopReason(choice.finishReason),
-          usage = usage.fold(Usage())(_.toUsage),
-          toolCalls =
-            choice.message.toolCalls.getOrElse(List.empty).map(_.toPart),
-        )

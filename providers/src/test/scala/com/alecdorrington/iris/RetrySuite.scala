@@ -36,7 +36,8 @@ class RetrySuite extends FunSuite:
       """{"content":[{"type":"text","text":"Hi"}],"stop_reason":"end_turn"}""",
     OpenAi ->
       """{"choices":[{"message":{"content":"Hi"},"finish_reason":"stop"}]}""",
-    Gemini -> """{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}""",
+    Gemini ->
+      """{"candidates":[{"content":{"parts":[{"text":"Hi"}]},"finishReason":"STOP"}]}""",
   )
 
   private def ok(body: String): Response[StubBody] = ResponseStub.adjust(body)
@@ -60,6 +61,10 @@ class RetrySuite extends FunSuite:
         {"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests",
          "quotaId":"$quota","quotaValue":"50"}]},
       {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"34s"}]}}"""
+
+  /** A provider's reply, given whole, streamed as it would have been. */
+  private def replied(provider: Provider, body: String): Response[StubBody] =
+    streamed(Fixtures.streamed(provider, body))
 
   /** A reply streamed as server-sent events. */
   private def streamed(events: String): Response[StubBody] = ResponseStub
@@ -149,7 +154,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
     answering(
       patient,
       refused(429, Seq(Header("retry-after", "30"))),
-      ok(replies(Anthropic)),
+      replied(Anthropic, replies(Anthropic)),
     )()((services, times) =>
       for
         result <- sent(services)
@@ -294,9 +299,11 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 
   asked.foreach: (row, provider, refusal, wait) =>
     test(s"a refusal is waited out as long as asked: $row"):
-      answering(patient, refusal, ok(replies(provider)))(model =
-        provider.defaultModel,
-      )((services, times) =>
+      answering(
+        patient,
+        refusal,
+        replied(provider, replies(provider)),
+      )(model = provider.defaultModel)((services, times) =>
         for
           result <- sent(services)
           times  <- times
@@ -340,7 +347,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
     answering(
       access,
       refused(429, Seq(Header("retry-after", "2"))),
-      ok(replies(Anthropic)),
+      replied(Anthropic, replies(Anthropic)),
     )(draw = None)((services, times) =>
       for
         result <- sent(services)
@@ -482,7 +489,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
       answering(
         patient,
         refused(status, header.toList),
-        ok(replies(provider)),
+        replied(provider, replies(provider)),
       )(model = provider.defaultModel)((services, times) =>
         for
           result <- sent(services)
@@ -524,7 +531,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
         Seq(Header("x-should-retry", "true")),
         "try again",
       ),
-      ok(replies(Anthropic)),
+      replied(Anthropic, replies(Anthropic)),
     )()((services, times) =>
       for
         result <- sent(services)
@@ -543,7 +550,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
         Seq(Header("x-should-retry", "true")),
         gemini429("GenerateRequestsPerDayPerProjectPerModel-FreeTier"),
       ),
-      ok(replies(Gemini)),
+      replied(Gemini, replies(Gemini)),
     )(model = Gemini.defaultModel)((services, times) =>
       for
         result <- sent(services)
@@ -590,7 +597,8 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
   test("a reply cut off at the token limit is never asked for again"):
     answering(
       access,
-      ok(
+      replied(
+        Anthropic,
         """{"content":[{"type":"text","text":"[1, 2"}],"stop_reason":"max_tokens"}""",
       ),
     )()((services, times) =>
@@ -624,7 +632,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
     answering(
       patient,
       refused(529),
-      ok(replies(Anthropic)),
+      replied(Anthropic, replies(Anthropic)),
     )()((services, times) =>
       for
         warmed <- services

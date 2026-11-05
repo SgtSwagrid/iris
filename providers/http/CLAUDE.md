@@ -64,7 +64,8 @@ provider's module what is particular to it.
   one back only with a call.
 - Unset optional fields are omitted one level deep, by `JsonHttp.objectOf`. Never deep-drop nulls: inside a
   tool's schema or a tool call's arguments, a null is a value.
-- A streamed request has the same body as a whole one but for `stream: true` (`Settings.streamed`). Each
+- Every request a prompt makes streams (`stream: true`, Gemini's `streamGenerateContent` with `alt=sse`), and no
+  provider decodes a whole response: tests give one as the events it would have streamed (`Fixtures.streamed`). Each
   `Provider.deltas` reads the whole stream of events, remembering across them what it must (`zipWithScan1`):
   Gemini's whether a tool was asked for, as it may say so before it says it stopped, Anthropic's the counts it
   started with, and OpenAI's how it stopped until its usage comes.

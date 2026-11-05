@@ -3,6 +3,7 @@ package com.alecdorrington.iris
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import com.alecdorrington.iris.Fixtures.{access, config, model}
+import com.alecdorrington.iris.anthropic.Anthropic
 import com.alecdorrington.iris.api.*
 import com.alecdorrington.iris.prompt.*
 import com.alecdorrington.iris.query.*
@@ -65,10 +66,13 @@ class StallSuite extends FunSuite:
 
   private val timedOut = ApiError.TimedOut("Anthropic", deadline)
 
-  test("a reply that arrives whole is read as before"):
+  test("a reply that arrives at once is read as before"):
     serving(
-      """{"content":[{"type":"text","text":"\"Hi\""}],"stop_reason":"end_turn",""" +
-        """"usage":{"input_tokens":1,"output_tokens":1}}""",
+      Fixtures.streamed(
+        Anthropic,
+        """{"content":[{"type":"text","text":"\"Hi\""}],"stop_reason":"end_turn",""" +
+          """"usage":{"input_tokens":1,"output_tokens":1}}""",
+      ),
       stalls = false,
     )(configured =>
       assertEquals(

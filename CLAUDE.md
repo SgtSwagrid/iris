@@ -51,7 +51,9 @@ from the one below, with a request, a response, a configuration and errors of it
   from that conversation with their results, each round's query attempting afresh; a stream with tools comes
   through `emit` (`Emitter`, in core's CLAUDE.md).
 Every service has one abstract method: `send` for `query` and `agent`, and `stream` for `api` and `prompt`, whose
-responses hold no type to carry a stream, where `send` is `stream` gathered, forcing `streamed = false`. A request
+responses hold no type to carry a stream, where `send` is `stream` gathered. Every prompt streams on the wire, as
+the user chose (2026-11-05): there is no whole request, nor any provider's decoder of a whole response, and
+`ApiRequest.streamed` stays only for the api's raw use and counting tokens, a plain POST. A request
 holds the one below's (`agentRequest.query.prompt.conversation`), and every `send` takes `into[ThatLayersRequest]`
 with conversions in the request's companion from text, a conversation and lower requests. A middleware is a function
 from a service to one of its layer (`PromptService` and `ApiService` being single-abstract-method traits, a lambda is
@@ -62,9 +64,10 @@ override it; nothing is nested as `Options`. Each layer's limit on requests to t
 value of any type with a `Schema`, `String` included, as a uniform `QueryResponse[F, A]`: its `value` as soon as all
 but its streams is read, and its `attempts`, an `F[List[PromptResponse]]` of every response the query took
 (attempts, tool and `emit` rounds), once the last ends; the response is their summary, totalling them (`usage`,
-`cost`). A query of a type holding no stream sends whole (`Schema.gradual` false); every other streams. A service
-over a backend that cannot stream answers a streamed request whole, reading its SSE body at once, so it still answers
-a type holding a stream, all at once. A query needs `Async`, as it reads a streamed response in a fiber of its own
+`cost`). A query of a type holding no stream reads its value once the response is whole (`Schema.gradual` false),
+every other as it arrives. A service over a backend that cannot stream reads a response's SSE body at once, so it
+still answers a type holding a stream, all at once. A response whose events end before the provider says it did
+fails as `ApiError.Malformed` (`ProviderPromptService.gathered`), as does a prompt Gemini blocked. A query needs `Async`, as it reads a streamed response in a fiber of its own
 (unscoped, by the user's choice: read to its end once the value is given, unless `QueryResponse.cancel`, which the
 user asked for, cancels that fiber); tests in `SyncIO` ask through `Fixtures.askWhole`, which is `QueryAgentService.rounds` over `ValueReader.whole`
 over a prompt service's `send`. Each provider is one object implementing `Provider` (`Anthropic`, `OpenAi`,

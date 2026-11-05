@@ -28,9 +28,8 @@ object Anthropic extends Provider:
 
   override val keyVariables: List[String] = List("ANTHROPIC_API_KEY")
 
-  override private[iris] def path
-    (model: ProviderModel, streamed: Boolean)
-    : List[String] = List("v1", "messages")
+  override private[iris] def path(model: ProviderModel): List[String] =
+    List("v1", "messages")
 
   override private[iris] def credentials(key: String): Seq[Header] = Seq(
     Header("x-api-key", key),
@@ -43,10 +42,6 @@ object Anthropic extends Provider:
       "true",
     ),
   )
-
-  override private[iris] val wholeResponse
-    : Decoder[Either[ApiError, PromptResponse]] =
-    Decoder[Response].map(_.toReply)
 
   /**
     * The reply a stream's events make up. Its first event counts the request,
@@ -335,7 +330,7 @@ object Anthropic extends Provider:
         settings.tools.map(JsonHttp.declared(_, "input_schema")),
       ),
       "output_config" -> settings.effort.map(output).asJson,
-      "stream"        -> Option.when(settings.streamed)(true).asJson,
+      "stream"        -> true.asJson,
       "system"        -> system,
       "messages"      -> messages,
     )
@@ -536,24 +531,9 @@ object Anthropic extends Provider:
   private[iris] final case class Block
     (
       kind: String,
-      text: Option[String],
       id: Option[String],
       name: Option[String],
-      input: Option[Json],
     ):
-
-    def visibleText: Option[String] = text.filter(_ => kind == "text")
-
-    def toolCall: Option[MessagePart.ToolCall] =
-      for
-        _    <- Option.when(kind == "tool_use")(())
-        id   <- id
-        name <- name
-      yield MessagePart.ToolCall(
-        id,
-        name,
-        input.getOrElse(Json.obj()).noSpaces,
-      )
 
     /** The call a block begins, whose arguments are still to come. */
     def calling: Option[PartialToolCall] =
@@ -566,7 +546,7 @@ object Anthropic extends Provider:
   private[iris] object Block:
 
     given Decoder[Block] =
-      Decoder.forProduct5("type", "text", "id", "name", "input")(Block.apply)
+      Decoder.forProduct3("type", "id", "name")(Block.apply)
 
   private[iris] final case class OutputBreakdown(thinkingTokens: Option[Int])
 
@@ -623,23 +603,3 @@ object Anthropic extends Provider:
       "cache_read_input_tokens",
       "output_tokens_details",
     )(TokenCounts.apply)
-
-  private[iris] final case class Response
-    (
-      content: List[Block],
-      stopReason: Option[String],
-      usage: Option[TokenCounts],
-    ):
-
-    /** This response as a reply, which may be empty, as on a refusal. */
-    def toReply: Either[ApiError, PromptResponse] = Right(PromptResponse(
-      text = content.flatMap(_.visibleText).mkString,
-      stopReason = Anthropic.stopReason(stopReason),
-      usage = usage.fold(Usage())(_.toUsage),
-      toolCalls = content.flatMap(_.toolCall),
-    ))
-
-  private[iris] object Response:
-
-    given Decoder[Response] =
-      Decoder.forProduct3("content", "stop_reason", "usage")(Response.apply)

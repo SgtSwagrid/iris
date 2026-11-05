@@ -611,7 +611,7 @@ class LiveValueSuite extends FunSuite:
         ApiConfig(key = Some("key")),
         BackendStub(CatsMonadAsyncError[IO]())
           .whenAnyRequest
-          .thenRespond(ResponseStub.adjust(body)),
+          .thenRespond(ResponseStub.adjust(Fixtures.streamed(Anthropic, body))),
       ),
       PromptConfig(maxTokens = 512),
     )

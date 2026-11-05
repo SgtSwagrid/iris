@@ -187,8 +187,8 @@ trait Provider:
     )
     : Boolean = false
 
-  /** The path of a model's endpoint, for a whole or streamed response. */
-  private[iris] def path(model: ProviderModel, streamed: Boolean): List[String]
+  /** The path of a model's endpoint, its response streamed. */
+  private[iris] def path(model: ProviderModel): List[String]
 
   /** A request's body. */
   private[iris] def body
@@ -198,9 +198,6 @@ trait Provider:
       settings: Settings,
     )
     : Json
-
-  /** One whole response, or why it is none. */
-  private[iris] def wholeResponse: Decoder[Either[ApiError, PromptResponse]]
 
   /**
     * Whether a streamed event only opens a stream, before anything the model

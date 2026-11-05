@@ -30,12 +30,8 @@ object Gemini extends Provider:
     List("GEMINI_API_KEY", "GOOGLE_API_KEY")
 
   /** Gemini streams a response from a method of its own. */
-  override private[iris] def path
-    (model: ProviderModel, streamed: Boolean)
-    : List[String] = calling(
-    model,
-    if streamed then "streamGenerateContent" else "generateContent",
-  )
+  override private[iris] def path(model: ProviderModel): List[String] =
+    calling(model, "streamGenerateContent")
 
   /** Gemini streams server-sent events only where asked to. */
   override private[iris] def streaming(uri: Uri): Uri =
@@ -43,10 +39,6 @@ object Gemini extends Provider:
 
   override private[iris] def credentials(key: String): Seq[Header] =
     Seq(Header("x-goog-api-key", key))
-
-  override private[iris] val wholeResponse
-    : Decoder[Either[ApiError, PromptResponse]] =
-    Decoder[Response].map(_.toReply)
 
   /**
     * As `retry-after` says, else as the `retryDelay` of the error's
@@ -269,7 +261,28 @@ object Gemini extends Provider:
     (events: Stream[F, Json])
     : Stream[F, ProviderEvent] = events
     .zipWithScan1(false)(_ || asks(_))
-    .flatMap((event, asked) => Stream.emits(deltas(event, asked)))
+    .flatMap((event, asked) =>
+      blocked(event).fold(Stream.emits(deltas(event, asked)))(
+        Stream.raiseError[F],
+      ),
+    )
+
+  /**
+    * The failure of a prompt Gemini blocked, which it answers with `200` and no
+    * candidate, so that it would pass for an empty reply.
+    */
+  private def blocked(event: Json): Option[ApiError] = event
+    .hcursor
+    .get[PromptFeedback]("promptFeedback")
+    .toOption
+    .flatMap(_.blockReason)
+    .filter(_ => event.hcursor.downField("candidates").focus.isEmpty)
+    .map(reason =>
+      ApiError.Malformed(
+        displayName,
+        s"no candidates, blocked as $reason",
+      ),
+    )
 
   private def asks(event: Json): Boolean =
     partsOf(event).exists(_.functionCall.nonEmpty)
@@ -414,30 +427,8 @@ object Gemini extends Provider:
         thoughtSignature,
       )
 
-  private[iris] final case class Content(parts: Option[List[ResponsePart]])
-    derives Decoder
-
-  private[iris] final case class Candidate
-    (
-      content: Option[Content],
-      finishReason: Option[String],
-    )
-    derives Decoder
-
   private[iris] final case class PromptFeedback(blockReason: Option[String])
     derives Decoder
-
-  private def parts(candidate: Candidate): List[ResponsePart] = candidate
-    .content
-    .flatMap(_.parts)
-    .getOrElse(List.empty)
-
-  private def text(candidate: Candidate): String = parts(candidate)
-    .flatMap(_.text)
-    .mkString
-
-  private def toolCalls(candidate: Candidate): List[MessagePart.ToolCall] =
-    parts(candidate).flatMap(_.toolCall)
 
   /** The tokens of one kind of media, such as `AUDIO`. */
   private[iris] final case class ModalityCount
@@ -490,31 +481,3 @@ object Gemini extends Provider:
     /** The part of `whole` that `part` is of `of`, rounded down. */
     private def share(whole: Int, part: Int, of: Int): Int =
       if of == 0 then 0 else (whole.toLong * part / of).toInt
-
-  private[iris] final case class Response
-    (
-      candidates: Option[List[Candidate]],
-      promptFeedback: Option[PromptFeedback],
-      usageMetadata: Option[TokenCounts],
-    )
-    derives Decoder:
-
-    /**
-      * This response as a reply, failing without a candidate: a blocked prompt
-      * gets `200` and none, which would pass for an empty reply.
-      */
-    def toReply: Either[ApiError, PromptResponse] = candidates
-      .flatMap(_.headOption)
-      .toRight(ApiError.Malformed(displayName, unanswered))
-      .map: candidate =>
-        val calls = toolCalls(candidate)
-        PromptResponse(
-          text = text(candidate),
-          stopReason = stopped(calls.nonEmpty, candidate.finishReason),
-          usage = usageMetadata.fold(Usage())(_.toUsage),
-          toolCalls = calls,
-        )
-
-    private def unanswered: String = promptFeedback
-      .flatMap(_.blockReason)
-      .fold("no candidates")(reason => s"no candidates, blocked as $reason")

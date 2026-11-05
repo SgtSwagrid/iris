@@ -3,7 +3,7 @@ package com.alecdorrington.iris
 import cats.effect.{Ref, SyncIO}
 import com.alecdorrington.example.{Colour, Person}
 import com.alecdorrington.iris.Fixtures.{
-  askWhole, config, json, prompting, totals,
+  askWhole, config, json, prompting, streamed, totals,
 }
 import com.alecdorrington.iris.agent.*
 import com.alecdorrington.iris.anthropic.*
@@ -67,8 +67,10 @@ class AskSuite extends FunSuite:
         .whenAnyRequest
         .thenRespondF(request =>
           request.body match
-            case StringBody(sent, _, _) =>
-              SyncIO(ResponseStub.adjust(answer(messages(json(sent)))))
+            case StringBody(sent, _, _) => SyncIO(ResponseStub.adjust(streamed(
+                Anthropic,
+                answer(messages(json(sent))),
+              )))
             case _ => SyncIO.raiseError(Exception("No JSON was sent.")),
         ),
     )
@@ -534,11 +536,12 @@ class AskSuite extends FunSuite:
                 .downN(1)
                 .get[String]("text")
                 .exists(_.contains("Reply with JSON alone"))
-              SyncIO(ResponseStub.adjust(
+              SyncIO(ResponseStub.adjust(streamed(
+                Anthropic,
                 if kinds == Right(List("tool_result", "text")) && told then
                   said("\"Snowing in Zug.\"")
                 else said("Not told."),
-              ))
+              )))
             case _ => SyncIO.raiseError(Exception("No JSON was sent.")),
         ),
     )
@@ -618,7 +621,9 @@ class AskSuite extends FunSuite:
                       case Right(List(_))       => calling
                       case Right(List(_, _, _)) => said("Ada, 36.")
                       case _                    => said(adaJson)
-                    bodies.update(_ :+ body).as(ResponseStub.adjust(written))
+                    bodies
+                      .update(_ :+ body)
+                      .as(ResponseStub.adjust(streamed(Anthropic, written)))
                   case _ => SyncIO.raiseError(Exception("No JSON was sent.")),
               ),
           )
@@ -659,7 +664,7 @@ class AskSuite extends FunSuite:
     : PromptService[SyncIO] = prompting(
     BackendStub(CatsMonadError[SyncIO]())
       .whenAnyRequest
-      .thenRespond(ResponseStub.adjust(body)),
+      .thenRespond(ResponseStub.adjust(streamed(model.provider, body))),
     model,
   )
 
@@ -697,9 +702,10 @@ class AskSuite extends FunSuite:
       ) = prompting(
       BackendStub(CatsMonadError[SyncIO]())
         .whenAnyRequest
-        .thenRespond(ResponseStub.adjust(
+        .thenRespond(ResponseStub.adjust(streamed(
+          Anthropic,
           said(adaJson, cost = Some((1000, 100))),
-        )),
+        ))),
       model,
       configured,
     ).askWhole[Person](prompt).map(_._2.last.cost).attempt.unsafeRunSync()
