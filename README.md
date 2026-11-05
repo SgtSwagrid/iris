@@ -362,7 +362,8 @@ or sent as something it is not:
 `prompt.stream` gives a response as it is written: a
 [`PromptEvent`](core/src/main/scala/com/alecdorrington/iris/prompt/Prompt.scala) `Written` for more of its text, or of a tool call's arguments
 (each call arrives whole), and one `Ended` at last, carrying the whole `PromptResponse`, the provider's report
-rather than anything the model wrote. `send` is `stream` gathered, sent whole. A service made by
+rather than anything the model wrote. `send` is `stream` gathered: every response travels as it is written, so
+a long one never runs into a provider's limit on waiting for a whole one. A service made by
 `model.prompt[IO]()` streams as the response arrives; one made over a backend of your own does where that
 backend is an sttp `StreamBackend` for fs2, and otherwise delivers every event at once, as the response
 ends.
@@ -676,8 +677,9 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
   for, where each was `Unsuccessful`, which no longer has a `retryAfter`.
 - A streamed response that Anthropic refuses partway, with an `error` event, fails with that error,
   where it was read as one that ended without saying so.
-- A service over a backend that cannot stream answers a streamed request whole, reading its events at
-  once; counting tokens with OpenAI is no longer offered at all, where it failed with `Unsupported`.
+- Every prompt streams on the wire, `send` gathering it, and `PromptRequest.streamed` is gone. A service
+  over a backend that cannot stream reads a response's events at once. A response whose events end before
+  it says it is over fails as `ApiError.Malformed`; counting tokens with OpenAI is no longer offered at all, where it failed with `Unsupported`.
 - `warmCache` asks for no tokens of response, which each provider raises to the least it allows.
 - Each round of an agent's tools is a query of its own, with its own `maxAttempts` attempts, where an
   ask's attempts were shared by its rounds. The agent's own `maxIterations` caps how many rounds it runs. A stream given through `emit` gets its elements as each

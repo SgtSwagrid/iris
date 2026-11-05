@@ -36,11 +36,6 @@ import scala.compiletime.summonInline
   *   The tools the model may ask to have run, which it asks for in the
   *   response's [[PromptResponse.toolCalls]].
   *
-  * @param streamed
-  *   Whether the response is to travel as it is written, so that
-  *   [[PromptService.stream]] gives each part as it arrives, rather than all at
-  *   once at the end. [[PromptService.send]] asks for it whole.
-  *
   * @param cacheAll
   *   Whether a cache breakpoint closes the conversation as it is sent, never
   *   kept in it, so that a request going on from it reads it all from the
@@ -55,7 +50,6 @@ final case class PromptRequest
     stopSequences: Option[List[String]] = None,
     effort: Option[Effort] = None,
     tools: List[Tool] = List.empty,
-    streamed: Boolean = true,
     cacheAll: Boolean = false,
   )
 
@@ -130,7 +124,6 @@ final case class PromptConfig
     request.stopSequences.getOrElse(stopSequences),
     request.effort.orElse(effort),
     request.tools,
-    request.streamed,
   )
 
 object PromptConfig:
@@ -182,7 +175,6 @@ private[iris] final case class Settings
     stopSequences: List[String],
     effort: Option[Effort],
     tools: List[Tool],
-    streamed: Boolean,
   )
 
 /**
@@ -350,8 +342,7 @@ trait PromptService[F[_]]:
 
   /**
     * Sends a request, giving its response as it arrives: what the model writes,
-    * then the response whole. It travels as it is written where the request is
-    * [[PromptRequest.streamed]], and arrives all at once at the end otherwise.
+    * then the response whole. Every response travels as it is written.
     *
     * @param request
     *   The request: a conversation, or what the user says, for the service's
@@ -367,7 +358,7 @@ trait PromptService[F[_]]:
     *
     * @param request
     *   The request: a conversation, or what the user says, for the service's
-    *   settings. It is sent unstreamed.
+    *   settings.
     *
     * @return
     *   An effect producing the response.
@@ -375,7 +366,7 @@ trait PromptService[F[_]]:
   final def send
     (request: into[PromptRequest])
     (using Compiler[F, F], MonadThrow[F])
-    : F[PromptResponse] = stream(request.copy(streamed = false))
+    : F[PromptResponse] = stream(request)
     .collect { case PromptEvent.Ended(response) => response }
     .compile
     .lastOrError

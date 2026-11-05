@@ -55,7 +55,10 @@ class BudgetSuite extends FunSuite:
           sent
             .getAndUpdate(_ + 1)
             .map(count =>
-              ResponseStub.adjust(replies(count.min(replies.size - 1))),
+              ResponseStub.adjust(Fixtures.streamed(
+                Anthropic,
+                replies(count.min(replies.size - 1)),
+              )),
             ),
       ),
   )

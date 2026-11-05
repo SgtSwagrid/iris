@@ -1,7 +1,9 @@
 package com.alecdorrington.iris
 
 import cats.effect.SyncIO
-import com.alecdorrington.iris.Fixtures.{json, model, prompting, settings}
+import com.alecdorrington.iris.Fixtures.{
+  json, model, prompting, settings, streamed,
+}
 import com.alecdorrington.iris.anthropic.*
 import com.alecdorrington.iris.api.*
 import com.alecdorrington.iris.gemini.*
@@ -17,8 +19,7 @@ import sttp.model.StatusCode
 
 class CacheSuite extends FunSuite:
 
-  private val options =
-    settings(PromptRequest(Conversation(), streamed = false))
+  private val options = settings()
 
   private val conversation = Conversation()
     .withInstructions("Be brief.")
@@ -277,7 +278,10 @@ class CacheSuite extends FunSuite:
           case StringBody(sent, _, _) => accepts(json(sent))
           case _                      => false,
       )
-      .thenRespond(ResponseStub.adjust(body, StatusCode.Ok))
+      .thenRespond(ResponseStub.adjust(
+        streamed(model.provider, body),
+        StatusCode.Ok,
+      ))
       .whenAnyRequest
       .thenRespond(ResponseStub.adjust("unexpected", StatusCode.BadRequest)),
     model,

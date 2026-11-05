@@ -37,15 +37,6 @@ private[iris] enum ProviderEvent:
     */
   case End(stopReason: StopReason, usage: Usage)
 
-private[iris] object ProviderEvent:
-
-  /** The deltas of a whole response, as it would have arrived. */
-  def of(response: PromptResponse): List[ProviderEvent] = List.concat(
-    Option.when(response.text.nonEmpty)(Text(response.text)),
-    response.toolCalls.map(ToolCall(_)),
-    List(End(response.stopReason, response.usage)),
-  )
-
 /**
   * A tool call whose arguments arrive in fragments of JSON, as Anthropic and
   * OpenAI stream them.

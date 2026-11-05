@@ -30,11 +30,11 @@ private[iris] final class ProviderPromptService[F[_] : Sync]
     Stream.fromEither[F](provider.refuseUnsendable(model, sent, settings)) >>
       api
         .stream(ApiRequest(
-          provider.path(model, settings.streamed),
+          provider.path(model),
           provider.body(model, sent, settings),
-          settings.streamed,
+          streamed = true,
         ))
-        .through(if settings.streamed then provider.deltas[F] else wholes)
+        .through(provider.deltas[F])
         .through(gathered)
 
   /** The conversation as sent, closed with a breakpoint where asked. */
@@ -46,15 +46,10 @@ private[iris] final class ProviderPromptService[F[_] : Sync]
         conversation.messages.init :+ conversation.messages.last.closed,
       )
 
-  /** The deltas of whole responses, each as it would have arrived. */
-  private def wholes(bodies: Stream[F, Json]): Stream[F, ProviderEvent] = bodies
-    .flatMap(body =>
-      Stream
-        .fromEither[F](read(body, provider.wholeResponse).flatten)
-        .flatMap(response => Stream.emits(ProviderEvent.of(response))),
-    )
-
-  /** The events deltas make, the response gathered and priced at their end. */
+  /**
+    * The events deltas make, the response gathered and priced at their end,
+    * failing where they end before the provider says the response did.
+    */
   private def gathered
     (deltas: Stream[F, ProviderEvent])
     : Stream[F, PromptEvent] = deltas
@@ -84,10 +79,15 @@ private[iris] final class ProviderPromptService[F[_] : Sync]
             (ended, PromptEvent.Ended(ended)),
           )
     .map(_._2)
-
-  /** A body read as the provider's response, or why it cannot be. */
-  private def read[A](body: Json, decoder: Decoder[A]): Either[ApiError, A] =
-    ProviderPromptService.read(provider, body, decoder)
+    .noneTerminate
+    .zipWithPrevious
+    .flatMap:
+      case (_, Some(event))                         => Stream.emit(event)
+      case (Some(Some(_: PromptEvent.Ended)), None) => Stream.empty
+      case (_, None) => Stream.raiseError[F](ApiError.Malformed(
+          provider.displayName,
+          "the stream ended before it said the response had",
+        ))
 
 private[iris] object ProviderPromptService:
 

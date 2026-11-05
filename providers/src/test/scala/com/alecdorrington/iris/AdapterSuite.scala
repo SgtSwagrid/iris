@@ -2,7 +2,7 @@ package com.alecdorrington.iris
 
 import cats.effect.{Ref, SyncIO}
 import com.alecdorrington.iris.Fixtures.{
-  access, answer, model, prompting, settings,
+  access, answer, model, prompting, settings, unended,
 }
 import com.alecdorrington.iris.anthropic.*
 import com.alecdorrington.iris.api.*
@@ -18,8 +18,8 @@ class AdapterSuite extends FunSuite:
 
   private val gemini = GeminiModel.Gemini2_5Flash
 
-  /** A request's settings where it sets none, and is not streamed. */
-  private val unset = settings(PromptRequest(Conversation(), streamed = false))
+  /** A request's settings where it sets none. */
+  private val unset = settings()
 
   /** An Anthropic model Iris does not list. */
   private val unlisted = Anthropic.model("claude-new").get
@@ -155,7 +155,6 @@ class AdapterSuite extends FunSuite:
       "stop_sequences",
       "tools",
       "output_config",
-      "stream",
     ).foreach(field =>
       assert(
         anthropic.downField(field).failed,
@@ -169,8 +168,6 @@ class AdapterSuite extends FunSuite:
       "stop",
       "tools",
       "reasoning_effort",
-      "stream",
-      "stream_options",
     ).foreach(field => assert(openAi.downField(field).failed, field))
     val google = Gemini.body(gemini, conversation, unset).hcursor
     assert(google.downField("tools").failed)
@@ -590,8 +587,8 @@ class AdapterSuite extends FunSuite:
 
   test("a response with no answer in it is malformed, and says why"):
     List(
-      (OpenAi, """{"choices":[],"usage":null}""", "no choices"),
-      (Gemini, """{"candidates":[]}""", "no candidates"),
+      (OpenAi, """{"choices":[],"usage":null}""", unended),
+      (Gemini, """{"candidates":[]}""", unended),
       (
         Gemini,
         """{"promptFeedback":{"blockReason":"SAFETY"}}""",
@@ -713,13 +710,12 @@ class AdapterSuite extends FunSuite:
       )
 
   /**
-    * Where a model's request is sent, whole or streamed, beneath the configured
-    * origin, if anywhere.
+    * Where a model's request is sent, beneath the configured origin, if
+    * anywhere.
     */
   private def addressed
     (
       model: ProviderModel,
-      streamed: Boolean,
       origin: Option[String] = None,
     )
     : Option[String] = (for
@@ -732,13 +728,7 @@ class AdapterSuite extends FunSuite:
         ),
       model,
       access = access.copy(baseUrl = origin),
-    ).stream(PromptRequest(
-        Conversation.userSays("Hi"),
-        streamed = streamed,
-      ))
-      .compile
-      .drain
-      .attempt
+    ).stream(PromptRequest(Conversation.userSays("Hi"))).compile.drain.attempt
     sent <- uris.get
   yield sent.headOption).unsafeRunSync()
 
@@ -747,17 +737,7 @@ class AdapterSuite extends FunSuite:
   ):
     val origin = "https://generativelanguage.googleapis.com"
     assertEquals(
-      addressed(
-        GeminiModel.Gemini2_5Flash,
-        streamed = false,
-      ),
-      Some(s"$origin/v1beta/models/gemini-2.5-flash:generateContent"),
-    )
-    assertEquals(
-      addressed(
-        GeminiModel.Gemini2_5Flash,
-        streamed = true,
-      ),
+      addressed(GeminiModel.Gemini2_5Flash),
       Some(
         s"$origin/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
       ),
@@ -765,17 +745,15 @@ class AdapterSuite extends FunSuite:
     assertEquals(
       addressed(
         GeminiModel.Gemini2_5Flash,
-        streamed = false,
         Some("https://proxy.test"),
       ),
-      Some("https://proxy.test/v1beta/models/gemini-2.5-flash:generateContent"),
+      Some(
+        "https://proxy.test/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+      ),
     )
 
   test("a model name cannot escape the path segment it names"):
-    val endpoint = addressed(
-      Gemini.model("../v1/elsewhere").get,
-      streamed = false,
-    )
+    val endpoint = addressed(Gemini.model("../v1/elsewhere").get)
     assert(
       endpoint.exists(uri => !uri.contains("/v1/elsewhere")),
       endpoint,

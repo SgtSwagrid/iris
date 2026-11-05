@@ -2,7 +2,7 @@ package com.alecdorrington.iris
 
 import cats.effect.{Ref, SyncIO}
 import cats.syntax.all.*
-import com.alecdorrington.iris.Fixtures.{access, json, prompting}
+import com.alecdorrington.iris.Fixtures.{access, json, prompting, streamed}
 import com.alecdorrington.iris.anthropic.*
 import com.alecdorrington.iris.api.*
 import com.alecdorrington.iris.gemini.*
@@ -40,7 +40,11 @@ class ClientSuite extends FunSuite:
       access: ApiConfig = access,
     )
     : PromptService[SyncIO] = prompting(
-    answering(body, status, headers),
+    answering(
+      if status.isSuccess then streamed(Anthropic, body) else body,
+      status,
+      headers,
+    ),
     access = access,
   )
 
@@ -67,13 +71,8 @@ class ClientSuite extends FunSuite:
       Left(ApiError.TimedOut("Anthropic", access.timeout)),
     )
 
-  /** Anthropic's response of text and a call, whole. */
-  private val whole =
-    """{"content":[{"type":"text","text":"Hi"},{"type":"tool_use",
-      "id":"call_1","name":"look","input":{}}],"stop_reason":"tool_use"}"""
-
-  /** The same response, as the events of a stream. */
-  private val streamed = """data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}
+  /** Anthropic's response of text and a call, as the events of a stream. */
+  private val events = """data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}
 
 data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_1","name":"look","input":{}}}
 
@@ -86,16 +85,15 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
   test(
     "over a backend that cannot stream, a streamed response is read at once",
   ):
-    // Each request asks for its response as it would arrive, or is refused.
+    // Every request asks for its response as it would arrive, or is refused.
     val backend = BackendStub(CatsMonadError[SyncIO]())
       .whenAnyRequest
       .thenRespondF(request =>
         request.body match
-          case StringBody(sent, _, _) => SyncIO(ResponseStub.adjust(
-              if json(sent).hcursor.get[Boolean]("stream").contains(true) then
-                streamed
-              else whole,
-            ))
+          case StringBody(sent, _, _) =>
+            if json(sent).hcursor.get[Boolean]("stream").contains(true) then
+              SyncIO(ResponseStub.adjust(events))
+            else SyncIO.raiseError(Exception("It was not streamed."))
           case _ => SyncIO.raiseError(Exception("No JSON was sent.")),
       )
     val looked   = MessagePart.ToolCall("call_1", "look", "{}")
@@ -107,7 +105,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
       Some(Usd(BigDecimal(0))),
       List(looked),
     )
-    val events = List(
+    val written = List(
       PromptEvent.Written(PromptEvent.Part.Text, "Hi"),
       PromptEvent.Written(
         PromptEvent.Part.Call("call_1", "look", None),
@@ -116,16 +114,14 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
       PromptEvent.Ended(response),
     )
     val reading = prompting(backend)
-    // A whole response arrives as the same events, all at the end.
-    List(
-      PromptRequest(prompt),
-      PromptRequest(prompt, streamed = false),
-    ).foreach(request =>
-      assertEquals(
-        reading.stream(request).compile.toList.attempt.unsafeRunSync(),
-        Right(events),
-        request.streamed,
-      ),
+    assertEquals(
+      reading
+        .stream(PromptRequest(prompt))
+        .compile
+        .toList
+        .attempt
+        .unsafeRunSync(),
+      Right(written),
     )
     assertEquals(
       reading.send(prompt).attempt.unsafeRunSync(),
@@ -147,10 +143,11 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
               request.body match
                 case StringBody(sent, _, _) => bodies
                     .update(_ :+ json(sent))
-                    .as(ResponseStub.adjust(
+                    .as(ResponseStub.adjust(streamed(
+                      Anthropic,
                       """{"content":[{"type":"text","text":"Hi"}],
                         "stop_reason":"end_turn"}""",
-                    ))
+                    )))
                 case _ => SyncIO.raiseError(Exception("No JSON was sent.")),
             ),
         )
@@ -307,13 +304,16 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
         Gemini,
         "x-goog-api-key",
         "key",
-        """{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}""",
+        """{"candidates":[{"content":{"parts":[{"text":"Hi"}]},"finishReason":"STOP"}]}""",
       ),
     ).foreach: (provider, name, key, body) =>
       val keyed = prompting(
         BackendStub(CatsMonadError[SyncIO]())
           .whenRequestMatches(_.header(name).contains(key))
-          .thenRespond(ResponseStub.adjust(body, StatusCode.Ok))
+          .thenRespond(ResponseStub.adjust(
+            streamed(provider, body),
+            StatusCode.Ok,
+          ))
           .whenAnyRequest
           .thenRespond(ResponseStub.adjust("unkeyed", StatusCode.Unauthorized)),
         provider.defaultModel,
