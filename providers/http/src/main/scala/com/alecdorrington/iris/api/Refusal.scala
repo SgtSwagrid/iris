@@ -43,8 +43,9 @@ private[iris] object Refusal:
     )
     status.code match
       case _ if !retried => ApiError.Unsuccessful(provider, status, detail)
-      case 429           => ApiError.RateLimited(provider, retryAfter, detail)
-      case 503 | 529     => ApiError.Overloaded(provider, retryAfter, detail)
+      case 429 => ApiError.RateLimited(provider, status, retryAfter, detail)
+      case 503 | 529 =>
+        ApiError.Overloaded(provider, status, retryAfter, detail)
       case _ => ApiError.Transient(provider, status, retryAfter, detail)
 
   /** Whether a status refuses a request for now: `429`, `503` or `529`. */

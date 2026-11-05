@@ -683,7 +683,8 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
   each refusal at once, as before.
 - A refusal for now is `ApiError.RateLimited` (`429`) or `ApiError.Overloaded` (`503`, `529`), and a
   failure for now `ApiError.Transient` (`408`, `409`, `500`, `502`, `504`), which carry the wait asked
-  for, where each was `Unsuccessful`, which no longer has a `retryAfter`.
+  for and the HTTP status, where each was `Unsuccessful`, which no longer has a `retryAfter`. A
+  `QueryError.Unreadable` says why the model stopped writing its last response (`stopReason`).
 - A streamed response that Anthropic refuses partway, with an `error` event, fails with that error,
   where it was read as one that ended without saying so.
 - Every prompt streams on the wire, `send` gathering it, and `PromptRequest.streamed` is gone. A service

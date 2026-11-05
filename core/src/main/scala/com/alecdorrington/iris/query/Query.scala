@@ -185,6 +185,17 @@ enum QueryError(message: String) extends Exception(message):
           .size })",
     )
 
+  /**
+    * Why the model stopped writing the last response, as a response cut off at
+    * the token limit is never read.
+    *
+    * @return
+    *   The last response's stop reason, or `Unknown` where there was none.
+    */
+  def stopReason: StopReason = this match
+    case Unreadable(_, responses) =>
+      responses.lastOption.fold(StopReason.Unknown)(_.stopReason)
+
 /**
   * A value of any type with a [[Schema]], `String` included, read from what the
   * model writes, alike for every type: the model is told the type's JSON

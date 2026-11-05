@@ -167,10 +167,10 @@ object ApiConfig:
   /** The wait a refusal for now asks for, where it is one. */
   private def asked(error: Throwable): Option[Option[FiniteDuration]] =
     error match
-      case ApiError.RateLimited(_, retryAfter, _)  => Some(retryAfter)
-      case ApiError.Overloaded(_, retryAfter, _)   => Some(retryAfter)
-      case ApiError.Transient(_, _, retryAfter, _) => Some(retryAfter)
-      case _                                       => None
+      case ApiError.RateLimited(_, _, retryAfter, _) => Some(retryAfter)
+      case ApiError.Overloaded(_, _, retryAfter, _)  => Some(retryAfter)
+      case ApiError.Transient(_, _, retryAfter, _)   => Some(retryAfter)
+      case _                                         => None
 
 /**
   * An error exchanging JSON with a provider: a refusal, a failure, or a
@@ -211,6 +211,9 @@ enum ApiError(message: String) extends Exception(message):
     * @param provider
     *   The name of the provider, for display.
     *
+    * @param status
+    *   The HTTP status.
+    *
     * @param retryAfter
     *   How long the provider asked to wait before sending it again, where it
     *   said, from when it refused it last.
@@ -221,12 +224,13 @@ enum ApiError(message: String) extends Exception(message):
   case RateLimited
     (
       provider: String,
+      status: StatusCode,
       retryAfter: Option[FiniteDuration],
       detail: String,
     )
-    extends ApiError(
-      s"$provider is limiting requests${ Refusal.asked(retryAfter) }: $detail",
-    )
+    extends ApiError(s"$provider is limiting requests ($status)${ Refusal.asked(
+        retryAfter,
+      ) }: $detail")
 
   /**
     * A request the provider refused for now, as too busy to answer it (HTTP
@@ -235,6 +239,9 @@ enum ApiError(message: String) extends Exception(message):
     *
     * @param provider
     *   The name of the provider, for display.
+    *
+    * @param status
+    *   The HTTP status.
     *
     * @param retryAfter
     *   How long the provider asked to wait before sending it again, where it
@@ -246,12 +253,13 @@ enum ApiError(message: String) extends Exception(message):
   case Overloaded
     (
       provider: String,
+      status: StatusCode,
       retryAfter: Option[FiniteDuration],
       detail: String,
     )
-    extends ApiError(
-      s"$provider is overloaded${ Refusal.asked(retryAfter) }: $detail",
-    )
+    extends ApiError(s"$provider is overloaded ($status)${ Refusal.asked(
+        retryAfter,
+      ) }: $detail")
 
   /**
     * A request the provider failed for now, which may succeed if sent again: a
