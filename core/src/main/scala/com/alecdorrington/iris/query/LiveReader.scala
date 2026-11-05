@@ -81,14 +81,15 @@ private[iris] object StreamBuffers:
   * again, as one read whole is; afterwards, one that cannot be read to its end
   * fails the streams not yet ended, and the query's attempts.
   */
-private[iris] final class LiveReader[F[_] : Async, A]
+private[iris] final class LiveReader[F[_] : Async, A, B]
   (
     prompt: PromptService[F],
     schema: Schema[A],
     attempts: Int,
     asked: PromptRequest,
+    outcomes: ValueReader.Outcomes[A, B],
     buffers: StreamBuffers[F],
-    value: Deferred[F, Either[Throwable, Option[A]]],
+    value: Deferred[F, Either[Throwable, B]],
     ended: Deferred[
       F,
       Either[
@@ -147,7 +148,7 @@ private[iris] final class LiveReader[F[_] : Async, A]
     : F[Unit] = event match
     case PartialParser.Event.Opened(stream) => buffers.open(stream)
     case PartialParser.Event.Read(0, read)  =>
-      value.complete(Right(Some(read.asInstanceOf[A]))).void
+      value.complete(Right(outcomes.answered(read.asInstanceOf[A]))).void
     case PartialParser.Event.Read(stream, read) => buffers.feed(stream, read)
     case PartialParser.Event.Ended(stream)      => buffers.end(stream)
     case PartialParser.Event.Failed(detail)     => unreadable(
@@ -180,6 +181,7 @@ private[iris] final class LiveReader[F[_] : Async, A]
             conversation,
             response,
             responses.size < attempts,
+            outcomes,
           ) match
             case ValueReader.Verdict.Answered(read) =>
               value.complete(Right(read)) *> done
@@ -218,16 +220,17 @@ private[iris] object LiveReader:
     * its own, which stops early only where the query, or its value, is
     * cancelled.
     */
-  def read[F[_] : Async, A]
+  def read[F[_] : Async, A, B]
     (
       prompt: PromptService[F],
       schema: Schema[A],
       attempts: Int,
       asked: PromptRequest,
+      outcomes: ValueReader.Outcomes[A, B],
     )
-    : F[QueryResponse[F, A]] = (
+    : F[QueryResponse[F, B]] = (
     StreamBuffers[F],
-    Deferred[F, Either[Throwable, Option[A]]],
+    Deferred[F, Either[Throwable, B]],
     Deferred[
       F,
       Either[
@@ -244,6 +247,7 @@ private[iris] object LiveReader:
         schema,
         attempts,
         asked,
+        outcomes,
         buffers,
         value,
         ended,

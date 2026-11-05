@@ -183,8 +183,7 @@ object Fixtures:
 
   /** The usage and cost of every response together, as a query totals them. */
   def totals(responses: List[PromptResponse]): (Usage, Option[Usd]) =
-    val summary =
-      QueryResponse[Id, Nothing](None, responses, (), Conversation())
+    val summary = QueryResponse[Id, Unit]((), responses, (), Conversation())
     (summary.usage, summary.cost)
 
   /**
@@ -218,9 +217,9 @@ object Fixtures:
         tools: List[RunnableTool[F]] = Nil,
         rounds: Option[Int] = None,
       )
-      : F[(Option[A], List[PromptResponse])] = QueryAgentService
+      : F[(A, List[PromptResponse])] = PromptAgentService
       .rounds[F, A](
-        request =>
+        (request, outcomes) =>
           ValueReader.counted(attempts).liftTo[F] *> ValueReader.whole(
             prompt.send(_),
             Schema[A],
@@ -233,6 +232,7 @@ object Fixtures:
                   ValueReader.schemaPrompt(Schema[A]),
                 ),
               ),
+            outcomes,
           ),
         Toolbox(tools),
         QueryRequest(PromptRequest(conversation, tools = offered)),

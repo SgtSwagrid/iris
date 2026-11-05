@@ -97,7 +97,7 @@ class AskSuite extends FunSuite:
       client: PromptService[SyncIO],
       attempts: Int = QueryConfig().maxAttempts,
     )
-    : Either[Throwable, Option[A]] = client
+    : Either[Throwable, A] = client
     .askWhole[A](prompt, attempts = attempts)
     .map(_._1)
     .attempt
@@ -106,7 +106,7 @@ class AskSuite extends FunSuite:
   test("a typed answer is read from the json the model answers with"):
     assertEquals(
       asked[Person](client(_ => said(adaJson))),
-      Right(Some(ada)),
+      Right(ada),
     )
 
   test("the schema closes the user's message, as a paragraph of its own"):
@@ -117,7 +117,7 @@ class AskSuite extends FunSuite:
     )
     assertEquals(
       asked[Person](told, attempts = 1),
-      Right(Some(ada)),
+      Right(ada),
     )
 
   test("a conversation the assistant ended is followed by the instructions"):
@@ -134,11 +134,11 @@ class AskSuite extends FunSuite:
         .map(_._1)
         .attempt
         .unsafeRunSync(),
-      Right(Some(ada)),
+      Right(ada),
     )
 
   /** The person read from a reply at the first attempt, or why none was. */
-  private def read(written: String): Either[String, Option[Person]] =
+  private def read(written: String): Either[String, Person] =
     asked[Person](client(_ => said(written)), attempts = 1)
       .left
       .map:
@@ -147,18 +147,17 @@ class AskSuite extends FunSuite:
 
   test("JSON is read from the whole reply, else its last fence, and no other"):
     List(
-      s"```json\n$adaJson\n```" -> Right(Some(ada)),
-      s"```json $adaJson```"    -> Right(Some(ada)),
-      s"```$adaJson```"         -> Right(Some(ada)),
+      s"```json\n$adaJson\n```" -> Right(ada),
+      s"```json $adaJson```"    -> Right(ada),
+      s"```$adaJson```"         -> Right(ada),
       // Prose around a fence is no matter.
-      s"Here it is:\n```json\n$adaJson\n```\nI hope it helps." ->
-        Right(Some(ada)),
+      s"Here it is:\n```json\n$adaJson\n```\nI hope it helps." -> Right(ada),
       // A fence within a JSON string is part of it, not the answer.
       """{"name":"```Ada```","age":36}""" ->
-        Right(Some(Person("```Ada```", 36, None))),
+        Right(Person("```Ada```", 36, None)),
       // Of two fences, the last is the answer.
       (s"Draft:\n```json\n{\"name\":\"Bea\",\"age\":1}\n```\n" +
-        s"Final:\n```json\n$adaJson\n```") -> Right(Some(ada)),
+        s"Final:\n```json\n$adaJson\n```") -> Right(ada),
       // JSON amid prose, with no fence, is not read.
       s"Here it is: $adaJson. I hope it helps." -> Left("It is not JSON."),
     ).foreach((written, answer) => assertEquals(read(written), answer, written))
@@ -176,10 +175,7 @@ class AskSuite extends FunSuite:
             .startsWith("That reply could not be read:\nIt is not JSON")
         case _ => false
       if again then said(adaJson) else said("Ada, 36.")
-    assertEquals(
-      asked[Person](corrected),
-      Right(Some(ada)),
-    )
+    assertEquals(asked[Person](corrected), Right(ada))
 
   test("the last unreadable reply fails the ask, keeping every reply"):
     // Text is no exception: unquoted, it is not JSON.
@@ -196,7 +192,7 @@ class AskSuite extends FunSuite:
   test(
     "why a reply could not be read is circe's, in full, kept from the message",
   ):
-    List[(String, Either[Throwable, Option[?]], List[String], Option[String])](
+    List[(String, Either[Throwable, ?], List[String], Option[String])](
       (
         "a field of the wrong type",
         asked[Person](
@@ -306,40 +302,37 @@ class AskSuite extends FunSuite:
       "It stopped, as `refusal`.",
     )
 
-  test("a reply asking for a tool is given at once, with no answer"):
-    List(
-      (
-        "a person asked of anthropic",
-        client(_ => calling).askWhole[Person](prompt),
-        "Let me look.",
-        StopReason.ToolCall,
-      ),
-      (
-        "text asked of anthropic",
-        client(_ => calling).askWhole[String](prompt),
-        "Let me look.",
-        StopReason.ToolCall,
-      ),
-      (
-        "a person asked of openai",
-        answering(OpenAiModel.Gpt5, forced).askWhole[Person](prompt),
-        "",
-        StopReason.Completed,
-      ),
-    ).foreach: (row, asking, text, stopReason) =>
-      asking.attempt.unsafeRunSync() match
-        case Right((value, responses)) => assertEquals(
-            (
-              value,
-              responses.last.text,
-              responses.last.stopReason,
-              responses.last.toolCalls.map(_.tool),
-              responses.size,
-            ),
-            (None, text, stopReason, List("weather"), 1),
-            row,
+  test("a reply asking for a tool is asked again, as a query runs none"):
+    // Told why, the model answers.
+    val told = client(sent =>
+      if sent.lastOption.exists(_.text.contains("It asked for a tool")) then
+        said(adaJson)
+      else calling,
+    )
+    assertEquals(
+      told
+        .askWhole[Person](prompt)
+        .map((value, responses) => (value, responses.size))
+        .attempt
+        .unsafeRunSync(),
+      Right((ada, 2)),
+    )
+    // A call OpenAI said it stopped as usual for is a call all the same, and
+    // one made every time fails the ask as any reply unread does.
+    answering(OpenAiModel.Gpt5, forced)
+      .askWhole[Person](prompt)
+      .attempt
+      .unsafeRunSync() match
+        case Left(QueryError.Unreadable(detail, responses)) =>
+          assertEquals(
+            detail,
+            "It asked for a tool, which cannot be run here.",
           )
-        case other => fail(s"Expected the call ($row), not $other.")
+          assertEquals(
+            responses.map(_.toolCalls.map(_.tool)),
+            List.fill(3)(List("weather")),
+          )
+        case other => fail(s"Expected the call to be asked again, not $other.")
 
   test("a reply ended by a stop sequence is asked for again, told so"):
     val stopped = client: sent =>
@@ -347,10 +340,7 @@ class AskSuite extends FunSuite:
       if told.contains("It stopped at a stop sequence. It is not JSON") then
         said(adaJson)
       else said("Ada, 36", "stop_sequence")
-    assertEquals(
-      asked[Person](stopped),
-      Right(Some(ada)),
-    )
+    assertEquals(asked[Person](stopped), Right(ada))
 
   test("an ask of no attempts is refused before any request"):
     val never = client(_ => throw AssertionError("A request was made."))
@@ -372,7 +362,7 @@ class AskSuite extends FunSuite:
     )
     assertEquals(
       asked[String](told, attempts = 1),
-      Right(Some("Ada, 36.")),
+      Right("Ada, 36."),
     )
 
   test("a value asked about is sent as json, followed by the instructions"):
@@ -386,18 +376,18 @@ class AskSuite extends FunSuite:
         .map(_._1)
         .attempt
         .unsafeRunSync(),
-      Right(Some(ada)),
+      Right(ada),
     )
 
   test("a typed answer may be of any type with a schema"):
     val colours = client(_ => said("""["Red","Blue"]"""))
     assertEquals(
       asked[List[Colour]](colours),
-      Right(Some(List(Colour.Red, Colour.Blue))),
+      Right(List(Colour.Red, Colour.Blue)),
     )
     assertEquals(
       asked[Int](client(_ => said("42"))),
-      Right(Some(42)),
+      Right(42),
     )
 
   test("every ask gives every response, its usage and cost theirs together"):
@@ -406,7 +396,7 @@ class AskSuite extends FunSuite:
       else said("Ada, 36.", cost = Some((10, 2))),
     )
     val (value, responses) = corrected.askWhole[Person](prompt).unsafeRunSync()
-    assertEquals(value, Some(ada))
+    assertEquals(value, ada)
     assertEquals(
       responses,
       List(
@@ -432,12 +422,15 @@ class AskSuite extends FunSuite:
         Some(Usd(BigDecimal("0.000065"))),
       ),
     )
-    // A tool asked for on a later attempt is given with every attempt's usage.
+    // A tool asked for on a later attempt is asked again, every attempt's usage
+    // summed.
     val withUsage = """{"content":[{"type":"tool_use","id":"call_1",
       "name":"weather","input":{}}],"stop_reason":"tool_use",
       "usage":{"input_tokens":20,"output_tokens":5}}"""
     val later     = client(sent =>
-      if sent.size > 1 then withUsage
+      if sent.lastOption.exists(_.text.contains("It asked for a tool")) then
+        said(adaJson, cost = Some((5, 1)))
+      else if sent.size > 1 then withUsage
       else said("Ada, 36.", cost = Some((10, 2))),
     )
     assertEquals(
@@ -448,7 +441,7 @@ class AskSuite extends FunSuite:
         )
         .attempt
         .unsafeRunSync(),
-      Right((None, 2, Usage(uncachedTokens = 30, visibleTokens = 7))),
+      Right((ada, 3, Usage(uncachedTokens = 35, visibleTokens = 8))),
     )
     // An attempt reporting no usage adds none.
     val partly = client(sent =>
@@ -485,7 +478,7 @@ class AskSuite extends FunSuite:
         (value, _) <- counting.askWhole[Person](prompt)
         total      <- sent.get
       yield (value, total)
-    assertEquals(counted.unsafeRunSync(), (Some(ada), 2))
+    assertEquals(counted.unsafeRunSync(), (ada, 2))
 
   /** A client failing the test if it is ever asked to send. */
   private def never: PromptService[SyncIO] =
@@ -560,7 +553,7 @@ class AskSuite extends FunSuite:
         .map(_._1)
         .attempt
         .unsafeRunSync(),
-      Right(Some("Snowing in Zug.")),
+      Right("Snowing in Zug."),
     )
 
   /** Where each block marked for the cache lies: its message, and itself. */
@@ -641,11 +634,11 @@ class AskSuite extends FunSuite:
         yield answer._1 -> sent.map(marks)
       assertEquals(
         asked.unsafeRunSync(),
-        (Some(ada), List(host, host ++ ending(2), host ++ ending(4))),
+        (ada, List(host, host ++ ending(2), host ++ ending(4))),
         own,
       )
 
-  test("an agent stops at its most rounds, giving the last with no value"):
+  test("an agent's last round allowed asks for its value, running no tool"):
     val asked =
       for
         ran <- Ref.of[SyncIO, Int](0)
@@ -657,15 +650,29 @@ class AskSuite extends FunSuite:
           ),
           _ => ran.update(_ + 1).as("Sunny."),
         )
-        answer <- client(_ => calling).askWhole[Person](
-          prompt,
-          tools = List(weather),
-          rounds = Some(3),
-        )
+        answer <- client(_ => calling)
+          .askWhole[Person](
+            prompt,
+            tools = List(weather),
+            rounds = Some(3),
+          )
+          .attempt
         runs <- ran.get
-      yield (answer._1, answer._2.size, runs)
-    // The third round's call is left for the host, as one it cannot run.
-    assertEquals(asked.unsafeRunSync(), (None, 3, 2))
+      yield (
+        answer
+          .left
+          .toOption
+          .collect:
+            case QueryError.Unreadable(detail, responses) =>
+              (detail, responses.size),
+        runs,
+      )
+    // Two rounds run the tool; the third asks again after each call, and a
+    // model that only ever calls one fails as one that cannot be read does.
+    assertEquals(
+      asked.unsafeRunSync(),
+      (Some(("It asked for a tool, which cannot be run here.", 3)), 2),
+    )
 
   /** A client of a provider answering every request with the body. */
   private def answering
@@ -692,7 +699,7 @@ class AskSuite extends FunSuite:
       assertEquals(
         answering(model, body).askWhole[Person](prompt).attempt.unsafeRunSync(),
         Right(
-          Some(ada) -> List(PromptResponse(
+          ada -> List(PromptResponse(
             adaJson,
             StopReason.Completed,
             Usage(uncachedTokens = 5, visibleTokens = 3),

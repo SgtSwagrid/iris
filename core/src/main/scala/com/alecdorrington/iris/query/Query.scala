@@ -104,9 +104,10 @@ final case class QueryConfig(maxAttempts: Int = 3)
   *   The type of the value.
   *
   * @param value
-  *   The value read from the last response, or `None` where the model asked for
-  *   tools instead. Each `fs2.Stream` within it delivers its elements as the
-  *   model writes them, each time it is read, from the first.
+  *   The value read from the last response. A response asking for a tool is
+  *   asked again, as one that cannot be read is, as a query runs none. Each
+  *   `fs2.Stream` within it delivers its elements as the model writes them,
+  *   each time it is read, from the first.
   *
   * @param attempts
   *   Every response the query took, oldest first, once the last ends: the last
@@ -127,7 +128,7 @@ final case class QueryConfig(maxAttempts: Int = 3)
   */
 final case class QueryResponse[F[_], +A]
   (
-    value: Option[A],
+    value: A,
     attempts: F[List[PromptResponse]],
     cancel: F[Unit],
     conversation: F[Conversation],
@@ -292,19 +293,49 @@ private[iris] final class PromptQueryService[F[_] : Async]
 
   override def send[A : Schema as A]
     (request: into[QueryRequest[A]])
-    : F[QueryResponse[F, A]] =
-    val attempts = request.maxAttempts.getOrElse(config.maxAttempts)
+    : F[QueryResponse[F, A]] = PromptQueryService.read(
+    prompt,
+    A,
+    request,
+    config.maxAttempts,
+    ValueReader.Outcomes(identity, _ => None),
+  )
+
+private[iris] object PromptQueryService:
+
+  /**
+    * Reads a value through a prompt service, ending as `outcomes` says: a type
+    * holding a stream as its response arrives, and any other once it is whole.
+    */
+  def read[F[_] : Async, A, B]
+    (
+      prompt: PromptService[F],
+      schema: Schema[A],
+      request: QueryRequest[A],
+      maxAttempts: Int,
+      outcomes: ValueReader.Outcomes[A, B],
+    )
+    : F[QueryResponse[F, B]] =
+    val attempts = request.maxAttempts.getOrElse(maxAttempts)
     val asked    = request
       .prompt
       .copy(conversation =
         ValueReader.opening(
           request.prompt.conversation,
-          request.instructions.getOrElse(ValueReader.schemaPrompt(A)),
+          request.instructions.getOrElse(ValueReader.schemaPrompt(schema)),
         ),
       )
     ValueReader.counted(attempts).liftTo[F] *>
-      (if A.gradual then LiveReader.read(prompt, A, attempts, asked)
-       else ValueReader.whole(prompt.send(_), A, attempts, asked))
+      (if schema.gradual then
+         LiveReader.read(prompt, schema, attempts, asked, outcomes)
+       else
+         ValueReader.whole(
+           prompt.send(_),
+           schema,
+           attempts,
+           asked,
+           outcomes,
+         ))
 
 /**
   * The reading of a value from what the model writes, one way for every type:
@@ -349,11 +380,28 @@ private[iris] object ValueReader:
           )
         case _ => conversation.userSays(prompt)
 
-  /** What follows a response: its value, another attempt, or why neither. */
-  enum Verdict[+A]:
+  /**
+    * How a reading may end: with a value read, and with calls the model asks
+    * for, where they end it, as an agent's do where it can run them. Calls that
+    * do not end it are asked again, as a response that cannot be read is.
+    *
+    * @param answered
+    *   What a value read ends the reading with.
+    *
+    * @param called
+    *   What calls end the reading with, or `None` where they do not end it.
+    */
+  final case class Outcomes[A, +B]
+    (
+      answered: A => B,
+      called: List[MessagePart.ToolCall] => Option[B],
+    )
 
-    /** The value, or `None` where the model asked for tools. */
-    case Answered(value: Option[A])
+  /** What follows a response: its end, another attempt, or why neither. */
+  enum Verdict[+B]:
+
+    /** The reading's end: a value read, or calls that end it. */
+    case Answered(value: B)
 
     /** Another attempt, at the conversation told what was wrong. */
     case Again(conversation: Conversation)
@@ -362,46 +410,54 @@ private[iris] object ValueReader:
     case Failed(why: String)
 
   /**
-    * What follows a response to a conversation: its value, none where it asks
-    * for tools, another attempt told what was wrong, where `more` may be made
-    * and asking again could help, or why there is none.
+    * What follows a response to a conversation: its end, as `outcomes` says,
+    * another attempt told what was wrong, where `more` may be made and asking
+    * again could help, or why there is none.
     */
-  def verdict[A]
+  def verdict[A, B]
     (
       schema: Schema[A],
       conversation: Conversation,
       response: PromptResponse,
       more: Boolean,
+      outcomes: Outcomes[A, B],
     )
-    : Verdict[A] =
-    if calledTools(response) then Verdict.Answered(None)
+    : Verdict[B] =
+    def again(why: String): Verdict[B] =
+      if more then Verdict.Again(corrected(conversation, response, why))
+      else Verdict.Failed(why)
+    if calledTools(response) then
+      outcomes
+        .called(response.toolCalls)
+        .fold(
+          again("It asked for a tool, which cannot be run here."),
+        )(Verdict.Answered(_))
     else
       hopeless(response).fold(
         read(schema, response).leftMap(stopped(response, _)) match
-          case Right(value)      => Verdict.Answered(Some(value))
-          case Left(why) if more =>
-            Verdict.Again(corrected(conversation, response, why))
-          case Left(why) => Verdict.Failed(why),
+          case Right(value) => Verdict.Answered(outcomes.answered(value))
+          case Left(why)    => again(why),
       )(Verdict.Failed(_))
 
   /**
     * Reads a value of a type holding no stream, once each response is whole,
     * asking again while one cannot be read.
     */
-  def whole[F[_] : MonadThrow, A]
+  def whole[F[_] : MonadThrow, A, B]
     (
       send: PromptRequest => F[PromptResponse],
       schema: Schema[A],
       attempts: Int,
       asked: PromptRequest,
+      outcomes: Outcomes[A, B],
     )
-    : F[QueryResponse[F, A]] =
+    : F[QueryResponse[F, B]] =
     def attempt
       (
         conversation: Conversation,
         sent: Vector[PromptResponse],
       )
-      : F[QueryResponse[F, A]] = send(asked.copy(conversation = conversation))
+      : F[QueryResponse[F, B]] = send(asked.copy(conversation = conversation))
       .flatMap: response =>
         val responses = sent :+ response
         verdict(
@@ -409,6 +465,7 @@ private[iris] object ValueReader:
           conversation,
           response,
           responses.size < attempts,
+          outcomes,
         ) match
           case Verdict.Answered(value) => QueryResponse(
               value,
@@ -470,9 +527,10 @@ private[iris] object ValueReader:
       response: PromptResponse,
       why: String,
     )
-    : Conversation = conversation
-    .modelSays(response.text)
-    .userSays(s"That reply could not be read:\n$why\n\nReply again as asked.")
+    : Conversation = (if response.text.trim.isEmpty then conversation
+                      else conversation.modelSays(response.text)).userSays(
+    s"That reply could not be read:\n$why\n\nReply again as asked.",
+  )
 
   /**
     * The JSON of a response: the whole text, else what its last code fence

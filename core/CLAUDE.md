@@ -5,8 +5,8 @@ provider, no HTTP and no code of one platform's. The repository's [CLAUDE.md](..
 what every module shares.
 
 - `QueryService.send[A : Schema]` reads every type one way, `String` included, and always gives a
-  `QueryResponse[F, A]`: `value: Option[A]`, `None` where the model asked for a tool, and `attempts`, every
-  response the query took, the last the one the value was read from. Tool calls count only under `ToolCall`,
+  `QueryResponse[F, A]`: its `value`, an `A` (a response calling a tool is asked again, as an unreadable one is),
+  and `attempts`, every response the query took, the last the one the value was read from. Tool calls count only under `ToolCall`,
   `Completed` or `StopSequence` (`ValueReader.calledTools`), never under a refusal or the token limit. Never read one type differently from another, as
   0.2's `Answer` type class once did, nor give some types a different result: the user wants every ask
   uniform. The provider's own response is a `PromptResponse`, which a prompt's `send` and `warmCache` give. A query is built on
