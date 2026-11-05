@@ -67,16 +67,16 @@ import scala.util.NotGiven
   * @param encoder
   *   The encoder writing a value as JSON.
   *
-  * @param decoder
+  * @param read
   *   The decoder reading a value from JSON, which reports every failure at once
-  *   where accumulating.
+  *   where accumulating, given the placeholders standing for streams.
   */
 @implicitNotFound(
   "${A} has no Schema, so cannot be asked for or said as JSON. A case class, sealed trait or enum has one where each of its fields does, unless it has a circe Encoder of its own, and another type has one made by Schema.of or converted from one by imap or emap. Write `derives Schema` on a type to derive one anyway and be told which field has none; a type nested very deeply may need a higher -Xmax-inlines.",
 )
 final class Schema[A] private (
   val encoder: Encoder[A],
-  val decoder: Decoder[A],
+  read: Schema.Holes => Decoder[A],
   private[iris] val name: TypeName,
   private[iris] val outline: (Schema[?] => Json) => Json,
   within: => List[Schema[?]] = Nil,
@@ -102,7 +102,21 @@ final class Schema[A] private (
     * Whether a value can be read before its JSON is whole, as one holding a
     * stream may be, other than within a list or map.
     */
-  private[iris] lazy val gradual: Boolean = Schema.unfolding(this, Set.empty)
+  private[iris] lazy val gradual: Boolean = Schema.gradual(this, Set.empty)
+
+  /**
+    * The decoder reading a value from JSON, which reports every failure at once
+    * where accumulating.
+    */
+  lazy val decoder: Decoder[A] = read(Nil)
+
+  /**
+    * The decoder reading a value from JSON in which each of `holes`, told apart
+    * by identity, stands for a stream already open, as a value holding streams
+    * is read before they are whole.
+    */
+  private[iris] def reading(holes: Schema.Holes): Decoder[A] =
+    if holes.isEmpty then decoder else read(holes)
 
   /** The JSON Schema of this type's values. */
   lazy val json: Json = Schema.rendered(this)
@@ -166,7 +180,7 @@ final class Schema[A] private (
     */
   def described(text: String): Schema[A] = copied(
     encoder,
-    decoder,
+    read,
     noted = Some(note.fold(text)(Schema.joined(_, text))),
   )
 
@@ -183,7 +197,7 @@ final class Schema[A] private (
     )
     : Schema[B] = copied(
     encoder.contramap(from),
-    decoder.emap(to),
+    holes => reading(holes).emap(to),
     named,
     described.orElse(description),
   )
@@ -191,14 +205,14 @@ final class Schema[A] private (
   private def copied[B]
     (
       encoder: Encoder[B],
-      decoder: Decoder[B],
+      read: Schema.Holes => Decoder[B],
       named: TypeName = name,
       described: Option[String] = description,
       noted: Option[String] = note,
     )
     : Schema[B] = new Schema(
     encoder,
-    decoder,
+    read,
     named,
     outline,
     parts,
@@ -251,7 +265,7 @@ object Schema extends DerivedSchemas:
   /** An optional value, which as a field may also be left out. */
   given [A : Schema as A]: Schema[Option[A]] = new Schema(
     Encoder.encodeOption(using A.encoder),
-    Decoder.decodeOption(using A.decoder),
+    holes => Decoder.decodeOption(using A.reading(holes)),
     applied("Option", A),
     describe =>
       Json.obj(
@@ -270,28 +284,28 @@ object Schema extends DerivedSchemas:
   /** The schema of a list of values of another, as its given is. */
   private[iris] def listOf[A](item: Schema[A]): Schema[List[A]] = listed(
     Encoder.encodeList(using item.encoder),
-    Decoder.decodeList(using item.decoder),
+    holes => Decoder.decodeList(using item.reading(holes)),
     applied("List", item),
     item,
   )
 
   given [A : Schema as A]: Schema[Vector[A]] = listed(
     Encoder.encodeVector(using A.encoder),
-    Decoder.decodeVector(using A.decoder),
+    holes => Decoder.decodeVector(using A.reading(holes)),
     applied("Vector", A),
     A,
   )
 
   given [A : Schema as A]: Schema[Seq[A]] = listed(
     Encoder.encodeSeq(using A.encoder),
-    Decoder.decodeSeq(using A.decoder),
+    holes => Decoder.decodeSeq(using A.reading(holes)),
     applied("Seq", A),
     A,
   )
 
   given [A : Schema as A]: Schema[Set[A]] = listed(
     Encoder.encodeSet(using A.encoder),
-    Decoder.decodeSet(using A.decoder),
+    holes => Decoder.decodeSet(using A.reading(holes)),
     applied("Set", A),
     A,
     unique = true,
@@ -319,9 +333,13 @@ object Schema extends DerivedSchemas:
         "A Stream cannot be said as JSON, as it would have to be run: say a list of its values instead.",
       ),
     ),
-    PartialParser.filled(
-      Decoder.decodeList(using A.decoder).map[Stream[F, A]](Stream.emits),
-    ),
+    holes =>
+      standingIn(
+        holes,
+        Decoder
+          .decodeList(using A.reading(holes))
+          .map[Stream[F, A]](Stream.emits),
+      ),
     TypeName("fs2.Stream", "Stream").applied(List(A.name)),
     arrayOf(A),
     List(A),
@@ -330,7 +348,7 @@ object Schema extends DerivedSchemas:
 
   given [A : Schema as A]: Schema[Map[String, A]] = new Schema(
     Encoder.encodeMap[String, A](using summon, A.encoder),
-    Decoder.decodeMap[String, A](using summon, A.decoder),
+    holes => Decoder.decodeMap[String, A](using summon, A.reading(holes)),
     applied("Map", Schema[String], A),
     describe =>
       Json.obj(
@@ -413,16 +431,17 @@ object Schema extends DerivedSchemas:
     (name: TypeName, value: A, written: Json)
     : Schema[A] = new Schema(
     Encoder.instance(_ => written),
-    Decoder.instance(cursor =>
-      Either.cond(
-        cursor.value == written,
-        value,
-        DecodingFailure(
-          Reason.CustomReason(s"Expected ${ written.noSpaces }"),
-          cursor,
+    _ =>
+      Decoder.instance(cursor =>
+        Either.cond(
+          cursor.value == written,
+          value,
+          DecodingFailure(
+            Reason.CustomReason(s"Expected ${ written.noSpaces }"),
+            cursor,
+          ),
         ),
       ),
-    ),
     name,
     _ => Json.obj("const" -> written),
   )
@@ -446,18 +465,19 @@ object Schema extends DerivedSchemas:
           .find((_, test) => test(value))
           .fold(Json.Null)((schema, _) => schema.encoder(value)),
       ),
-      Decoder.instance(cursor =>
-        alternatives
-          .view
-          .map((schema, _) => schema.decoder(cursor))
-          .collectFirst { case Right(value) => value.asInstanceOf[A] }
-          .toRight(DecodingFailure(
-            Reason.CustomReason(s"Expected one of ${ alternatives
-                .map(_._1.name.short)
-                .mkString(", ") }"),
-            cursor,
-          )),
-      ),
+      holes =>
+        Decoder.instance(cursor =>
+          alternatives
+            .view
+            .map((schema, _) => schema.reading(holes)(cursor))
+            .collectFirst { case Right(value) => value.asInstanceOf[A] }
+            .toRight(DecodingFailure(
+              Reason.CustomReason(s"Expected one of ${ alternatives
+                  .map(_._1.name.short)
+                  .mkString(", ") }"),
+              cursor,
+            )),
+        ),
       name,
       describe =>
         Json.obj("anyOf" -> alternatives.map(_._1).map(describe).asJson),
@@ -517,13 +537,13 @@ object Schema extends DerivedSchemas:
 
   private def fixed[A : {Encoder, Decoder}]
     (json: Json, name: TypeName)
-    : Schema[A] = new Schema(Encoder[A], Decoder[A], name, _ => json)
+    : Schema[A] = new Schema(Encoder[A], _ => Decoder[A], name, _ => json)
 
   private def simple[A : {Encoder, Decoder}]
     (kind: String, name: String)
     : Schema[A] = new Schema(
     Encoder[A],
-    expecting(kind, name, Decoder[A]),
+    _ => expecting(kind, name, Decoder[A]),
     TypeName.standard(name),
     _ => Json.obj("type" -> kind.asJson),
   )
@@ -571,14 +591,14 @@ object Schema extends DerivedSchemas:
   private def listed[C]
     (
       encoder: Encoder[C],
-      decoder: Decoder[C],
+      read: Holes => Decoder[C],
       name: TypeName,
       item: Schema[?],
       unique: Boolean = false,
     )
     : Schema[C] = new Schema(
     encoder,
-    decoder,
+    read,
     name,
     arrayOf(item, unique),
     List(item),
@@ -606,7 +626,7 @@ object Schema extends DerivedSchemas:
     )
     : Schema[B] = new Schema(
     inner.encoder.contramap(from),
-    inner.decoder.map(to),
+    holes => inner.reading(holes).map(to),
     applied(name, inner),
     describe => describe(inner),
     List(inner),
@@ -629,20 +649,21 @@ object Schema extends DerivedSchemas:
             .map(_.encoder(_)),
         ),
       ),
-      accumulating(cursor =>
-        if !cursor.values.exists(_.size == schemas.size) then
-          DecodingFailure(
-            Reason.CustomReason(s"Expected an array of ${ schemas.size }"),
-            cursor,
-          ).invalidNel
-        else
-          schemas
-            .zipWithIndex
-            .traverse((schema, index) =>
-              schema.decoder.tryDecodeAccumulating(cursor.downN(index)),
-            )
-            .map(values => build(Tuple.fromArray(values.toArray))),
-      ),
+      holes =>
+        accumulating(cursor =>
+          if !cursor.values.exists(_.size == schemas.size) then
+            DecodingFailure(
+              Reason.CustomReason(s"Expected an array of ${ schemas.size }"),
+              cursor,
+            ).invalidNel
+          else
+            schemas
+              .zipWithIndex
+              .traverse((schema, index) =>
+                schema.reading(holes).tryDecodeAccumulating(cursor.downN(index)),
+              )
+              .map(values => build(Tuple.fromArray(values.toArray))),
+        ),
       name,
       describe =>
         Json.obj(
@@ -700,13 +721,14 @@ object Schema extends DerivedSchemas:
               .flatMap(_.written(_)),
           ),
         ),
-      accumulating(cursor =>
-        if !cursor.value.isObject then expected("object", cursor).invalidNel
-        else
-          fields
-            .traverse(_.read(cursor))
-            .map(values => build(Tuple.fromArray(values.toArray))),
-      ),
+      holes =>
+        accumulating(cursor =>
+          if !cursor.value.isObject then expected("object", cursor).invalidNel
+          else
+            fields
+              .traverse(_.read(cursor, holes))
+              .map(values => build(Tuple.fromArray(values.toArray))),
+        ),
       name,
       describe =>
         closed(
@@ -788,11 +810,11 @@ object Schema extends DerivedSchemas:
       Option.unless(unset)(label -> json)
 
     /** The field read from its object, or its default where it is left out. */
-    def read(cursor: HCursor): Decoder.AccumulatingResult[Any] =
+    def read(cursor: HCursor, holes: Holes): Decoder.AccumulatingResult[Any] =
       val field = cursor.downField(label)
       default
         .filter(_ => field.failed)
-        .fold(schema.decoder.tryDecodeAccumulating(field))(_().validNel)
+        .fold(schema.reading(holes).tryDecodeAccumulating(field))(_().validNel)
 
     /**
       * The field's schema, described in its own words and then its type's, so
@@ -835,11 +857,12 @@ object Schema extends DerivedSchemas:
         val (label, schema) = cases(ordinal(value))
         if bare then label.asJson else Json.obj(label -> schema.encoder(value)),
       ),
-      accumulating(cursor =>
-        if bare then
-          cursor.as[String].toValidatedNel.andThen(enumerated(cases, cursor))
-        else tagged(cases, cursor),
-      ),
+      holes =>
+        accumulating(cursor =>
+          if bare then
+            cursor.as[String].toValidatedNel.andThen(enumerated(cases, cursor))
+          else tagged(cases, cursor, holes),
+        ),
       name,
       describe => if bare then enumeration(cases) else tagging(cases, describe),
       if bare then Nil else cases.map(_._2),
@@ -877,11 +900,12 @@ object Schema extends DerivedSchemas:
     (
       cases: List[(String, Schema[Any])],
       cursor: HCursor,
+      holes: Holes,
     )
     : Decoder.AccumulatingResult[A] = cases
     .find((label, _) => cursor.keys.exists(_.exists(_ == label)))
     .fold(oneOf(cases, cursor).invalidNel)((label, schema) =>
-      schema.decoder.tryDecodeAccumulating(cursor.downField(label)),
+      schema.reading(holes).tryDecodeAccumulating(cursor.downField(label)),
     )
     .map(_.asInstanceOf[A])
 
@@ -939,6 +963,32 @@ object Schema extends DerivedSchemas:
       cursor,
     )
 
+  /**
+    * Placeholders standing for streams already open, each with the stream it
+    * stands for, told apart by identity from any JSON the model wrote.
+    */
+  private[iris] type Holes = List[(Json, Any)]
+
+  /**
+    * A stream's decoder, reading a placeholder of `holes` as the stream it
+    * stands for, and any other JSON as `whole` does.
+    */
+  private def standingIn[A](holes: Holes, whole: Decoder[A]): Decoder[A] =
+    if holes.isEmpty then whole
+    else
+      new Decoder[A]:
+
+        override def apply(cursor: HCursor): Decoder.Result[A] =
+          standing(cursor).fold(whole(cursor))(Right(_))
+
+        override def decodeAccumulating
+          (cursor: HCursor)
+          : Decoder.AccumulatingResult[A] =
+          standing(cursor).fold(whole.decodeAccumulating(cursor))(_.validNel)
+
+        private def standing(cursor: HCursor): Option[A] = holes.collectFirst:
+          case (hole, stream) if hole eq cursor.value => stream.asInstanceOf[A]
+
   /** A decoder that, where accumulating, reports every failure at once. */
   private def accumulating[A]
     (read: HCursor => Decoder.AccumulatingResult[A])
@@ -987,11 +1037,11 @@ object Schema extends DerivedSchemas:
     * is read from its members, one of which can be, a type met again within
     * itself having been looked into already.
     */
-  private def unfolding(schema: Schema[?], within: Set[String]): Boolean =
+  private def gradual(schema: Schema[?], within: Set[String]): Boolean =
     schema.arrival match
       case Arrival.Streamed(_)     => true
       case Arrival.Assembled(_, _) => !definition(schema).exists(within) &&
-        schema.parts.exists(unfolding(_, within ++ definition(schema)))
+        schema.parts.exists(gradual(_, within ++ definition(schema)))
       case Arrival.Whole => false
 
   /** The types, by full name, met again within themselves. */

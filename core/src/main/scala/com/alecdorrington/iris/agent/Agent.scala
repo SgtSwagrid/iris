@@ -367,7 +367,7 @@ private[iris] final class Emitter[F[_] : Async]
     element: Schema[?],
     limit: Int,
     maxIterations: Option[Int],
-    feeds: StreamBuffers[F],
+    buffers: StreamBuffers[F],
     rounds: Deferred[
       F,
       Either[Throwable, List[QueryResponse[F, Any]]],
@@ -526,7 +526,7 @@ private[iris] final class Emitter[F[_] : Async]
       if turn.refused then (turn.said(Emitter.skipped), progress).pure[F]
       else
         Emitter.read(element, call) match
-          case Right(read) => feeds
+          case Right(read) => buffers
               .feed(Emitter.stream, read)
               .as((turn.said(Emitter.taken), Progress(progress.fed + 1, 0)))
           case Left(why) => (
@@ -573,12 +573,12 @@ private[iris] final class Emitter[F[_] : Async]
       elements: List[Any],
       done: Vector[QueryResponse[F, Any]],
     )
-    : F[Unit] = elements.traverse_(feeds.feed(Emitter.stream, _)) *>
-    feeds.end(Emitter.stream) *> rounds.complete(Right(done.toList)).void
+    : F[Unit] = elements.traverse_(buffers.feed(Emitter.stream, _)) *>
+    buffers.end(Emitter.stream) *> rounds.complete(Right(done.toList)).void
 
   /** Fails the stream, and its rounds. */
   private def failed(error: Throwable): F[Unit] =
-    rounds.complete(Left(error)) *> feeds.fail(error)
+    rounds.complete(Left(error)) *> buffers.fail(error)
 
 private[iris] object Emitter:
 
@@ -605,10 +605,10 @@ private[iris] object Emitter:
           F,
           Either[Throwable, List[QueryResponse[F, Any]]],
         ],
-      ).flatMapN((feeds, rounds) =>
-        feeds.open(Emitter.stream) *>
+      ).flatMapN((buffers, rounds) =>
+        buffers.open(Emitter.stream) *>
           PartialParser
-            .standIn(schema, feeds.live(Emitter.stream))
+            .standIn(schema, buffers.live(Emitter.stream))
             .leftMap(IllegalStateException(_))
             .liftTo[F]
             .flatMap(value =>
@@ -618,7 +618,7 @@ private[iris] object Emitter:
                 element,
                 asked.maxAttempts.getOrElse(QueryConfig().maxAttempts),
                 maxIterations,
-                feeds,
+                buffers,
                 rounds,
               ).run(QueryRequest(
                   asked.prompt.copy(tools = offered),
