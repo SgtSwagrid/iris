@@ -1,7 +1,7 @@
 package com.alecdorrington.iris
 package query
 
-import cats.effect.{Async, Deferred, Ref}
+import cats.effect.{Async, Deferred}
 import cats.effect.syntax.all.*
 import cats.syntax.all.*
 import com.alecdorrington.iris.prompt.*
@@ -21,61 +21,57 @@ private[iris] final case class StreamBuffer
 
   def fed(element: Any): StreamBuffer = copy(elements = elements :+ element)
 
-  /** This feed ended, unless it has already. */
+  /** This buffer ended, unless it has already. */
   def ended(outcome: Either[Throwable, Unit]): StreamBuffer =
     if end.isDefined then this else copy(end = Some(outcome))
 
-/** The feeds of a value's streams, by number, each opened as it begins. */
+/**
+  * The buffers of a value's streams, by number, each opened as it begins, all
+  * held in one cell, which the reader of the value's reply changes and its
+  * streams follow.
+  */
 private[iris] final class StreamBuffers[F[_] : Async]
-  (
-    feeds: Ref[
-      F,
-      Map[Int, SignallingRef[F, StreamBuffer]],
-    ],
-  ):
+  (buffers: SignallingRef[F, Map[Int, StreamBuffer]]):
 
-  def open(stream: Int): F[Unit] = SignallingRef
-    .of[F, StreamBuffer](StreamBuffer())
-    .flatMap(feed => feeds.update(_ + (stream -> feed)))
+  def open(stream: Int): F[Unit] =
+    buffers.update(_ + (stream -> StreamBuffer()))
 
-  def feed(stream: Int, element: Any): F[Unit] = feeds
-    .get
-    .flatMap(_(stream).update(_.fed(element)))
+  def feed(stream: Int, element: Any): F[Unit] = changed(stream, _.fed(element))
 
-  def end(stream: Int): F[Unit] = feeds
-    .get
-    .flatMap(_(stream).update(_.ended(Right(()))))
+  def end(stream: Int): F[Unit] = changed(stream, _.ended(Right(())))
 
   /** Fails every stream not yet ended. */
-  def fail(error: Throwable): F[Unit] = feeds
-    .get
-    .flatMap(_.values.toList.traverse_(_.update(_.ended(Left(error)))))
+  def fail(error: Throwable): F[Unit] =
+    buffers.update(_.view.mapValues(_.ended(Left(error))).toMap)
 
   /**
-    * A stream read from its feed, once the reader has opened it: every element
-    * fed it from the first, however often it is read.
+    * A stream read from its buffer, once the reader has opened it: every
+    * element fed it from the first, however often it is read.
     */
-  def live(stream: Int): Any = Stream
-    .eval(feeds.get.map(_(stream)))
-    .flatMap(
-      _.discrete
-        .takeThrough(_.end.isEmpty)
-        .zipWithPrevious
-        .flatMap((previous, feed) =>
-          Stream.emits(feed.elements.drop(previous.fold(0)(_.elements.size))) ++
-            Stream
-              .fromOption(feed.end.flatMap(_.left.toOption))
-              .flatMap(Stream.raiseError[F]),
-        ),
+  def live(stream: Int): Any = buffers
+    .discrete
+    .map(_.get(stream))
+    .unNone
+    .takeThrough(_.end.isEmpty)
+    .zipWithPrevious
+    .flatMap((previous, buffer) =>
+      Stream.emits(buffer.elements.drop(previous.fold(0)(_.elements.size))) ++
+        Stream
+          .fromOption(buffer.end.flatMap(_.left.toOption))
+          .flatMap(Stream.raiseError[F]),
     )
+
+  private def changed
+    (
+      stream: Int,
+      change: StreamBuffer => StreamBuffer,
+    )
+    : F[Unit] = buffers.update(_.updatedWith(stream)(_.map(change)))
 
 private[iris] object StreamBuffers:
 
-  def apply[F[_] : Async]: F[StreamBuffers[F]] = Ref
-    .of[
-      F,
-      Map[Int, SignallingRef[F, StreamBuffer]],
-    ](Map.empty)
+  def apply[F[_] : Async]: F[StreamBuffers[F]] = SignallingRef
+    .of[F, Map[Int, StreamBuffer]](Map.empty)
     .map(new StreamBuffers(_))
 
 /**
@@ -91,7 +87,7 @@ private[iris] final class LiveReader[F[_] : Async, A]
     schema: Schema[A],
     attempts: Int,
     asked: PromptRequest,
-    feeds: StreamBuffers[F],
+    buffers: StreamBuffers[F],
     value: Deferred[F, Either[Throwable, Option[A]]],
     ended: Deferred[
       F,
@@ -119,48 +115,43 @@ private[iris] final class LiveReader[F[_] : Async, A]
       conversation: Conversation,
       sent: Vector[PromptResponse],
     )
-    : F[Unit] = Async[F]
-    .delay(PartialParser(schema, feeds.live))
-    .flatMap(unfinished =>
-      prompt
-        .stream(asked.copy(conversation = conversation))
-        .evalMap:
-          case PromptEvent.Written(PromptEvent.Part.Text, text) => Async[F]
-              .delay(unfinished.feed(text))
-              .flatMap(_.traverse_(performed(unfinished, sent)))
-              .as(none[PromptResponse])
-          case PromptEvent.Written(_, _)   => none[PromptResponse].pure[F]
-          case PromptEvent.Ended(response) => response.some.pure[F]
-        .unNone
-        .compile
-        .last
-        .flatMap:
-          case Some(response) => answered(
-              unfinished,
-              conversation,
-              sent :+ response,
-            )
-          case None => unreadable(
-              sent :+ PromptResponse(unfinished.text, StopReason.Unknown),
-              "Its stream ended before it said it was over.",
-            ),
-    )
+    : F[Unit] = prompt
+    .stream(asked.copy(conversation = conversation))
+    .evalMapAccumulate(PartialParser(schema, buffers.live)):
+      case (parser, PromptEvent.Written(PromptEvent.Part.Text, text)) =>
+        val (next, events) = parser.feed(text)
+        events.traverse_(performed(next, sent)).as(next -> none[PromptResponse])
+      case (parser, PromptEvent.Written(_, _))   => (parser -> none).pure[F]
+      case (parser, PromptEvent.Ended(response)) => (parser -> response.some)
+          .pure[F]
+    .compile
+    .last
+    .flatMap:
+      case Some((parser, Some(response))) =>
+        answered(parser, conversation, sent :+ response)
+      case ended => unreadable(
+          sent :+ PromptResponse(
+            ended.fold("")(_._1.text),
+            StopReason.Unknown,
+          ),
+          "Its stream ended before it said it was over.",
+        )
 
   /** Does as an event of the response says, while it is still arriving. */
   private def performed
     (
-      unfinished: PartialParser,
+      parser: PartialParser,
       sent: Vector[PromptResponse],
     )
     (event: PartialParser.Event)
     : F[Unit] = event match
-    case PartialParser.Event.Opened(stream) => feeds.open(stream)
+    case PartialParser.Event.Opened(stream) => buffers.open(stream)
     case PartialParser.Event.Read(0, read)  =>
       value.complete(Right(Some(read.asInstanceOf[A]))).void
-    case PartialParser.Event.Read(stream, read) => feeds.feed(stream, read)
-    case PartialParser.Event.Ended(stream)      => feeds.end(stream)
+    case PartialParser.Event.Read(stream, read) => buffers.feed(stream, read)
+    case PartialParser.Event.Ended(stream)      => buffers.end(stream)
     case PartialParser.Event.Failed(detail)     => unreadable(
-        sent :+ PromptResponse(unfinished.text, StopReason.Unknown),
+        sent :+ PromptResponse(parser.text, StopReason.Unknown),
         detail,
       )
 
@@ -170,7 +161,7 @@ private[iris] final class LiveReader[F[_] : Async, A]
     */
   private def answered
     (
-      unfinished: PartialParser,
+      parser: PartialParser,
       conversation: Conversation,
       responses: Vector[PromptResponse],
     )
@@ -183,7 +174,7 @@ private[iris] final class LiveReader[F[_] : Async, A]
       .tryGet
       .flatMap:
         case Some(_) =>
-          fault(response, unfinished.whole).fold(done)(unreadable(responses, _))
+          fault(response, parser.whole).fold(done)(unreadable(responses, _))
         case None => ValueReader.verdict(
             schema,
             conversation,
@@ -218,7 +209,7 @@ private[iris] final class LiveReader[F[_] : Async, A]
 
   /** Fails whatever is still to be read of the value. */
   private def failed(error: Throwable): F[Unit] = value.complete(Left(error)) *>
-    ended.complete(Left(error)) *> feeds.fail(error)
+    ended.complete(Left(error)) *> buffers.fail(error)
 
 private[iris] object LiveReader:
 
@@ -244,7 +235,7 @@ private[iris] object LiveReader:
         (List[PromptResponse], Conversation),
       ],
     ],
-  ).flatMapN((feeds, value, ended) =>
+  ).flatMapN((buffers, value, ended) =>
     val whole = ended.get.rethrow
     // Started and watched at once, so that no cancel falls between.
     Async[F].uncancelable(poll =>
@@ -253,7 +244,7 @@ private[iris] object LiveReader:
         schema,
         attempts,
         asked,
-        feeds,
+        buffers,
         value,
         ended,
       ).read

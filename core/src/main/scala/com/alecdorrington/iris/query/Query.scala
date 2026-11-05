@@ -483,9 +483,18 @@ private[iris] object ValueReader:
 
   private val fence: Regex = """(?s)```(?:[\w-]+\s)?\s*(.*?)\s*```""".r
 
-  /** Every failure to decode the JSON, as circe says it. */
-  def decoded[A](schema: Schema[A], json: Json): Either[String, A] = schema
-    .decoder
+  /**
+    * Every failure to decode the JSON, as circe says it, where each of `holes`
+    * stands for a stream already open.
+    */
+  def decoded[A]
+    (
+      schema: Schema[A],
+      json: Json,
+      holes: Schema.Holes = Nil,
+    )
+    : Either[String, A] = schema
+    .reading(holes)
     .decodeAccumulating(json.hcursor)
     .toEither
     .leftMap(_.map(_.getMessage).toList.mkString("\n"))

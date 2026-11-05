@@ -131,8 +131,13 @@ what every module shares.
   knows arriving later, or a reserved stream never begun, fails the reply rather than be lost. `PartialParser` follows only brackets, strings,
   escapes, commas and colons
   (circe parses each value once whole, and the schema's own decoder reads it, so every value is decoded by the
-  same code as a whole reply), standing in for each open stream with a placeholder `Json` found by identity
-  through a `DynamicVariable` while decoding. A type with no stream is not read early, but at the end through
-  `ValueReader.verdict`, as a whole query reads it. `LiveReader` drives it in a background fiber, keeping each stream's elements
-  and end in a `SignallingRef` (never a `Channel`, which serves one reader), so a stream reads alike however often,
-  as `Stream.emits` from a whole reply does.
+  same code as a whole reply), standing in for each open stream with a placeholder `Json` found by identity.
+  The placeholders go to the decoder explicitly: each `Schema` builds its decoder from them (`reading(holes)`,
+  its parts' likewise), and only a stream's looks at them; `decoder` is `reading(Nil)`. The parser holds no
+  mutable state (the user's choice, 2026-11-05): `feed` gives a new parser and the events it read, which
+  `LiveReader` threads through the reply by `evalMapAccumulate`. A type with no stream is not read early, but at
+  the end through `ValueReader.verdict`, as a whole query reads it. `LiveReader` drives it in a background fiber,
+  keeping every stream's elements and end in one `SignallingRef` of immutable `StreamBuffer`s (`StreamBuffers`;
+  never a `Channel`, which serves one reader), so a stream reads alike however often, as `Stream.emits` from a
+  whole reply does. That cell is the one shared state left, as a value already handed over fills from a reply
+  still arriving; JVM `Platform`'s `Flow.Subscriber` keeps the JDK's callbacks' own.
