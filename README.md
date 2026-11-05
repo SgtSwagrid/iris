@@ -5,7 +5,7 @@
 
   <span>
     <a href="https://github.com/SgtSwagrid/iris/actions/workflows/build-integrity.yml"><img src="https://github.com/SgtSwagrid/iris/actions/workflows/build-integrity.yml/badge.svg" alt="Build status" /></a>
-    <a href="https://search.maven.org/artifact/com.alecdorrington/iris_3"><img src="https://img.shields.io/maven-central/v/com.alecdorrington/iris_3.svg" alt="Maven Central" /></a>
+    <a href="https://search.maven.org/artifact/com.alecdorrington/iris-providers_3"><img src="https://img.shields.io/maven-central/v/com.alecdorrington/iris-providers_3.svg" alt="Maven Central" /></a>
     <a href="https://alecdorrington.com/iris"><img src="https://img.shields.io/badge/docs-latest-blue.svg" alt="Documentation" /></a>
   </span>
 
@@ -29,8 +29,22 @@ The following applies for [Scala 3](https://www.scala-lang.org/) projects built 
 Add the library to your `build.sbt` file, with the desired version number (e.g. [latest](../../releases/latest)):
 
 ```scala
-libraryDependencies += "com.alecdorrington" %% "iris" % "{version}"
+libraryDependencies += "com.alecdorrington" %% "iris-providers" % "{version}"
 ```
+
+That brings every provider. A host using only some depends on theirs instead, each bringing the rest of Iris
+with it:
+
+| Artifact         | Holds                                                                      |
+|------------------|----------------------------------------------------------------------------|
+| `iris-core`      | The prompt, query and agent layers, conversations, usage and schemas      |
+| `iris-http`      | The api layer, and what every provider shares over HTTP                   |
+| `iris-anthropic` | `Anthropic` and its models, `AnthropicModel`                              |
+| `iris-openai`    | `OpenAi` and its models, `OpenAiModel`                                    |
+| `iris-gemini`    | `Gemini` and its models, `GeminiModel`                                    |
+| `iris-providers` | All three, and `Providers`, which chooses one at runtime                  |
+
+A library that is handed a prompt service by its host needs only `iris-core`.
 
 ## 🚀 Usage
 
@@ -39,54 +53,59 @@ send to whichever you need:
 
 | Layer                                                                 | One request means                                | Service          |
 |-----------------------------------------------------------------------|--------------------------------------------------|------------------|
-| [`api`](src/main/scala/com/alecdorrington/iris/Api.scala)             | one exchange with a provider, in its own JSON    | `ApiService`     |
-| [`prompt`](src/main/scala/com/alecdorrington/iris/Prompt.scala)       | one exchange of text with the model              | `PromptService`  |
-| [`query`](src/main/scala/com/alecdorrington/iris/Query.scala)         | one value of a type, read from what it wrote     | `QueryService`   |
-| [`agent`](src/main/scala/com/alecdorrington/iris/Agent.scala)         | one value, with tools run until it comes         | `AgentService`   |
+| [`api`](providers/http/src/main/scala/com/alecdorrington/iris/api/Api.scala)             | one exchange with a provider, in its own JSON    | `ApiService`     |
+| [`prompt`](core/src/main/scala/com/alecdorrington/iris/prompt/Prompt.scala)       | one exchange of text with the model              | `PromptService`  |
+| [`query`](core/src/main/scala/com/alecdorrington/iris/query/Query.scala)         | one value of a type, read from what it wrote     | `QueryService`   |
+| [`agent`](core/src/main/scala/com/alecdorrington/iris/agent/Agent.scala)         | one value, with tools run until it comes         | `AgentService`   |
 
 Each service is built with its layer's settings (`ApiConfig`, `PromptConfig`, `QueryConfig`, `AgentConfig`),
 every one defaulted, and each request may set its own for one call. A request holds the request of the
 layer below (`agentRequest.query.prompt.conversation`), and every `send` takes text, a conversation or a
 lower layer's request as well as its own, filling in the rest from its service's settings.
 
-A stack is built from its model, one step a layer:
+Each layer is a package of its own (`com.alecdorrington.iris.prompt`, `.query`, `.agent`, `.api`), beside
+the vocabulary they share (`Conversation`, `Message`, `Usage`) in `com.alecdorrington.iris`, and each provider
+another (`.anthropic`, `.openai`, `.gemini`). A stack is built from its model, one step a layer:
 
 ```scala
-import com.alecdorrington.iris.*
+import com.alecdorrington.iris.agent.*
+import com.alecdorrington.iris.anthropic.AnthropicModel
+import com.alecdorrington.iris.query.*
 
-Model.ClaudeSonnet5_5.prompt[IO]().use: prompt =>
+AnthropicModel.ClaudeSonnet5_5.prompt[IO]().use: prompt =>
   prompt.query.agent(dictionary).send[Review]("Review this essay: ...")
 ```
 
 `model.prompt[IO]()` makes the model's prompt service, with an API service and HTTP client of its own,
 held in a cats-effect `Resource`; its key is the provider's own variable's (`ANTHROPIC_API_KEY`), unless
-`ApiConfig(key = Some(...))` gives one. `PromptService.fromEnv[IO]` reads the model and its settings from
+`ApiConfig(key = Some(...))` gives one. `Providers.prompt[IO]()` reads the model and its settings from
 the environment (see [Configuration](#%EF%B8%8F-configuration)), giving `None` where none is configured.
 
-Models are named by [`Model`](src/main/scala/com/alecdorrington/iris/Model.scala), each served by one provider. A model Iris does
-not list yet is named with its provider, as `Model.of(ModelProvider.Anthropic, "claude-...")`, which gives
-`None` for a blank name, and the listed constant for a name Iris lists. A model's `name` is its provider's
-and its own, as `anthropic:claude-opus-5-5`. Several models of one provider may share a connection: make
-its API service once, `ModelProvider.Anthropic.api[IO]()`, and each model's prompt service over it,
-`model.prompt(api, PromptConfig())`.
+Each provider's models are its own, as [`AnthropicModel`](providers/anthropic/src/main/scala/com/alecdorrington/iris/anthropic/AnthropicModel.scala),
+every one a `ProviderModel` of its [`Provider`](providers/http/src/main/scala/com/alecdorrington/iris/api/Provider.scala)
+(`Anthropic`, `OpenAi` or `Gemini`). A model Iris does not list yet is named by its provider's, as
+`AnthropicModel.of("claude-...")`, which gives `None` for a blank name, and the listed constant for a name Iris
+lists. A model's `name` is its provider's and its own, as `anthropic:claude-opus-5-5`, which
+`Providers.model` reads back. Several models of one provider may share a connection: make its API service
+once, `Anthropic.api[IO]()`, and each model's prompt service over it, `model.prompt(api, PromptConfig())`.
 
 ### Prompting
 
 The prompt layer is a plain exchange of text: a conversation in, the model's next message out, as a
-[`PromptResponse`](src/main/scala/com/alecdorrington/iris/Prompt.scala) with its `text`, why the model stopped (`stopReason`),
+[`PromptResponse`](core/src/main/scala/com/alecdorrington/iris/prompt/Prompt.scala) with its `text`, why the model stopped (`stopReason`),
 its token `usage`, its `cost` and the `toolCalls` it made.
 
 ```scala
 prompt.send("Hello!").map(_.text)
 ```
 
-A [`PromptRequest`](src/main/scala/com/alecdorrington/iris/Prompt.scala) may set the token limit, temperature, top-p, stop
+A [`PromptRequest`](core/src/main/scala/com/alecdorrington/iris/prompt/Prompt.scala) may set the token limit, temperature, top-p, stop
 sequences, effort and the tools offered for one request, each otherwise its service's
-[`PromptConfig`](src/main/scala/com/alecdorrington/iris/Prompt.scala):
+[`PromptConfig`](core/src/main/scala/com/alecdorrington/iris/prompt/Prompt.scala):
 
 ```scala
 prompt.send(PromptRequest(conversation, maxTokens = Some(1024), temperature = Some(0.2)))
-Model.ClaudeOpus5_5.prompt[IO](config = PromptConfig(maxTokens = 4096))
+AnthropicModel.ClaudeOpus5_5.prompt[IO](config = PromptConfig(maxTokens = 4096))
 ```
 
 A response's `Usage` is alike for every provider, and no count includes another, so that each can be priced
@@ -101,7 +120,7 @@ apart, is `0`. `inputTokens`, `cachedTokens` and `outputTokens` total them, and 
 > still apply to every other provider, and to Anthropic's older models.
 
 A model that thinks before it answers can be told how much to think with an
-[`Effort`](src/main/scala/com/alecdorrington/iris/Effort.scala), from `Low` to `Max`. Less thought is quicker and
+[`Effort`](core/src/main/scala/com/alecdorrington/iris/prompt/Effort.scala), from `Low` to `Max`. Less thought is quicker and
 cheaper, and leaves more of the token limit for the answer, where a hard request can otherwise be thought
 about until none is left. It is sent as Anthropic's `effort`, OpenAI's `reasoning_effort` and a Gemini
 thinking budget; a model that cannot be told refuses the request.
@@ -109,7 +128,7 @@ thinking budget; a model that cannot be told refuses the request.
 ### Conversations
 
 Conversations are stateless: nothing is remembered between calls, and the full history
-travels with every request as a [`Conversation`](src/main/scala/com/alecdorrington/iris/Conversation.scala).
+travels with every request as a [`Conversation`](core/src/main/scala/com/alecdorrington/iris/Conversation.scala).
 To go on with a conversation, append what the model said and the user's next words, then send it again:
 
 ```scala
@@ -123,11 +142,11 @@ yield second.text
 ### Typed answers
 
 The query layer asks for a value of any type, `String` included, alike for every type: a
-[`QueryResponse`](src/main/scala/com/alecdorrington/iris/Query.scala) holding its `value`, read and validated against the
+[`QueryResponse`](core/src/main/scala/com/alecdorrington/iris/query/Query.scala) holding its `value`, read and validated against the
 type's schema, and its `iterations`, an effect giving every `PromptResponse` it took, the last the one the
 value was read from; `usage` and `cost` total them. The iterations are an effect as a value may be given
 before the last ends (see [Streaming](#streaming)); for most types it has ended already. Every case class,
-sealed trait and enum whose fields have one has a [`Schema`](src/main/scala/com/alecdorrington/iris/Schema.scala), derived wherever it is
+sealed trait and enum whose fields have one has a [`Schema`](core/src/main/scala/com/alecdorrington/iris/query/Schema.scala), derived wherever it is
 needed, and the model is told the [JSON Schema](https://json-schema.org) its response must conform to, which is read
 back as that type:
 
@@ -211,7 +230,7 @@ JSON string, which is read back as any other answer.
 
 What goes in is alike everywhere: `Conversation.userSays`, a conversation's `userSays` and `modelSays`, and the
 query and agent layers' `send`, each
-take any values with a [`Content`](src/main/scala/com/alecdorrington/iris/Content.scala), of any kinds together, as parts of one message in
+take any values with a [`Content`](core/src/main/scala/com/alecdorrington/iris/query/Content.scala), of any kinds together, as parts of one message in
 reading order. Text is said as it is, a part as itself, and any other value as JSON, as its `Schema` writes it,
 or else, where it has none, as its circe `Encoder` does:
 
@@ -245,8 +264,8 @@ provider's own structured output, so it works alike everywhere, and a cached pre
 ### Costs
 
 Each `PromptResponse` also says what it `cost`, in US dollars, as a
-[`Usd`](src/main/scala/com/alecdorrington/iris/Usd.scala): each response priced as it came, at the
-[`Rates`](src/main/scala/com/alecdorrington/iris/Rates.scala) Iris lists for its model, and a query's or an agent's
+[`Usd`](core/src/main/scala/com/alecdorrington/iris/Usd.scala): each response priced as it came, at the
+[`Rates`](core/src/main/scala/com/alecdorrington/iris/Rates.scala) Iris lists for its model, and a query's or an agent's
 `cost` totals every response it took, as its `usage` does. Rates are per million tokens, one for each of
 `Usage`'s counts, as the provider charges on its standard tier, and a model charging more for a long prompt
 has rates `above` a number of prompt tokens, which then apply to the whole request. A price change the
@@ -260,7 +279,7 @@ own, which also stand in for those listed, as for a proxy charging its own price
 model.prompt[IO](config = PromptConfig(rates = Some(Rates.of(Usd(BigDecimal(3)), Usd(BigDecimal(15))))))
 ```
 
-`Rates.listed(model, at)` gives the rates Iris lists ahead of any request, as for estimating one.
+`model.rates(at)` gives the rates Iris lists ahead of any request, as for estimating one.
 No provider publishes its prices through its API, so Iris lists them as they stood at its release:
 a later change it could not know of needs a newer Iris or rates of your own.
 
@@ -283,7 +302,7 @@ prompt.metered((_, cost) => cost.traverse_(spent => total.update(_ + spent)))
 
 ### Budgets
 
-A [`Budget`](src/main/scala/com/alecdorrington/iris/Budget.scala) limits what requests may cost together, in US
+A [`Budget`](core/src/main/scala/com/alecdorrington/iris/prompt/Budget.scala) limits what requests may cost together, in US
 dollars, as for a session: every prompt service it limits spends from it, whatever its model or provider.
 A request is refused with `PromptError.OverBudget` once as much as the limit has been spent, before
 anything is sent, and is charged what its response cost when it ends. Every attempt of a query is charged,
@@ -310,7 +329,7 @@ response is lost, as is every later one from that model, so give such a model `r
 
 ### Pictures and documents
 
-A message is a list of [`MessagePart`](src/main/scala/com/alecdorrington/iris/Conversation.scala)s, so text may travel beside
+A message is a list of [`MessagePart`](core/src/main/scala/com/alecdorrington/iris/Conversation.scala)s, so text may travel beside
 the media it refers to. A message of text alone is still sent as plain text, so nothing
 changes for a conversation which carries none.
 
@@ -326,7 +345,7 @@ import com.alecdorrington.iris.{MediaType, MessagePart}
 conversation.userSays("What is in this picture?", MessagePart.Media(MediaType.Png, bytes)) // or its Base64, as a String
 ```
 
-Media is of a [`MediaType`](src/main/scala/com/alecdorrington/iris/MediaType.scala): `Png`, `Jpeg`, `Gif`,
+Media is of a [`MediaType`](core/src/main/scala/com/alecdorrington/iris/MediaType.scala): `Png`, `Jpeg`, `Gif`,
 `Webp` or `Pdf`, or any other, such as `audio/mp3`, named by `MediaType.of`. Each provider is sent only what
 it takes, and anything else fails with `PromptError.Unsupported` before any request, rather than being dropped
 or sent as something it is not:
@@ -341,7 +360,7 @@ or sent as something it is not:
 ### Streaming
 
 `prompt.stream` gives a response as it is written: a
-[`PromptEvent`](src/main/scala/com/alecdorrington/iris/Prompt.scala) `Written` for more of its text, or of a tool call's arguments
+[`PromptEvent`](core/src/main/scala/com/alecdorrington/iris/prompt/Prompt.scala) `Written` for more of its text, or of a tool call's arguments
 (each call arrives whole), and one `Ended` at last, carrying the whole `PromptResponse`, the provider's report
 rather than anything the model wrote. `send` is `stream` gathered, sent whole. A service made by
 `model.prompt[IO]()` streams as the response arrives; one made over a backend of your own does where that
@@ -425,7 +444,7 @@ response is then given with no value, its calls not run, and a stream given thro
 is a request, so bound what an agent may spend with a [budget](#budgets) either way.
 
 ```scala
-import com.alecdorrington.iris.RunnableTool
+import com.alecdorrington.iris.agent.RunnableTool
 
 case class Lookup(word: String)
 
@@ -495,7 +514,7 @@ so it is a service of its own, over the provider's API service; OpenAI offers no
 models have none.
 
 ```scala
-ModelProvider.Anthropic.api[IO]().use: api =>
+Anthropic.api[IO]().use: api =>
   model.counter(api).traverse(_.countTokens("How long is a piece of string?"))
 ```
 
@@ -533,7 +552,7 @@ shorter than its own minimum.
 ### Errors
 
 Each layer fails with errors of its own. The api layer's
-[`ApiError`](src/main/scala/com/alecdorrington/iris/Api.scala) is a provider's refusal or failure: `RateLimited` (`429`) or
+[`ApiError`](providers/http/src/main/scala/com/alecdorrington/iris/api/Api.scala) is a provider's refusal or failure: `RateLimited` (`429`) or
 `Overloaded` (`503`, or Anthropic's `529`) for a request it refused for now and went on refusing (below),
 carrying the wait it asked for, if any, `Transient` for one it failed for now (`408`, `409`, `500`, `502`,
 `504`) and went on failing, `Unsuccessful` for any other unsuccessful response, carrying its status and body,
@@ -554,7 +573,7 @@ consider logging them rather than passing them on.
 
 Providers limit how many requests, and how many tokens, an account may send a minute, and refuse the excess
 for now, as they do when too busy to answer. An API service made by `model.prompt[IO]()` or
-`ModelProvider.api[IO]()`, or over a backend of your own that can stream, sends a request it refused so again
+`provider.api[IO]()`, or over a backend of your own that can stream, sends a request it refused so again
 once the wait the provider asked for is over: its `retry-after` (OpenAI's `retry-after-ms` first), else the
 reset of the limit spent (`anthropic-ratelimit-*-reset`, `x-ratelimit-reset-*`), or Gemini's `RetryInfo`,
 and up to a second more at random, so that requests refused together do not all come back at once. Where the
@@ -615,7 +634,7 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
 | 0.5                                                   | 0.6                                                                  |
 |-------------------------------------------------------|----------------------------------------------------------------------|
 | `ModelClient.resource[F](ModelConfig(model, key, n))` | `model.prompt[F](ApiConfig(key = Some(key)), PromptConfig(maxTokens = n))` |
-| `ModelClient.fromEnv[F]`                              | `PromptService.fromEnv[F]`                                           |
+| `ModelClient.fromEnv[F]`                              | `Providers.prompt[F]()`                                              |
 | `ModelClient(config, backend)`                        | `model.prompt(model.provider.api(apiConfig, backend), promptConfig)` |
 | `client.ask[A](conversation, options, attempts)`      | `prompt.query.send[A](QueryRequest(PromptRequest(conversation, ...), Some(attempts)))` |
 | `client.ask[A](conversation, tools = tools)`          | `prompt.query.agent(tools*).send[A](conversation)`                   |
@@ -628,7 +647,12 @@ client did is a prompt service's, and `ask` is a query's `send`, or an agent's w
 | `budget.limits(client)`                               | `prompt.limitedBy(budget)`                                           |
 | `ModelClient.Forwarding`, `mapK`                      | a function from one `PromptService` to another (see [Middleware](#middleware)) |
 | `ModelConfig`                                         | the model, `ApiConfig` (key, base URL, timeout, retries) and `PromptConfig` (token limit, sampling, effort, rates) |
-| `ModelConfig.fromEnv`, `ModelConfig.from`             | `Model.fromEnv`, `ApiConfig.fromEnv`, `PromptConfig.fromEnv`, and their `from` |
+| `ModelConfig.fromEnv`, `ModelConfig.from`             | `Providers.fromEnv`, `ApiConfig.fromEnv`, `PromptConfig.fromEnv`, and their `from` |
+| `"iris"`, `import com.alecdorrington.iris.*`          | `"iris-providers"` (or one provider's), and the layers' packages too  |
+| `Model.ClaudeSonnet5_5`, `Model.of(provider, id)`     | `AnthropicModel.ClaudeSonnet5_5`, `AnthropicModel.of(id)` (likewise `OpenAiModel`, `GeminiModel`) |
+| `Model`, `Model.parse`, `Model.listed`                | `ProviderModel`, `Providers.model`, each provider's `listed`        |
+| `ModelProvider.Anthropic`, `ModelProvider.parse`      | `Anthropic` (a `Provider`), `Providers.provider`                     |
+| `Rates.listed(model, at)`                             | `model.rates(at)`                                                    |
 | `Retries(attempts, backoff, patience)`, `Retries.none` | `ApiConfig(maxIterations = ..., backoff = ..., patience = ...)`, `maxIterations = 1` |
 | `ModelError`                                          | `ApiError`, `PromptError`, `QueryError` (`UnreadableResponse` is `QueryError.Unreadable`) |
 | `Chat`, a request's `chat`                            | `Conversation`, its `conversation`                                   |
@@ -763,7 +787,7 @@ which find and replace makes:
 
 ## ⚙️ Configuration
 
-`PromptService.fromEnv` reads these environment variables, through `Model.fromEnv`, `ApiConfig.fromEnv` and
+`Providers.prompt` reads these environment variables, through `Providers.fromEnv`, `ApiConfig.fromEnv` and
 `PromptConfig.fromEnv`:
 
 | Variable            | Meaning                                     | Default                        |
@@ -790,11 +814,11 @@ lookup of your own, which it reads every variable above through:
 
 ```scala
 val fast = (name: String) => sys.env.get(s"${name}_FAST").orElse(sys.env.get(name))
-(Model.from(fast), ApiConfig.from(fast), PromptConfig.from(fast)).tupled
+(Providers.from(fast), ApiConfig.from(fast), PromptConfig.from(fast)).tupled
 ```
 
 A host whose responses run longer than most passes its own default for an unset `LLM_MAX_TOKENS`, as in
-`PromptService.fromEnv[IO](defaultMaxTokens = 16_000)` or `PromptConfig.from(lookup, 16_000)`.
+`Providers.prompt[IO](defaultMaxTokens = 16_000)` or `PromptConfig.from(lookup, 16_000)`.
 
 ## 🌐 In the browser
 
