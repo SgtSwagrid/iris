@@ -290,6 +290,15 @@ class AskSuite extends FunSuite:
      "function":{"name":"weather","arguments":"{}"}}]},
     "finish_reason":"stop"}]}"""
 
+  test("an unreadable reply's error says why the model stopped"):
+    client(_ => said("[1, 2", stop = "max_tokens"))
+      .askWhole[List[Int]](prompt)
+      .attempt
+      .unsafeRunSync() match
+        case Left(error: QueryError.Unreadable) =>
+          assertEquals(error.stopReason, StopReason.MaxTokens)
+        case other => fail(s"Not unreadable: $other")
+
   test("calls in a reply the provider stopped are no calls, but a stop"):
     failsAtOnceAs[Person](
       """{"content":[{"type":"tool_use","id":"call_1","name":"weather",

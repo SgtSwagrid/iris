@@ -322,14 +322,29 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
       yield
         assertEquals(
           result,
-          Left(ApiError.RateLimited("Anthropic", None, "slow down")),
+          Left(ApiError.RateLimited(
+            "Anthropic",
+            StatusCode.TooManyRequests,
+            None,
+            "slow down",
+          )),
         )
         assertEquals(times, List(0, 1, 3, 7).map(_.seconds)),
     )
 
   test("a wait is drawn a little longer than asked, or shorter than doubled"):
-    val limited = ApiError.RateLimited("Anthropic", Some(30.seconds), "")
-    val unasked = ApiError.Overloaded("Anthropic", None, "")
+    val limited = ApiError.RateLimited(
+      "Anthropic",
+      StatusCode.TooManyRequests,
+      Some(30.seconds),
+      "",
+    )
+    val unasked = ApiError.Overloaded(
+      "Anthropic",
+      StatusCode.ServiceUnavailable,
+      None,
+      "",
+    )
     val retries = ApiConfig()
     val waited  = Duration.Zero
     val drawn   = (error: Throwable, tried: Int, draw: Double) =>
@@ -373,6 +388,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
           result,
           Left(ApiError.RateLimited(
             "Anthropic",
+            StatusCode.TooManyRequests,
             Some(2.seconds),
             "slow down",
           )),
@@ -394,6 +410,7 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
           result,
           Left(ApiError.RateLimited(
             "Anthropic",
+            StatusCode.TooManyRequests,
             Some(90.seconds),
             "slow down",
           )),
@@ -717,7 +734,12 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
         .toList
         .map(assertEquals(
           _,
-          List(Left(ApiError.Overloaded("Anthropic", None, overloaded))),
+          List(Left(ApiError.Overloaded(
+            "Anthropic",
+            StatusCode(529),
+            None,
+            overloaded,
+          ))),
         )),
     )
 
@@ -738,7 +760,12 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
           events,
           List(
             Right(PromptEvent.Written(PromptEvent.Part.Text, "Hel")),
-            Left(ApiError.Overloaded("Anthropic", None, overloaded)),
+            Left(ApiError.Overloaded(
+              "Anthropic",
+              StatusCode(529),
+              None,
+              overloaded,
+            )),
           ),
         )
         assertEquals(times, List(Duration.Zero)),

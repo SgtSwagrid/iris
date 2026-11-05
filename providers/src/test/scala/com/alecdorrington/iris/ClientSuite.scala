@@ -181,12 +181,22 @@ data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
           StatusCode.TooManyRequests,
           headers,
         )),
-        Left(ApiError.RateLimited("Anthropic", delay, "slow down")),
+        Left(ApiError.RateLimited(
+          "Anthropic",
+          StatusCode.TooManyRequests,
+          delay,
+          "slow down",
+        )),
         headers,
       )
     assertEquals(
       result(service("busy", StatusCode(529))),
-      Left(ApiError.Overloaded("Anthropic", None, "busy")),
+      Left(ApiError.Overloaded(
+        "Anthropic",
+        StatusCode(529),
+        None,
+        "busy",
+      )),
     )
 
   test("a failure for now carries its status, given at once here"):
