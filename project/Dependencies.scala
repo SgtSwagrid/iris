@@ -5,7 +5,7 @@ object Dependencies:
 
   object V:
 
-    val sttpClient = "4.1.0"
+    val sttpClient = "4.1.1"
     val circe      = "0.14.17"
     val cats       = "2.13.0"
     val catsEffect = "3.7.1"
@@ -32,8 +32,8 @@ object Dependencies:
     "org.typelevel" %% "cats-effect-testkit" % V.catsEffect % Test,
   )
 
-  lazy val cadmus =
-    libraryDependencies += "com.alecdorrington" %% "cadmus" % V.cadmus
+  lazy val cadmus = libraryDependencies +=
+    "com.alecdorrington" %% "cadmus" % V.cadmus
 
   lazy val munit = libraryDependencies ++=
     Seq("org.scalameta" %% "munit" % V.munit % Test)
