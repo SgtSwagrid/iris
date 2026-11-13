@@ -204,7 +204,7 @@ is made, and a request with none fails with `ApiError.Misconfigured`.
   copied by hand from its pricing page (no provider serves prices by API, so they are listed rather than fetched
   from a third party's catalogue), with any change the provider has announced from its day (`Provider.utc`,
   midnight UTC, Iris's assumption as Google names no time zone, by hand as JavaScript has no `java.time`).
-  GPT-5.6 Sol's rates are a promotion "at least through November 21, 2026" with no later price given: a run of
+  GPT-5.6 Sol's rates are a promotion "available until November 30, 2026" with no later price given: a run of
   `/update-iris` after that day re-checks them. A long-prompt threshold counts the whole prompt, cache included, as
   Anthropic documents; OpenAI and Google do not say, and are taken to count alike. Every listed model must have rates (`RatesSuite`
   checks), so a new model needs its prices. A rate per `Usage` count: a count charged nothing apart is charged as

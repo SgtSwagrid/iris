@@ -83,8 +83,8 @@ object OpenAi extends Provider:
 
   /**
     * As https://developers.openai.com/api/docs/pricing gives them. GPT-5.6
-    * Sol's are promotional, until November 21, 2026 at least, and OpenAI has
-    * not said what they are after.
+    * Sol's are promotional, until November 30, 2026, and OpenAI has not said
+    * what they are after.
     */
   override private[iris] def rates
     (model: ProviderModel, at: FiniteDuration)
