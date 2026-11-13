@@ -20,7 +20,7 @@ object Gemini extends Provider:
 
   override val origin: String = "https://generativelanguage.googleapis.com"
 
-  override def defaultModel: GeminiModel = GeminiModel.Gemini3_8Flash
+  override def defaultModel: GeminiModel = GeminiModel.Gemini4Hydrogen
 
   override def model(id: String): Option[GeminiModel] = GeminiModel.of(id)
 
@@ -96,11 +96,13 @@ object Gemini extends Provider:
   override private[iris] def rates
     (model: ProviderModel, at: FiniteDuration)
     : Option[Rates] = model match
-    case GeminiModel.Gemini4Argon => Some(
+    case GeminiModel.Gemini4Carbon | GeminiModel.Gemini4Argon => Some(
         if at < Provider.utc(2026, 12, 1) then
           priced(2.00, 0.10, 2.00, 0.10, 10.00)
         else priced(4.00, 0.20, 4.00, 0.20, 20.00),
       )
+    case GeminiModel.Gemini4Hydrogen =>
+      Some(priced(1.50, 0.075, 1.50, 0.075, 7.50))
     case GeminiModel.Gemini3_8Flash | GeminiModel.Gemini3_6Flash => Some(
         if at < Provider.utc(2027, 1, 1) then
           priced(0.75, 0.075, 0.75, 0.075, 3.75)
