@@ -146,6 +146,8 @@ object Anthropic extends Provider:
   override private[iris] def rates
     (model: ProviderModel, at: FiniteDuration)
     : Option[Rates] = model match
+    case AnthropicModel.ClaudeFable5_2 | AnthropicModel.ClaudeMythos5_2 =>
+      Some(priced(8, 0.20, 40))
     case AnthropicModel.ClaudeFable5_1 | AnthropicModel.ClaudeMythos5_1 =>
       Some(priced(10, 0.25, 50))
     case AnthropicModel.ClaudeFable5 | AnthropicModel.ClaudeMythos5 =>
