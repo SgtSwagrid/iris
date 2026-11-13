@@ -21,7 +21,11 @@ object GeminiModel:
     */
   enum Listed(val id: String) extends GeminiModel:
 
+    case Gemini4Carbon extends Listed("gemini-4-carbon")
+
     case Gemini4Argon extends Listed("gemini-4-argon")
+
+    case Gemini4Hydrogen extends Listed("gemini-4-hydrogen")
 
     case Gemini3_8Flash extends Listed("gemini-3.8-flash")
 

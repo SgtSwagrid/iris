@@ -22,9 +22,13 @@ object AnthropicModel:
     */
   enum Listed(val id: String) extends AnthropicModel:
 
+    case ClaudeFable5_2 extends Listed("claude-fable-5-2")
+
     case ClaudeFable5_1 extends Listed("claude-fable-5-1")
 
     case ClaudeFable5 extends Listed("claude-fable-5")
+
+    case ClaudeMythos5_2 extends Listed("claude-mythos-5-2")
 
     case ClaudeMythos5_1 extends Listed("claude-mythos-5-1")
 
