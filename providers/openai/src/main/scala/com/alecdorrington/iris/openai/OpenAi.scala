@@ -89,7 +89,9 @@ object OpenAi extends Provider:
   override private[iris] def rates
     (model: ProviderModel, at: FiniteDuration)
     : Option[Rates] = model match
+    case OpenAiModel.Gpt6_2Astra => Some(writing(8, 0.40, 40))
     case OpenAiModel.Gpt6Astra   => Some(writing(10, 1, 50))
+    case OpenAiModel.Gpt6_2Sol   => Some(writing(2, 0.10, 10))
     case OpenAiModel.Gpt6_1Sol   => Some(writing(2, 0.10, 10))
     case OpenAiModel.Gpt6Sol     => Some(writing(2, 0.20, 10))
     case OpenAiModel.Gpt5_6Sol   => Some(writing(4, 0.40, 20))

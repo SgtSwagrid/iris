@@ -101,6 +101,7 @@ object Gemini extends Provider:
           priced(2.00, 0.10, 2.00, 0.10, 10.00)
         else priced(4.00, 0.20, 4.00, 0.20, 20.00),
       )
+    case GeminiModel.Gemini4Neon => Some(priced(3.00, 0.15, 3.00, 0.15, 15.00))
     case GeminiModel.Gemini4Hydrogen =>
       Some(priced(1.50, 0.075, 1.50, 0.075, 7.50))
     case GeminiModel.Gemini3_8Flash | GeminiModel.Gemini3_6Flash => Some(

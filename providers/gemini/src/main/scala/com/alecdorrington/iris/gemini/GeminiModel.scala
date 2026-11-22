@@ -25,6 +25,8 @@ object GeminiModel:
 
     case Gemini4Argon extends Listed("gemini-4-argon")
 
+    case Gemini4Neon extends Listed("gemini-4-neon")
+
     case Gemini4Hydrogen extends Listed("gemini-4-hydrogen")
 
     case Gemini3_8Flash extends Listed("gemini-3.8-flash")
