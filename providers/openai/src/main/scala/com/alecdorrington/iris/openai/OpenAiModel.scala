@@ -21,7 +21,11 @@ object OpenAiModel:
     */
   enum Listed(val id: String) extends OpenAiModel:
 
+    case Gpt6_2Astra extends Listed("gpt-6.2-astra")
+
     case Gpt6Astra extends Listed("gpt-6-astra")
+
+    case Gpt6_2Sol extends Listed("gpt-6.2-sol")
 
     case Gpt6_1Sol extends Listed("gpt-6.1-sol")
 
