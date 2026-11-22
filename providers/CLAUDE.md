@@ -12,10 +12,10 @@ provider must do.
   none (and Gemini's `models/` is dropped). It is read as `provider:id`, so that a bare name must still be a listed
   one, and `Providers.model` refuses a listed id named after another provider, which `of` alone cannot know. List a
   new model as a case of its own. What one provider's models differ in (Anthropic's sampling and prefill, OpenAI's
-  highest reasoning effort) is kept in its provider's object, as sets of the older cases that differ from the newest,
-  so that `Other` is taken to be as new as the newest. A prompt service prompts its own model alone: no setting names
-  another, so a request can never reach a provider that does not serve its model. A provider's `defaultModel`,
-  `model` and `listed` are `def`s, as the provider and its models' companion each refer to the other while being
-  made. `model.prompt(api, config)` takes any provider's `ApiService`: the design wanted its own provider's alone,
-  but typing api services by provider was judged not worth its code (2026-11-05).
+  sampling and highest reasoning effort) is kept in its provider's object, as sets of the older cases that differ
+  from the newest, so that `Other` is taken to be as new as the newest. A prompt service prompts its own model alone:
+  no setting names another, so a request can never reach a provider that does not serve its model. A provider's
+  `defaultModel`, `model` and `listed` are `def`s, as the provider and its models' companion each refer to the other
+  while being made. `model.prompt(api, config)` takes any provider's `ApiService`: the design wanted its own
+  provider's alone, but typing api services by provider was judged not worth its code (2026-11-05).
 - A set but unrecognised `LLM_PROVIDER` or `LLM_MODEL` means unconfigured (`None`), never a fall back to key inference.

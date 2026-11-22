@@ -210,6 +210,27 @@ class AdapterSuite extends FunSuite:
         model,
       )
 
+  test("openai sends sampling options only to the models that accept them"):
+    val sampled = settings(PromptRequest(
+      conversation,
+      temperature = Some(0.5),
+      topP = Some(0.9),
+    ))
+    List(
+      OpenAiModel.Gpt6_2Sol       -> false,
+      OpenAiModel.Gpt6_1Sol       -> true,
+      OpenAi.model("gpt-new").get -> false,
+    ).foreach: (model, samples) =>
+      val body = OpenAi.body(model, conversation, sampled).hcursor
+      assertEquals(
+        (
+          body.get[Double]("temperature").toOption,
+          body.get[Double]("top_p").toOption,
+        ),
+        if samples then (Some(0.5), Some(0.9)) else (None, None),
+        model,
+      )
+
   test("an effort is sent as each provider asks for one"):
     val thoughtful = settings(PromptRequest(
       conversation,

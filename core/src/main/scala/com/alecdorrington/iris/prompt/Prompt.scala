@@ -20,11 +20,11 @@ import scala.compiletime.summonInline
   *
   * @param temperature
   *   The sampling temperature; higher values give more varied messages. Not
-  *   sent to Anthropic models that reject sampling.
+  *   sent to the Anthropic and OpenAI models that take no sampling.
   *
   * @param topP
-  *   The nucleus sampling threshold. Not sent to Anthropic models that reject
-  *   sampling.
+  *   The nucleus sampling threshold. Not sent to the Anthropic and OpenAI
+  *   models that take no sampling.
   *
   * @param stopSequences
   *   The sequences at which the model stops writing.
