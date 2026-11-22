@@ -117,8 +117,10 @@ apart, is `0`. `inputTokens`, `cachedTokens` and `outputTokens` total them, and 
 > [!NOTE]
 > Anthropic's newer models, the default `ClaudeSonnet5_5` among them, no longer accept sampling
 > parameters and reject a request which carries them. Iris omits `temperature` and top-p for those
-> models, and for any Anthropic model it does not list, rather than let the request fail; both
-> still apply to every other provider, and to Anthropic's older models.
+> models, and for any Anthropic model it does not list, rather than let the request fail. OpenAI
+> says to leave both out of a request to GPT-6.2 Astra or Sol, so Iris omits them for those, and
+> for any OpenAI model it does not list. Both still apply to Gemini, and to Anthropic's and
+> OpenAI's older models.
 
 A model that thinks before it answers can be told how much to think with an
 [`Effort`](core/src/main/scala/com/alecdorrington/iris/prompt/Effort.scala), from `Low` to `Max`. Less thought is quicker and

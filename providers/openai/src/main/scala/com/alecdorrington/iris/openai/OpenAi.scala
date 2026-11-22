@@ -197,6 +197,24 @@ object OpenAi extends Provider:
   private val cappedAtHigh: Set[ProviderModel] =
     Set(OpenAiModel.Gpt5, OpenAiModel.Gpt5Mini)
 
+  /**
+    * The models that still accept `temperature` and `top_p`. OpenAI says to
+    * leave both out of a request to GPT-6.2 Astra or Sol, and an unlisted model
+    * is taken to be as new.
+    */
+  private val sampling: Set[ProviderModel] = Set(
+    OpenAiModel.Gpt6Astra,
+    OpenAiModel.Gpt6_1Sol,
+    OpenAiModel.Gpt6Sol,
+    OpenAiModel.Gpt5_6Sol,
+    OpenAiModel.Gpt6_1Terra,
+    OpenAiModel.Gpt5_6Terra,
+    OpenAiModel.Gpt6Luna,
+    OpenAiModel.Gpt5_6Luna,
+    OpenAiModel.Gpt5,
+    OpenAiModel.Gpt5Mini,
+  )
+
   private def reasoning(model: ProviderModel, effort: Effort): String =
     effort match
       case Effort.Low    => "low"
@@ -211,15 +229,16 @@ object OpenAi extends Provider:
       settings: Settings,
     )
     : Json =
+    val samples  = sampling.contains(model)
     val messages = conversation.instructions.map(text("system", _)).toList ++
       conversation.messages.flatMap(message)
     JsonHttp.objectOf(
       "model"                 -> model.id.asJson,
       "max_completion_tokens" -> settings.maxTokens.asJson,
-      "temperature"           -> settings.temperature.asJson,
-      "top_p"                 -> settings.topP.asJson,
-      "stop"                  -> JsonHttp.unlessEmpty(settings.stopSequences),
-      "tools"                 -> JsonHttp.unlessEmpty(settings.tools.map(tool)),
+      "temperature"      -> settings.temperature.filter(_ => samples).asJson,
+      "top_p"            -> settings.topP.filter(_ => samples).asJson,
+      "stop"             -> JsonHttp.unlessEmpty(settings.stopSequences),
+      "tools"            -> JsonHttp.unlessEmpty(settings.tools.map(tool)),
       "reasoning_effort" -> settings.effort.map(reasoning(model, _)).asJson,
       "stream"           -> true.asJson,
       // Usage is withheld from a stream unless asked for.
