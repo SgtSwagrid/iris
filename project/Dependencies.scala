@@ -5,7 +5,7 @@ object Dependencies:
 
   object V:
 
-    val sttpClient = "4.1.1"
+    val sttpClient = "4.1.3"
     val circe      = "0.14.17"
     val cats       = "2.13.0"
     val catsEffect = "3.7.1"
