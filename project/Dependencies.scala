@@ -11,7 +11,7 @@ object Dependencies:
     val catsEffect = "3.7.1"
     val munit      = "1.3.6"
     val cadmus     = "0.1.1"
-    val fs2        = "3.14.0"
+    val fs2        = "3.16.0"
 
   lazy val sttpClient = libraryDependencies ++= Seq(
     "com.softwaremill.sttp.client4" %% "core" % V.sttpClient,
